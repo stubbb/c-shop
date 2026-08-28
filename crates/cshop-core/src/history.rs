@@ -890,6 +890,60 @@ impl Command for RasterizeLayer {
     }
 }
 
+/// Change a layer's effects.
+///
+/// Merges with itself so that dragging a slider in the Layer Style dialog is
+/// one history entry rather than one per frame.
+#[derive(Debug)]
+pub struct SetLayerEffects {
+    id: LayerId,
+    to: crate::effects::LayerEffects,
+    from: Option<crate::effects::LayerEffects>,
+}
+
+impl SetLayerEffects {
+    pub fn new(id: LayerId, to: crate::effects::LayerEffects) -> Self {
+        Self { id, to, from: None }
+    }
+
+    fn write(&self, doc: &mut Document, value: crate::effects::LayerEffects) -> Dirty {
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        let before = layer.render_bounds();
+        layer.effects = value;
+        // Both the old reach and the new one have to be redrawn.
+        Dirty::pixels(self.id, before.union(&layer.render_bounds()))
+    }
+}
+
+impl Command for SetLayerEffects {
+    fn name(&self) -> String {
+        "Layer Style".into()
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.from.is_none() {
+            self.from = doc.tree.get(self.id).map(|l| l.effects);
+        }
+        self.write(doc, self.to)
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(from) = self.from else { return Dirty::NONE };
+        self.write(doc, from)
+    }
+
+    fn merge(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = (next as &dyn std::any::Any).downcast_ref::<SetLayerEffects>() else {
+            return false;
+        };
+        if next.id != self.id {
+            return false;
+        }
+        self.to = next.to;
+        true
+    }
+}
+
 /// Replace a shape layer's geometry or style.
 ///
 /// Editing a shape is live, exactly as editing type is, so this is what turns

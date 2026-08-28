@@ -150,7 +150,15 @@ impl LayerTextures {
             // Type and shapes are uploaded from their cached raster, so the
             // GPU never needs to know they are anything but pixels.
             LayerKind::Raster(_) | LayerKind::Text(_) | LayerKind::Shape(_) => {
-                let px = layer.pixels().expect("these kinds all have pixels");
+                // A layer with effects uploads the effects and its pixels
+                // composited together, sized to `render_bounds`. Everything
+                // from here on treats that as the layer's texture, so the
+                // compositor needs no knowledge of effects.
+                let composed = layer.render_with_effects().map(|(px, _)| px);
+                let px = match &composed {
+                    Some(p) => p,
+                    None => layer.pixels().expect("these kinds all have pixels"),
+                };
                 let needs_full = match &entry.pixels {
                     Some(t) => t.width != px.width() || t.height != px.height(),
                     None => true,
@@ -165,6 +173,16 @@ impl LayerTextures {
                     );
                     tex.write(ctx, px.as_bytes(), 4);
                     entry.pixels = Some(tex);
+                } else if composed.is_some() && dirty.layers.contains(&layer.id) {
+                    // The whole composition changed, not just the dirty rect.
+                    let tex = entry.pixels.as_ref().expect("checked above");
+                    tex.write(ctx, px.as_bytes(), 4);
+                } else if composed.is_some() && dirty.layers.contains(&layer.id) {
+                    // Effects are re-rendered whole — a blur spreads a change
+                    // well beyond the dirty rect — so the partial upload below
+                    // would leave stale pixels around the edit.
+                    let tex = entry.pixels.as_ref().expect("checked above");
+                    tex.write(ctx, px.as_bytes(), 4);
                 } else if dirty.layers.contains(&layer.id) {
                     let tex = entry.pixels.as_ref().expect("checked above");
                     // dirty.rect is document space; the texture is layer space.

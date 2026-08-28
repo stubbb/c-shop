@@ -79,6 +79,33 @@ source of position: widening a stroke or typing more text grows the raster
 without the layer appearing to move, and moving a layer needs no knowledge of
 what kind it is.
 
+## Layer effects are all one distance field
+
+Every effect — shadow, glow, bevel, stroke, satin — is some function of *how
+far a pixel is from the layer's edge*. A stroke is a band around distance zero;
+a glow is a ramp away from it; spread and choke move the contour before
+blurring; a bevel lights a height map built from it. So the renderer computes
+one signed distance field per layer and every effect reads it. Offsetting a
+shadow is then sampling that field at a shifted position rather than rebuilding
+anything.
+
+Two things about that field were worth getting right. It has to be
+**continuous**: the distance transform is exact but measures to the nearest
+pixel *centre* of a binary mask, so it reads about half a pixel long and knows
+nothing about an antialiased edge. Correcting only near the edge introduces a
+step, and the bevel differentiates the field — a step becomes stripes down
+every diagonal. And the gradient is taken with a **Sobel** stencil rather than
+central differences, because a height map built from a distance field has a
+crease along the shape's medial axis; on a diagonal that crease alternates with
+pixel parity, and central differences turn it into a plaid.
+
+Effects are composited on the CPU into a raster that is handed to the GPU like
+any other layer, with the layer's own pixels already scaled by fill opacity and
+the effects deliberately not. That is what makes a stroke-only layer work, and
+it means the compositor needs no knowledge of effects — only that the layer
+draws over a larger rect than its own pixels, which `Layer::render_bounds`
+reports.
+
 ## Shapes are distance fields, not scanlines
 
 Every shape has a cheap signed distance function, and one distance gives both

@@ -667,7 +667,7 @@ fn box_blur_v(src: &[u8], dst: &mut [u8], w: u32, h: u32, radius: u32) {
 /// Uses Felzenszwalb and Huttenlocher's two-pass parabola algorithm, which is
 /// linear in the pixel count and exact — a chamfer approximation would make
 /// expand and contract visibly lopsided on diagonals.
-fn distance_field(mask: &MaskBuffer, w: u32, h: u32, from_outside: bool) -> Vec<f32> {
+pub(crate) fn distance_field(mask: &MaskBuffer, w: u32, h: u32, from_outside: bool) -> Vec<f32> {
     const INF: f32 = 1e20;
     let (wi, hi) = (w as usize, h as usize);
     let bytes = mask.as_bytes();

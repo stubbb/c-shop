@@ -372,6 +372,10 @@ impl CShopApp {
                 title_owned = d.title();
                 &title_owned
             }
+            Dialog::LayerStyle(d) => {
+                title_owned = d.title();
+                &title_owned
+            }
             Dialog::Filter(d) => {
                 // Titles are owned here, so borrow-safe: leak-free by cloning.
                 title_owned = d.title();
@@ -409,6 +413,7 @@ impl CShopApp {
                 Dialog::Fill(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
+                Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
                 Dialog::Filter(d) => close = d.ui(ui, &mut actions),
                 Dialog::About => {
                     ui.label("C-Shop — a native, GPU-accelerated layered image editor.");
@@ -977,6 +982,49 @@ impl CShopApp {
             Action::CommitText => self.commit_text(),
             Action::CancelText => self.cancel_text(),
             Action::RasterizeLayer => self.rasterize_layer(),
+            Action::ShowLayerStyle => {
+                let Some(view) = self.doc() else { return };
+                let Some(id) = view.doc.active else { return };
+                let Some(layer) = view.doc.tree.get(id) else { return };
+                if layer.pixels().is_none() {
+                    self.notify("Effects need a layer with pixels");
+                    return;
+                }
+                let mut fx = layer.effects;
+                // Opening the dialog on a layer with nothing set should still
+                // give something to switch on.
+                if fx.global_light_angle == 0.0 && fx.global_light_altitude == 0.0 {
+                    fx = cshop_core::effects::LayerEffects {
+                        enabled: true,
+                        ..cshop_core::effects::LayerEffects::new()
+                    };
+                }
+                fx.enabled = true;
+                self.dialog = Dialog::LayerStyle(Box::new(
+                    crate::layer_style::LayerStyleDialog::new(id, fx, layer.name.clone()),
+                ));
+            }
+            Action::SetLayerEffects(id, fx) => {
+                let Some(view) = self.doc_mut() else { return };
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(cshop_core::history::SetLayerEffects::new(id, *fx)),
+                );
+                view.mark_dirty(dirty);
+                view.invalidate();
+            }
+            Action::ClearLayerEffects(id) => {
+                let Some(view) = self.doc_mut() else { return };
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(cshop_core::history::SetLayerEffects::new(
+                        id,
+                        cshop_core::effects::LayerEffects::default(),
+                    )),
+                );
+                view.mark_dirty(dirty);
+                view.invalidate();
+            }
             Action::DrawShape { from, to, from_centre, constrain } => {
                 self.draw_shape(from, to, from_centre, constrain)
             }

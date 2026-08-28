@@ -52,6 +52,8 @@ fn main() {
     let mut demo_blur = false;
     let mut demo_text = false;
     let mut demo_shapes = false;
+    let mut demo_fx = false;
+    let mut demo_fx_dialog = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut drag: Option<(f32, f32, f32, f32)> = None;
     let mut demo_curves = false;
@@ -85,6 +87,12 @@ fn main() {
             "--demo-blur" => demo_blur = true,
             "--demo-text" => demo_text = true,
             "--demo-shapes" => demo_shapes = true,
+            "--demo-fx" => demo_fx = true,
+            // The effects demo with the Layer Style dialog open on top.
+            "--demo-fx-dialog" => {
+                demo_fx = true;
+                demo_fx_dialog = true;
+            }
             "--demo-curves" => demo_curves = true,
             "--demo-tools" => demo_tools = true,
             // Picks which tool is active for the --demo-tools shot, so the
@@ -201,6 +209,12 @@ fn main() {
                     app.dispatch(cshop_ui::commands::Action::ShowAdjustmentDialog(Box::new(
                         cshop_core::adjust::Adjustment::Curves { curves: Default::default() },
                     )));
+                }
+                if demo_fx {
+                    screenshot::build_effects_demo(app);
+                    if demo_fx_dialog {
+                        app.dispatch(cshop_ui::commands::Action::ShowLayerStyle);
+                    }
                 }
                 if demo_shapes {
                     screenshot::build_shape_demo(app);

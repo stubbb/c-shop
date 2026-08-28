@@ -275,6 +275,22 @@ fn move_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
 
 /// The menu for one layer row.
 pub fn layer_menu(app: &mut CShopApp, ui: &mut egui::Ui, id: LayerId) {
+    let has_pixels = app
+        .doc()
+        .and_then(|v| v.doc.tree.get(id))
+        .is_some_and(|l| l.pixels().is_some());
+    let has_fx =
+        app.doc().and_then(|v| v.doc.tree.get(id)).is_some_and(|l| l.effects.any());
+    if ui.add_enabled(has_pixels, egui::Button::new("Layer Style…")).clicked() {
+        app.push(Action::SelectLayer(id));
+        app.push(Action::ShowLayerStyle);
+        ui.close();
+    }
+    if ui.add_enabled(has_fx, egui::Button::new("Clear Layer Style")).clicked() {
+        app.push(Action::ClearLayerEffects(id));
+        ui.close();
+    }
+    ui.separator();
     ui.set_min_width(210.0);
 
     let Some(view) = app.doc() else { return };

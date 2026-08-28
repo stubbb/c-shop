@@ -645,3 +645,101 @@ pub fn build_shape_demo(app: &mut CShopApp) {
     draw(app, ShapeKind::Rectangle { radius: 10.0 }, ShapeStyle { stroke_align: StrokeAlign::Outside, ..outlined(blue, ink) }, (440.0, 390.0), (580.0, 470.0));
     draw(app, ShapeKind::Rectangle { radius: 10.0 }, ShapeStyle { stroke_align: StrokeAlign::Inside, ..outlined(blue, ink) }, (610.0, 390.0), (750.0, 470.0));
 }
+
+/// Layer effects on real layers, for looking at the Layer Style dialog.
+pub fn build_effects_demo(app: &mut CShopApp) {
+    use cshop_core::color::Rgba8;
+    use cshop_core::document::{Background, Document};
+    use cshop_core::effects::*;
+    use cshop_core::geom::Vec2;
+    use cshop_core::shape::{ShapeKind, ShapeStyle, StrokeAlign};
+    use cshop_ui::commands::Action;
+
+    let doc = Document::new("Effects.csd", 860, 520, Background::Color(Rgba8::opaque(96, 104, 116)));
+    app.open_document(doc);
+
+    // A row of shapes, each carrying a different style.
+    let draw = |app: &mut CShopApp, kind: ShapeKind, fill: Rgba8, a: (f32, f32), b: (f32, f32)| {
+        app.tool = cshop_ui::tools::Tool::Shape;
+        app.shape_kind = kind;
+        app.shape_style =
+            ShapeStyle { fill: Some(fill), stroke: None, stroke_align: StrokeAlign::Center, ..Default::default() };
+        app.dispatch(Action::DrawShape {
+            from: Vec2::new(a.0, a.1),
+            to: Vec2::new(b.0, b.1),
+            from_centre: false,
+            constrain: false,
+        });
+        app.doc().and_then(|v| v.doc.active).unwrap()
+    };
+
+    let style = |app: &mut CShopApp, id, fx: LayerEffects| {
+        app.dispatch(Action::SetLayerEffects(id, Box::new(fx)));
+    };
+
+    let grey = Rgba8::opaque(206, 210, 216);
+
+    let id = draw(app, ShapeKind::Rectangle { radius: 16.0 }, grey, (40.0, 50.0), (200.0, 160.0));
+    let mut fx = LayerEffects::new();
+    fx.drop_shadow = Some(Shadow { distance: 12.0, size: 12.0, ..Default::default() });
+    fx.bevel = Some(Bevel { size: 10.0, depth: 1.3, soften: 2.0, ..Default::default() });
+    style(app, id, fx);
+
+    let id = draw(app, ShapeKind::Ellipse, grey, (240.0, 50.0), (400.0, 160.0));
+    let mut fx = LayerEffects::new();
+    fx.outer_glow = Some(Glow { size: 22.0, color: Rgba8::opaque(120, 220, 255), ..Default::default() });
+    fx.inner_shadow = Some(Shadow { distance: 6.0, size: 10.0, ..Default::default() });
+    style(app, id, fx);
+
+    let id = draw(
+        app,
+        ShapeKind::Polygon { sides: 5, star: true, inner: 0.45 },
+        grey,
+        (440.0, 40.0),
+        (600.0, 175.0),
+    );
+    let mut fx = LayerEffects::new();
+    fx.color_overlay = Some(ColorOverlay { color: Rgba8::opaque(250, 190, 60), ..Default::default() });
+    fx.stroke = Some(Stroke { size: 4.0, color: Rgba8::opaque(60, 40, 10), ..Default::default() });
+    fx.drop_shadow = Some(Shadow { distance: 8.0, size: 8.0, ..Default::default() });
+    style(app, id, fx);
+
+    let id = draw(app, ShapeKind::Rectangle { radius: 8.0 }, grey, (640.0, 50.0), (800.0, 160.0));
+    let mut fx = LayerEffects::new();
+    fx.bevel = Some(Bevel { style: BevelStyle::Pillow, size: 12.0, depth: 1.5, ..Default::default() });
+    fx.satin = Some(Satin::default());
+    style(app, id, fx);
+
+    // Type with a full style, and a stroke-only layer beside it.
+    app.tool = cshop_ui::tools::Tool::Text;
+    app.foreground = Rgba8::opaque(230, 234, 240);
+    app.text_style.size = 76.0;
+    app.text_style.bold = true;
+    app.dispatch(Action::BeginText { at: Vec2::new(50.0, 300.0), wrap: None });
+    for c in "Effects".chars() {
+        app.dispatch(Action::TextInput(cshop_ui::text_tool::TextInput::Insert(c.to_string())));
+    }
+    app.dispatch(Action::CommitText);
+    let id = app.doc().and_then(|v| v.doc.active).unwrap();
+    let mut fx = LayerEffects::new();
+    fx.drop_shadow = Some(Shadow { distance: 6.0, size: 6.0, ..Default::default() });
+    fx.bevel = Some(Bevel { size: 6.0, depth: 1.2, soften: 1.0, ..Default::default() });
+    fx.inner_glow = Some(Glow { size: 10.0, color: Rgba8::opaque(255, 220, 150), ..Default::default() });
+    style(app, id, fx);
+
+    app.dispatch(Action::BeginText { at: Vec2::new(50.0, 430.0), wrap: None });
+    for c in "stroke only".chars() {
+        app.dispatch(Action::TextInput(cshop_ui::text_tool::TextInput::Insert(c.to_string())));
+    }
+    app.dispatch(Action::CommitText);
+    let id = app.doc().and_then(|v| v.doc.active).unwrap();
+    let mut fx = LayerEffects::new();
+    fx.stroke = Some(Stroke { size: 2.5, color: Rgba8::opaque(255, 255, 255), ..Default::default() });
+    fx.outer_glow = Some(Glow { size: 14.0, opacity: 0.9, ..Default::default() });
+    style(app, id, fx);
+    // Fill opacity to zero: the layer's pixels go, the effects stay.
+    app.dispatch(Action::SetLayerProperty(
+        id,
+        cshop_core::history::LayerProperty::FillOpacity(0.0),
+    ));
+}

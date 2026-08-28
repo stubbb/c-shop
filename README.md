@@ -45,6 +45,14 @@ point text and wrapping paragraph boxes, real or synthesised bold and italic,
 alignment, leading, tracking and anti-aliasing. Edited live on canvas with a
 caret; a whole typing session is a single undo step.
 
+**Layer effects.** Drop shadow, outer glow, bevel and emboss (inner, outer,
+emboss and pillow), inner shadow, inner glow, satin, colour overlay and
+stroke — each with its own blend mode, opacity, colour and geometry, and a
+shared global light. Every effect is a function of how far a pixel sits from
+the layer's edge, so one distance field drives all of them. Fill opacity scales
+the layer's own pixels and not its effects, which is what makes a stroke-only
+layer possible.
+
 **Shapes.** Rectangles, rounded rectangles, ellipses, polygons, stars and
 lines, drawn from signed distance fields so fill and stroke stay perfectly
 registered. Fill and stroke are independent, the stroke sits inside, centred or
@@ -104,6 +112,8 @@ keyboard reference.
 | Vector shape layers | Re-editable type |
 | ![Curves](docs/screenshot-curves.png) | ![Filters](docs/screenshot-filter.png) |
 | Adjustments with a live histogram | Filters with a zoomable preview |
+| ![Layer effects](docs/screenshot-effects.png) | ![Selections](docs/screenshot-selection.png) |
+| Layer effects | Selections and masks |
 
 ## How it is built
 
@@ -151,9 +161,9 @@ cargo clippy --workspace --all-targets
 
 ## Not there yet
 
-Layer effects, a layered project format, PSD import, clipboard commands,
-boolean shape combining, and selecting a range within a text layer. The toolbar
-is complete: every tool it shows is implemented.
+A layered project format, PSD import, clipboard commands, gradient and pattern
+overlays, boolean shape combining, and selecting a range within a text layer.
+The toolbar is complete: every tool it shows is implemented.
 
 ## Licence
 

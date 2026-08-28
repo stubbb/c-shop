@@ -92,9 +92,30 @@ impl DocView {
     }
 
     /// Record an edit so the next frame re-uploads and recomposites it.
-    pub fn mark_dirty(&mut self, dirty: Dirty) {
+    /// The region queued for recompositing, for tests that need to see how
+    /// far an edit reached.
+    pub fn pending_rect(&self) -> cshop_core::geom::IRect {
+        self.pending.rect
+    }
+
+    pub fn mark_dirty(&mut self, mut dirty: Dirty) {
         if dirty.is_empty() {
             return;
+        }
+        // A layer's effects reach outside the pixels that changed — a blurred
+        // shadow spreads an edit well past its own rect — so the region to
+        // recomposite has to grow with them, or the shadow is left stale
+        // around whatever was just edited.
+        let reach = dirty
+            .layers
+            .iter()
+            .filter_map(|id| self.doc.tree.get(*id))
+            .filter(|l| l.has_effects())
+            .map(|l| cshop_core::effects::padding(&l.effects))
+            .max()
+            .unwrap_or(0);
+        if reach > 0 {
+            dirty.rect = dirty.rect.inflate(reach);
         }
         self.epoch += 1;
         for id in &dirty.layers {

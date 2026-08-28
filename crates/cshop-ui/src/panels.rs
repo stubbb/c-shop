@@ -667,6 +667,14 @@ fn layer_row(
             l.mask.as_ref().is_some_and(|m| m.enabled),
         )
     };
+    // Effects get an "fx" mark and, when the group is open, a line each — the
+    // only way to see what a style is made of without opening the dialog.
+    let effect_names: Vec<&'static str> = app.docs[doc_index]
+        .doc
+        .tree
+        .get(id)
+        .map(|l| l.effects.active_names())
+        .unwrap_or_default();
     // The Background is pinned to the bottom of the stack.
     let is_background = app.docs[doc_index]
         .doc
@@ -851,6 +859,22 @@ fn layer_row(
     );
 
     let mut badge_x = rect.max.x - 6.0;
+    // An "fx" mark rather than an icon: it is what the effects are called
+    // everywhere else in the interface, and it reads at this size.
+    if !effect_names.is_empty() {
+        let g = painter.layout_no_wrap(
+            "fx".to_string(),
+            egui::FontId::proportional(11.0),
+            p.accent,
+        );
+        badge_x -= g.size().x + 4.0;
+        painter.galley(
+            egui::pos2(badge_x, rect.center().y - g.size().y / 2.0),
+            g,
+            p.accent,
+        );
+        badge_x -= 2.0;
+    }
     for (show, which) in
         [(locked, Icon::Lock), (has_mask, Icon::Mask), (clipping, Icon::Clip)]
     {

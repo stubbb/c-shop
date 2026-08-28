@@ -510,6 +510,26 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 }
             });
             ui.separator();
+            // Read what the menu needs, then let the borrow end: the items
+            // below push actions, which needs `app` mutably.
+            let (can_style, has_style, active_id) = match app.doc() {
+                Some(v) => match v.doc.active.and_then(|id| v.doc.tree.get(id)) {
+                    Some(l) => (l.pixels().is_some(), l.effects.any(), v.doc.active),
+                    None => (false, false, None),
+                },
+                None => (false, false, None),
+            };
+            if item_enabled(ui, "Layer Style…", "", can_style).clicked() {
+                app.push(Action::ShowLayerStyle);
+                ui.close();
+            }
+            if item_enabled(ui, "Clear Layer Style", "", has_style).clicked() {
+                if let Some(id) = active_id {
+                    app.push(Action::ClearLayerEffects(id));
+                }
+                ui.close();
+            }
+            ui.separator();
             let active = app.doc().and_then(|v| v.doc.active.and_then(|id| v.doc.tree.get(id)));
             let label = match active.map(|l| l.text().is_some()) {
                 Some(true) => "Rasterize Type",
@@ -1528,7 +1548,7 @@ impl ModifyKind {
 }
 
 /// A blend-mode dropdown, grouped by family.
-fn blend_combo(ui: &mut egui::Ui, id: &str, mode: &mut cshop_core::blend::BlendMode) {
+pub(crate) fn blend_combo(ui: &mut egui::Ui, id: &str, mode: &mut cshop_core::blend::BlendMode) {
     egui::ComboBox::from_id_salt(id).width(130.0).selected_text(mode.name()).show_ui(ui, |ui| {
         for entry in cshop_core::blend::BlendMode::MENU {
             match entry {

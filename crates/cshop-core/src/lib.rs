@@ -20,6 +20,7 @@ pub mod color;
 pub mod curve;
 pub mod document;
 pub mod fill;
+pub mod effects;
 pub mod filters;
 pub mod font;
 pub mod shape;

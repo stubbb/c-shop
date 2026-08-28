@@ -228,6 +228,12 @@ pub enum Action {
     CancelText,
     /// Turn the active type or shape layer into ordinary pixels.
     RasterizeLayer,
+    /// Open the Layer Style dialog for the active layer.
+    ShowLayerStyle,
+    /// Apply a set of effects to a layer.
+    SetLayerEffects(LayerId, Box<cshop_core::effects::LayerEffects>),
+    /// Remove every effect from a layer.
+    ClearLayerEffects(LayerId),
     /// Create a shape layer from a drag, in document space.
     DrawShape { from: cshop_core::geom::Vec2, to: cshop_core::geom::Vec2, from_centre: bool, constrain: bool },
     /// Step the brush diameter one notch, as `[` and `]` do.

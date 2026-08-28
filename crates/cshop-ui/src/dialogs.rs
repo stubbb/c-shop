@@ -23,6 +23,7 @@ pub enum Dialog {
     Filter(Box<crate::filter_ui::FilterDialog>),
     Rename(RenameDialog),
     Adjustment(Box<crate::adjust_ui::AdjustmentDialog>),
+    LayerStyle(Box<crate::layer_style::LayerStyleDialog>),
     Fill(FillDialog),
     ColorPicker(ColorPickerDialog),
     About,

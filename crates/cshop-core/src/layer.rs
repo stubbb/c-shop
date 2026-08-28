@@ -248,6 +248,8 @@ pub struct Layer {
     pub expanded: bool,
     /// The locked bottom layer: opaque, unmovable, always at index 0.
     pub is_background: bool,
+    /// Effects drawn around the layer's own pixels.
+    pub effects: crate::effects::LayerEffects,
 }
 
 impl Layer {
@@ -268,6 +270,7 @@ impl Layer {
             parent: None,
             expanded: true,
             is_background: false,
+            effects: crate::effects::LayerEffects::default(),
         }
     }
 
@@ -352,6 +355,54 @@ impl Layer {
         }
     }
 
+    /// Whether this layer draws anything beyond its own pixels.
+    pub fn has_effects(&self) -> bool {
+        self.effects.any() && self.pixels().is_some()
+    }
+
+    /// Where the layer draws, effects included.
+    ///
+    /// Larger than [`Layer::bounds`] whenever a shadow, glow, outer stroke or
+    /// outer bevel reaches past the layer's own pixels; the compositor uses
+    /// this to decide what to redraw.
+    pub fn render_bounds(&self) -> IRect {
+        let b = self.bounds();
+        if !self.has_effects() || b.is_empty() {
+            return b;
+        }
+        b.inflate(crate::effects::padding(&self.effects))
+    }
+
+    /// The layer as the compositor should draw it: pixels plus effects.
+    ///
+    /// Returns the buffer and the document-space rect it covers. `None` when
+    /// there are no effects, in which case the layer's own pixels are used
+    /// directly.
+    ///
+    /// Effects only reach around pixels that are actually there, so the work
+    /// is done on the layer's opaque extent rather than its whole buffer —
+    /// which for the layers people put effects on is usually a small part of
+    /// it.
+    pub fn render_with_effects(&self) -> Option<(PixelBuffer, IRect)> {
+        if !self.has_effects() {
+            return None;
+        }
+        let px = self.pixels()?;
+        let ink = px.opaque_bounds();
+        if ink.is_empty() {
+            return None;
+        }
+        let cropped = px.copy_rect(ink);
+        let r = crate::effects::render(&cropped, &self.effects, self.fill_opacity)?;
+        let rect = IRect::at(
+            self.offset.0 + ink.x0 - r.origin.0,
+            self.offset.1 + ink.y0 - r.origin.1,
+            r.pixels.width(),
+            r.pixels.height(),
+        );
+        Some((r.pixels, rect))
+    }
+
     /// True for the kinds that are drawn from a description rather than from
     /// pixels, and so cannot be painted on until they are rasterised.
     pub fn is_vector(&self) -> bool {
@@ -411,7 +462,15 @@ impl Layer {
 
     /// Effective alpha for the layer's own pixels.
     pub fn effective_alpha(&self) -> f32 {
-        (self.opacity * self.fill_opacity).clamp(0.0, 1.0)
+        // With effects, fill opacity has already been applied to the layer's
+        // own pixels while rendering them — the effects deliberately escaped
+        // it, which is what makes a stroke-only layer possible. Applying it
+        // again here would fade them too.
+        if self.has_effects() {
+            self.opacity.clamp(0.0, 1.0)
+        } else {
+            (self.opacity * self.fill_opacity).clamp(0.0, 1.0)
+        }
     }
 }
 
