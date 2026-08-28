@@ -6,6 +6,14 @@ in about 400 ms.
 
 ![C-Shop](docs/screenshot.png)
 
+## Status
+
+A personal tool, in active development. It is built for its author's own work,
+so it changes whenever a bug turns up or a feature is wanted, and those changes
+are pushed as they happen rather than gathered into releases. Expect no version
+numbers and no stability promises — though the project format carries a version
+and skips chunks it does not recognise, so files already saved keep opening.
+
 ## Why
 
 Most capable image editors are either enormous proprietary suites or web apps
