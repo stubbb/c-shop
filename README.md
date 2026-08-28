@@ -1,8 +1,8 @@
 # C-Shop
 
 A native, GPU-accelerated, layer-based image editor. No browser, no Electron,
-no web view — a real desktop binary that composites on the GPU and starts in
-under half a second.
+no web view — a real desktop binary that composites on the GPU and is on screen
+in about 400 ms.
 
 ![C-Shop](docs/screenshot.png)
 
@@ -48,10 +48,11 @@ caret; a whole typing session is a single undo step.
 **Layer effects.** Drop shadow, outer glow, bevel and emboss (inner, outer,
 emboss and pillow), inner shadow, inner glow, satin, colour overlay, gradient
 overlay, pattern overlay and stroke — each with its own blend mode, opacity,
-colour and geometry, and a shared global light. Every effect is a function of how far a pixel sits from
-the layer's edge, so one distance field drives all of them. Fill opacity scales
-the layer's own pixels and not its effects, which is what makes a stroke-only
-layer possible.
+colour and geometry, and a shared global light. Every effect is a function of
+how far a pixel sits from the layer's edge, so one distance field drives all of
+them. Fill opacity scales the layer's own pixels and not its effects, which is
+what makes a stroke-only layer possible. The Layer Style window applies as you
+work and can be dragged aside, so the canvas is the preview.
 
 **Shapes.** Rectangles, rounded rectangles, ellipses, polygons, stars and
 lines, drawn from signed distance fields so fill and stroke stay perfectly
@@ -134,14 +135,14 @@ cshop-app  →  cshop-ui  →  cshop-gpu  →  cshop-core
   interaction layer.
 - **`cshop-app`** — the window, the swapchain, and the offscreen capture path.
 
-Around 35,000 lines of Rust and 500 of WGSL. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Around 38,000 lines of Rust and 500 of WGSL. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 explains the decisions that are not obvious from the code — the colour space,
 why the compositor cannot use fixed-function blending, and how vector layers
 avoid special-casing everything downstream.
 
 ## Testing
 
-518 tests, and the interesting ones are not unit tests:
+544 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
