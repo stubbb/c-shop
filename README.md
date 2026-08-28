@@ -46,9 +46,9 @@ alignment, leading, tracking and anti-aliasing. Edited live on canvas with a
 caret; a whole typing session is a single undo step.
 
 **Layer effects.** Drop shadow, outer glow, bevel and emboss (inner, outer,
-emboss and pillow), inner shadow, inner glow, satin, colour overlay and
-stroke — each with its own blend mode, opacity, colour and geometry, and a
-shared global light. Every effect is a function of how far a pixel sits from
+emboss and pillow), inner shadow, inner glow, satin, colour overlay, gradient
+overlay, pattern overlay and stroke — each with its own blend mode, opacity,
+colour and geometry, and a shared global light. Every effect is a function of how far a pixel sits from
 the layer's edge, so one distance field drives all of them. Fill opacity scales
 the layer's own pixels and not its effects, which is what makes a stroke-only
 layer possible.
@@ -161,8 +161,9 @@ cargo clippy --workspace --all-targets
 
 ## Not there yet
 
-A layered project format, PSD import, clipboard commands, gradient and pattern
-overlays, boolean shape combining, and selecting a range within a text layer.
+A layered project format, PSD import, clipboard commands, custom pattern tiles
+loaded from an image (the pattern overlay draws six generated figures), boolean
+shape combining, and selecting a range within a text layer.
 The toolbar is complete: every tool it shows is implemented.
 
 ## Licence

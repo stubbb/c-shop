@@ -99,6 +99,14 @@ central differences, because a height map built from a distance field has a
 crease along the shape's medial axis; on a diagonal that crease alternates with
 pixel parity, and central differences turn it into a plaid.
 
+The two overlays are the exception to the distance field: a gradient overlay
+reuses the Gradient tool's own geometry so the shapes match exactly, and a
+pattern overlay evaluates a repeating figure directly. Both are clipped to the
+layer's alpha and neither reaches outside it, so they add nothing to the
+layer's drawn extent. The gradient's ramp is baked into a 256-entry table
+first, because `color_at` sorts its stops on every call — the same mistake that
+made the Curves preview freeze.
+
 Effects are composited on the CPU into a raster that is handed to the GPU like
 any other layer, with the layer's own pixels already scaled by fill opacity and
 the effects deliberately not. That is what makes a stroke-only layer work, and

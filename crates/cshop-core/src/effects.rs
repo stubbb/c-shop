@@ -222,6 +222,109 @@ impl Default for ColorOverlay {
     }
 }
 
+/// A gradient painted over the layer.
+///
+/// Two stops rather than an arbitrary ramp, which keeps the whole effect set
+/// `Copy` and covers what an overlay is nearly always used for. The gradient
+/// geometry itself comes from [`crate::fill`], so the shapes match the
+/// Gradient tool exactly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientOverlay {
+    pub from: Rgba8,
+    pub to: Rgba8,
+    pub kind: crate::fill::GradientKind,
+    pub mode: BlendMode,
+    pub opacity: f32,
+    pub angle: f32,
+    /// Fraction of the layer the ramp spans. Below one it repeats at the ends;
+    /// above one only the middle of the ramp is seen.
+    pub scale: f32,
+    pub reverse: bool,
+}
+
+impl Default for GradientOverlay {
+    fn default() -> Self {
+        Self {
+            from: Rgba8::BLACK,
+            to: Rgba8::WHITE,
+            kind: crate::fill::GradientKind::Linear,
+            mode: BlendMode::Normal,
+            opacity: 1.0,
+            angle: 90.0,
+            scale: 1.0,
+            reverse: false,
+        }
+    }
+}
+
+/// The repeating figures a pattern overlay can draw.
+///
+/// Generated rather than loaded from a tile: there is no pattern library to
+/// load one from yet, and these need no assets, scale to any size without
+/// resampling and cost nothing to store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatternKind {
+    #[default]
+    Checker,
+    Stripes,
+    Dots,
+    Grid,
+    CrossHatch,
+    Noise,
+}
+
+impl PatternKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            PatternKind::Checker => "Checker",
+            PatternKind::Stripes => "Stripes",
+            PatternKind::Dots => "Dots",
+            PatternKind::Grid => "Grid",
+            PatternKind::CrossHatch => "Cross Hatch",
+            PatternKind::Noise => "Noise",
+        }
+    }
+
+    pub const ALL: [PatternKind; 6] = [
+        PatternKind::Checker,
+        PatternKind::Stripes,
+        PatternKind::Dots,
+        PatternKind::Grid,
+        PatternKind::CrossHatch,
+        PatternKind::Noise,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PatternOverlay {
+    pub kind: PatternKind,
+    /// The figure's colour, and what shows between figures. A transparent
+    /// background lets the layer through between them.
+    pub color: Rgba8,
+    pub background: Rgba8,
+    pub mode: BlendMode,
+    pub opacity: f32,
+    /// Size of one cell, in pixels.
+    pub scale: f32,
+    pub angle: f32,
+    pub seed: u64,
+}
+
+impl Default for PatternOverlay {
+    fn default() -> Self {
+        Self {
+            kind: PatternKind::Checker,
+            color: Rgba8::opaque(40, 40, 40),
+            background: Rgba8::TRANSPARENT,
+            mode: BlendMode::Normal,
+            opacity: 0.5,
+            scale: 16.0,
+            angle: 0.0,
+            seed: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stroke {
     pub color: Rgba8,
@@ -263,6 +366,8 @@ pub struct LayerEffects {
     pub inner_glow: Option<Glow>,
     pub satin: Option<Satin>,
     pub color_overlay: Option<ColorOverlay>,
+    pub gradient_overlay: Option<GradientOverlay>,
+    pub pattern_overlay: Option<PatternOverlay>,
     pub stroke: Option<Stroke>,
 }
 
@@ -281,6 +386,8 @@ impl LayerEffects {
                 || self.inner_glow.is_some()
                 || self.satin.is_some()
                 || self.color_overlay.is_some()
+                || self.gradient_overlay.is_some()
+                || self.pattern_overlay.is_some()
                 || self.stroke.is_some())
     }
 
@@ -289,6 +396,12 @@ impl LayerEffects {
         let mut out = Vec::new();
         if self.stroke.is_some() {
             out.push("Stroke");
+        }
+        if self.pattern_overlay.is_some() {
+            out.push("Pattern Overlay");
+        }
+        if self.gradient_overlay.is_some() {
+            out.push("Gradient Overlay");
         }
         if self.color_overlay.is_some() {
             out.push("Color Overlay");
@@ -638,6 +751,14 @@ pub fn render(base: &PixelBuffer, fx: &LayerEffects, fill_opacity: f32) -> Optio
         lay(&mut canvas, &full, o.color, o.mode, o.opacity, Some(&alpha));
     }
 
+    if let Some(g) = fx.gradient_overlay {
+        draw_gradient_overlay(&mut canvas, &alpha, w, h, &g);
+    }
+
+    if let Some(o) = fx.pattern_overlay {
+        draw_pattern_overlay(&mut canvas, &alpha, w, &o);
+    }
+
     if let Some(s) = fx.stroke {
         // A band around the contour, exactly as a shape's stroke is: the only
         // difference between the three positions is where it is centred.
@@ -661,6 +782,158 @@ pub fn render(base: &PixelBuffer, fx: &LayerEffects, fill_opacity: f32) -> Optio
         .zip(canvas.par_iter())
         .for_each(|(dst, src)| *dst = src.to_u8());
     Some(Rendered { pixels, origin: (pad, pad) })
+}
+
+/// The layer's own extent within the padded canvas, so an overlay can be
+/// aligned to the layer rather than to the buffer it happens to sit in.
+fn ink_bounds(alpha: &Field, w: usize, h: usize) -> (f32, f32, f32, f32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (w as f32, h as f32, 0.0f32, 0.0f32);
+    for y in 0..h {
+        for x in 0..w {
+            if alpha[y * w + x] > 0.004 {
+                x0 = x0.min(x as f32);
+                y0 = y0.min(y as f32);
+                x1 = x1.max(x as f32 + 1.0);
+                y1 = y1.max(y as f32 + 1.0);
+            }
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        (0.0, 0.0, w as f32, h as f32)
+    } else {
+        (x0, y0, x1, y1)
+    }
+}
+
+/// A gradient across the layer, clipped to it.
+fn draw_gradient_overlay(
+    canvas: &mut [Rgba],
+    alpha: &Field,
+    w: usize,
+    h: usize,
+    g: &GradientOverlay,
+) {
+    use crate::fill::GradientKind;
+    let mut ramp = crate::fill::Gradient::between(g.from, g.to);
+    ramp.kind = g.kind;
+    ramp.reverse = g.reverse;
+
+    // `color_at` sorts its stops on every call, so it is baked into a table
+    // once rather than being asked per pixel — the same mistake that made the
+    // Curves preview freeze.
+    let lut: Vec<Rgba8> = (0..256).map(|i| ramp.color_at(i as f32 / 255.0)).collect();
+
+    let (x0, y0, x1, y1) = ink_bounds(alpha, w, h);
+    let centre = crate::geom::Vec2::new((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let r = g.angle.to_radians();
+    // Screen y grows downward, so a positive angle reads counter-clockwise.
+    let dir = crate::geom::Vec2::new(r.cos(), -r.sin());
+    // How far the layer reaches along that direction.
+    let half = ((x1 - x0) * dir.x.abs() + (y1 - y0) * dir.y.abs()) / 2.0;
+    let len = (half * g.scale.max(0.01)).max(0.5);
+
+    let (a, b) = match g.kind {
+        // A linear ramp runs edge to edge; the rest measure out from the middle.
+        GradientKind::Linear => (
+            crate::geom::Vec2::new(centre.x - dir.x * len, centre.y - dir.y * len),
+            crate::geom::Vec2::new(centre.x + dir.x * len, centre.y + dir.y * len),
+        ),
+        _ => (
+            centre,
+            crate::geom::Vec2::new(centre.x + dir.x * len, centre.y + dir.y * len),
+        ),
+    };
+
+    let opacity = g.opacity.clamp(0.0, 1.0);
+    canvas.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let cov = alpha[i].clamp(0.0, 1.0);
+        if cov <= 0.0 {
+            return;
+        }
+        let p = crate::geom::Vec2::new((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+        let t = ramp.parameter(p, a, b).clamp(0.0, 1.0);
+        let c = lut[(t * 255.0).round() as usize];
+        let a_out = cov * opacity * (c.a as f32 / 255.0);
+        if a_out > 0.0 {
+            *px = composite(g.mode, *px, c.to_f32(), a_out);
+        }
+    });
+}
+
+/// Coverage of one repeating figure at a point in pattern space, where one
+/// unit is one cell. `aa` is the width of a pixel in that space, so the edges
+/// soften instead of aliasing when the cells are small.
+fn pattern_coverage(kind: PatternKind, x: f32, y: f32, aa: f32, seed: u64) -> f32 {
+    let edge = |v: f32| ((v / aa.max(1e-4)) + 0.5).clamp(0.0, 1.0);
+    let fract = |v: f32| v - v.floor();
+    match kind {
+        PatternKind::Checker => {
+            // Two smoothed square waves multiplied out to a checkerboard.
+            let sx = edge(0.5 - (fract(x * 0.5) - 0.5).abs() * 2.0 * 0.5 - 0.25);
+            let sy = edge(0.5 - (fract(y * 0.5) - 0.5).abs() * 2.0 * 0.5 - 0.25);
+            // XOR of the two halves.
+            sx + sy - 2.0 * sx * sy
+        }
+        PatternKind::Stripes => edge(0.5 - (fract(x) - 0.5).abs() * 2.0 * 0.5 - 0.25),
+        PatternKind::Dots => {
+            let (dx, dy) = (fract(x) - 0.5, fract(y) - 0.5);
+            edge(0.32 - (dx * dx + dy * dy).sqrt())
+        }
+        PatternKind::Grid => {
+            let lx = edge(0.08 - (fract(x) - 0.5).abs().min(fract(x)));
+            let ly = edge(0.08 - (fract(y) - 0.5).abs().min(fract(y)));
+            lx.max(ly)
+        }
+        PatternKind::CrossHatch => {
+            // Two sets of diagonal lines. The rotation keeps the spacing the
+            // same as the other patterns' cells rather than stretching it by
+            // root two.
+            const DIAG: f32 = std::f32::consts::FRAC_1_SQRT_2;
+            let a = edge(0.10 - (fract((x + y) * DIAG) - 0.5).abs());
+            let b = edge(0.10 - (fract((x - y) * DIAG) - 0.5).abs());
+            a.max(b)
+        }
+        PatternKind::Noise => {
+            // One value per cell, so the noise tiles with the pattern rather
+            // than shimmering per pixel.
+            let mut rng = crate::filters::plane::Rng::at(seed, x.floor() as i32, y.floor() as i32);
+            rng.next_f32()
+        }
+    }
+}
+
+/// A repeating figure over the layer, clipped to it.
+fn draw_pattern_overlay(canvas: &mut [Rgba], alpha: &Field, w: usize, o: &PatternOverlay) {
+    let scale = o.scale.max(1.0);
+    let r = o.angle.to_radians();
+    let (cos, sin) = (r.cos(), r.sin());
+    let opacity = o.opacity.clamp(0.0, 1.0);
+    // One pixel, measured in cells: the antialiasing width.
+    let aa = 1.0 / scale;
+
+    canvas.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let cov = alpha[i].clamp(0.0, 1.0);
+        if cov <= 0.0 {
+            return;
+        }
+        let (fx, fy) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+        // Into pattern space: rotate, then divide by the cell size.
+        let px_ = (fx * cos + fy * sin) / scale;
+        let py_ = (-fx * sin + fy * cos) / scale;
+        let t = pattern_coverage(o.kind, px_, py_, aa, o.seed);
+
+        // Mix the two colours, then composite the result once, so a
+        // transparent background lets the layer through.
+        let ink = o.color.to_f32();
+        let back = o.background.to_f32();
+        let mix = |a: f32, b: f32| b + (a - b) * t;
+        let out_a = mix(ink.a, back.a) * cov * opacity;
+        if out_a <= 0.0 {
+            return;
+        }
+        let c = Rgba::new(mix(ink.r, back.r), mix(ink.g, back.g), mix(ink.b, back.b), 1.0);
+        *px = composite(o.mode, *px, c, out_a);
+    });
 }
 
 /// Bevel and emboss: build a height map from the distance field, light it, and
@@ -893,6 +1166,141 @@ mod tests {
         let along: Vec<i32> = (20..90).map(|i| at(&r, i, i).r as i32).collect();
         let swing = along.iter().max().unwrap() - along.iter().min().unwrap();
         assert!(swing <= 6, "the centreline should be flat, but swung by {swing}: {along:?}");
+    }
+
+    /// The overlays are clipped to the layer and do not reach outside it, so
+    /// they must not change where the layer draws.
+    #[test]
+    fn the_overlays_add_no_reach() {
+        let mut fx = LayerEffects::new();
+        fx.gradient_overlay = Some(GradientOverlay::default());
+        fx.pattern_overlay = Some(PatternOverlay::default());
+        assert_eq!(padding(&fx), 0);
+        let r = render(&square(), &fx, 1.0).unwrap();
+        assert_eq!((r.pixels.width(), r.pixels.height()), (60, 60));
+        for (x, y) in [(5, 5), (55, 30), (30, 5)] {
+            assert_eq!(at(&r, x, y).a, 0, "an overlay leaked outside the layer at ({x}, {y})");
+        }
+    }
+
+    /// A linear gradient overlay should run across the layer, not sit flat.
+    #[test]
+    fn a_gradient_overlay_ramps_across_the_layer() {
+        let mut fx = LayerEffects::new();
+        fx.gradient_overlay = Some(GradientOverlay {
+            from: Rgba8::BLACK,
+            to: Rgba8::WHITE,
+            angle: 90.0,
+            opacity: 1.0,
+            ..Default::default()
+        });
+        let r = render(&square(), &fx, 1.0).unwrap();
+        // The square spans y 20..40; at 90 degrees the ramp runs up the page,
+        // so the bottom is the dark end.
+        let top = at(&r, 30, 22).r as i32;
+        let bottom = at(&r, 30, 38).r as i32;
+        assert!(
+            bottom < top - 100,
+            "the ramp should go dark at the bottom to light at the top, got {bottom} and {top}"
+        );
+
+        // Reversing it swaps the ends.
+        fx.gradient_overlay.as_mut().unwrap().reverse = true;
+        let r = render(&square(), &fx, 1.0).unwrap();
+        assert!(at(&r, 30, 38).r as i32 > at(&r, 30, 22).r as i32, "reverse should flip it");
+    }
+
+    /// A radial overlay is brightest at the middle, whichever way it is turned.
+    #[test]
+    fn a_radial_gradient_overlay_is_centred_on_the_layer() {
+        let mut fx = LayerEffects::new();
+        fx.gradient_overlay = Some(GradientOverlay {
+            from: Rgba8::WHITE,
+            to: Rgba8::BLACK,
+            kind: crate::fill::GradientKind::Radial,
+            opacity: 1.0,
+            ..Default::default()
+        });
+        let r = render(&square(), &fx, 1.0).unwrap();
+        let middle = at(&r, 30, 30).r as i32;
+        let corners =
+            [at(&r, 21, 21), at(&r, 38, 38), at(&r, 21, 38), at(&r, 38, 21)].map(|p| p.r as i32);
+        assert!(
+            corners.iter().all(|c| *c < middle - 40),
+            "the middle {middle} should be brighter than the corners {corners:?}"
+        );
+    }
+
+    /// A pattern has to actually repeat, or it is just a fill.
+    #[test]
+    fn a_pattern_overlay_repeats_and_varies() {
+        for kind in PatternKind::ALL {
+            let mut fx = LayerEffects::new();
+            fx.pattern_overlay = Some(PatternOverlay {
+                kind,
+                color: Rgba8::BLACK,
+                background: Rgba8::WHITE,
+                opacity: 1.0,
+                scale: 6.0,
+                ..Default::default()
+            });
+            let r = render(&square(), &fx, 1.0).unwrap();
+            // Sampled over an area, not a line: a row of dots can fall
+            // between two rows of the pattern and see nothing at all.
+            let patch: Vec<i32> =
+                (21..39).flat_map(|y| (21..39).map(move |x| (x, y))).map(|(x, y)| at(&r, x, y).r as i32).collect();
+            let swing = patch.iter().max().unwrap() - patch.iter().min().unwrap();
+            assert!(swing > 60, "{} did not repeat across the layer", kind.name());
+        }
+    }
+
+    /// A transparent background lets the layer show between the figures.
+    #[test]
+    fn a_pattern_with_no_background_leaves_the_layer_showing() {
+        let mut fx = LayerEffects::new();
+        fx.pattern_overlay = Some(PatternOverlay {
+            kind: PatternKind::Stripes,
+            color: Rgba8::opaque(255, 0, 0),
+            background: Rgba8::TRANSPARENT,
+            opacity: 1.0,
+            scale: 8.0,
+            ..Default::default()
+        });
+        let r = render(&square(), &fx, 1.0).unwrap();
+        let across: Vec<Rgba8> = (21..39).map(|x| at(&r, x, 30)).collect();
+        assert!(
+            across.iter().any(|p| p.r > 200 && p.g < 60),
+            "the stripes should paint their own colour"
+        );
+        assert!(
+            across.iter().any(|p| p.g > 150),
+            "and leave the layer showing between them: {across:?}"
+        );
+        assert!(across.iter().all(|p| p.a > 200), "the layer stays opaque throughout");
+    }
+
+    /// Pattern above gradient in the stack, so the pattern is what shows.
+    #[test]
+    fn the_pattern_overlay_sits_above_the_gradient() {
+        let mut fx = LayerEffects::new();
+        fx.gradient_overlay = Some(GradientOverlay {
+            from: Rgba8::opaque(0, 0, 255),
+            to: Rgba8::opaque(0, 0, 255),
+            opacity: 1.0,
+            ..Default::default()
+        });
+        fx.pattern_overlay = Some(PatternOverlay {
+            kind: PatternKind::Stripes,
+            color: Rgba8::opaque(255, 0, 0),
+            background: Rgba8::TRANSPARENT,
+            opacity: 1.0,
+            scale: 8.0,
+            ..Default::default()
+        });
+        let r = render(&square(), &fx, 1.0).unwrap();
+        let across: Vec<Rgba8> = (21..39).map(|x| at(&r, x, 30)).collect();
+        assert!(across.iter().any(|p| p.r > 200), "the pattern should show over the gradient");
+        assert!(across.iter().any(|p| p.b > 200), "and the gradient between its figures");
     }
 
     #[test]

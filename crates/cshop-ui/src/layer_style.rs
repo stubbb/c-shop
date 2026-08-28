@@ -20,12 +20,16 @@ enum Page {
     InnerGlow,
     Satin,
     ColorOverlay,
+    GradientOverlay,
+    PatternOverlay,
     Stroke,
 }
 
 /// Listed the way they stack, topmost effect first.
 const PAGES: &[(Page, &str)] = &[
     (Page::Stroke, "Stroke"),
+    (Page::PatternOverlay, "Pattern Overlay"),
+    (Page::GradientOverlay, "Gradient Overlay"),
     (Page::ColorOverlay, "Color Overlay"),
     (Page::Satin, "Satin"),
     (Page::InnerGlow, "Inner Glow"),
@@ -226,6 +230,16 @@ impl LayerStyleDialog {
                     color_row(ui, "Color:", &mut o.color);
                 }
             }
+            Page::GradientOverlay => {
+                if let Some(g) = self.effects.gradient_overlay.as_mut() {
+                    gradient_ui(ui, g);
+                }
+            }
+            Page::PatternOverlay => {
+                if let Some(o) = self.effects.pattern_overlay.as_mut() {
+                    pattern_ui(ui, o);
+                }
+            }
             Page::Stroke => {
                 if let Some(s) = self.effects.stroke.as_mut() {
                     row(ui, "Size:", |ui| {
@@ -257,6 +271,8 @@ fn is_on(fx: &LayerEffects, page: Page) -> bool {
         Page::InnerGlow => fx.inner_glow.is_some(),
         Page::Satin => fx.satin.is_some(),
         Page::ColorOverlay => fx.color_overlay.is_some(),
+        Page::GradientOverlay => fx.gradient_overlay.is_some(),
+        Page::PatternOverlay => fx.pattern_overlay.is_some(),
         Page::Stroke => fx.stroke.is_some(),
     }
 }
@@ -276,6 +292,8 @@ fn set_on(fx: &mut LayerEffects, page: Page, on: bool) {
         }
         Page::Satin => fx.satin = on.then(Satin::default),
         Page::ColorOverlay => fx.color_overlay = on.then(ColorOverlay::default),
+        Page::GradientOverlay => fx.gradient_overlay = on.then(GradientOverlay::default),
+        Page::PatternOverlay => fx.pattern_overlay = on.then(PatternOverlay::default),
         Page::Stroke => fx.stroke = on.then(Stroke::default),
     }
 }
@@ -412,6 +430,92 @@ fn bevel_ui(ui: &mut egui::Ui, b: &mut Bevel) {
         ui.add(percent(&mut b.shadow_opacity));
     });
     color_row(ui, "  Colour:", &mut b.shadow);
+}
+
+fn gradient_ui(ui: &mut egui::Ui, g: &mut GradientOverlay) {
+    use cshop_core::fill::GradientKind;
+    blend_row(ui, &mut g.mode, &mut g.opacity, "gradient-overlay");
+    row(ui, "From:", |ui| {
+        let mut a = [g.from.r, g.from.g, g.from.b];
+        if ui.color_edit_button_srgb(&mut a).changed() {
+            g.from = Rgba8::new(a[0], a[1], a[2], g.from.a);
+        }
+        ui.label("To:");
+        let mut b = [g.to.r, g.to.g, g.to.b];
+        if ui.color_edit_button_srgb(&mut b).changed() {
+            g.to = Rgba8::new(b[0], b[1], b[2], g.to.a);
+        }
+        ui.checkbox(&mut g.reverse, "Reverse");
+    });
+    row(ui, "Style:", |ui| {
+        egui::ComboBox::from_id_salt("gradient-overlay-kind")
+            .selected_text(g.kind.name())
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for kind in [
+                    GradientKind::Linear,
+                    GradientKind::Radial,
+                    GradientKind::Angle,
+                    GradientKind::Reflected,
+                    GradientKind::Diamond,
+                ] {
+                    ui.selectable_value(&mut g.kind, kind, kind.name());
+                }
+            });
+    });
+    row(ui, "Angle:", |ui| {
+        angle_drag(ui, &mut g.angle);
+    });
+    row(ui, "Scale:", |ui| {
+        ui.add(
+            egui::DragValue::new(&mut g.scale)
+                .range(0.05..=4.0)
+                .speed(0.005)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        );
+    });
+}
+
+fn pattern_ui(ui: &mut egui::Ui, o: &mut PatternOverlay) {
+    blend_row(ui, &mut o.mode, &mut o.opacity, "pattern-overlay");
+    row(ui, "Pattern:", |ui| {
+        egui::ComboBox::from_id_salt("pattern-overlay-kind")
+            .selected_text(o.kind.name())
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for kind in PatternKind::ALL {
+                    ui.selectable_value(&mut o.kind, kind, kind.name());
+                }
+            });
+    });
+    color_row(ui, "Color:", &mut o.color);
+    row(ui, "Behind:", |ui| {
+        // The background can be transparent, which lets the layer show
+        // between the figures; a plain colour button cannot say that, so the
+        // alpha is its own control.
+        let mut rgb = [o.background.r, o.background.g, o.background.b];
+        if ui.color_edit_button_srgb(&mut rgb).changed() {
+            o.background = Rgba8::new(rgb[0], rgb[1], rgb[2], o.background.a);
+        }
+        let mut a = o.background.a as f32 / 255.0;
+        if ui.add(percent(&mut a)).changed() {
+            o.background.a = (a * 255.0).round() as u8;
+        }
+    });
+    row(ui, "Scale:", |ui| {
+        ui.add(px_drag(&mut o.scale, 2.0..=400.0));
+    });
+    row(ui, "Angle:", |ui| {
+        angle_drag(ui, &mut o.angle);
+    });
+    if o.kind == PatternKind::Noise {
+        row(ui, "Seed:", |ui| {
+            let mut seed = o.seed as f32;
+            if ui.add(egui::DragValue::new(&mut seed).range(0.0..=9999.0).speed(1.0)).changed() {
+                o.seed = seed as u64;
+            }
+        });
+    }
 }
 
 fn satin_ui(ui: &mut egui::Ui, s: &mut Satin) {

@@ -27,7 +27,7 @@ fn word() -> PixelBuffer {
 
 fn main() {
     let base = word();
-    let mut sheet = PixelBuffer::filled(1240, 780, Rgba8::new(0, 0, 0, 0));
+    let mut sheet = PixelBuffer::filled(1240, 1300, Rgba8::new(0, 0, 0, 0));
 
     let mut cases: Vec<(&str, LayerEffects)> = Vec::new();
     let mut fx = LayerEffects::new();
@@ -70,6 +70,78 @@ fn main() {
     let mut fx = LayerEffects::new();
     fx.stroke = Some(Stroke { size: 4.0, ..Default::default() });
     cases.push(("Stroke", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.gradient_overlay = Some(GradientOverlay {
+        from: Rgba8::opaque(250, 190, 60),
+        to: Rgba8::opaque(210, 60, 120),
+        angle: 90.0,
+        ..Default::default()
+    });
+    cases.push(("Gradient Overlay", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.gradient_overlay = Some(GradientOverlay {
+        from: Rgba8::opaque(90, 220, 255),
+        to: Rgba8::opaque(20, 40, 120),
+        kind: cshop_core::fill::GradientKind::Radial,
+        ..Default::default()
+    });
+    cases.push(("Gradient (radial)", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::Checker,
+        scale: 12.0,
+        opacity: 0.6,
+        ..Default::default()
+    });
+    cases.push(("Pattern (checker)", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::Stripes,
+        scale: 10.0,
+        angle: 45.0,
+        opacity: 0.55,
+        ..Default::default()
+    });
+    cases.push(("Pattern (stripes)", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::Dots,
+        scale: 14.0,
+        opacity: 0.7,
+        ..Default::default()
+    });
+    cases.push(("Pattern (dots)", fx));
+
+    let mut fx = LayerEffects::new();
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::CrossHatch,
+        scale: 12.0,
+        opacity: 0.6,
+        ..Default::default()
+    });
+    cases.push(("Pattern (hatch)", fx));
+
+    // A gradient under a pattern, which is how the two are usually stacked.
+    let mut fx = LayerEffects::new();
+    fx.gradient_overlay = Some(GradientOverlay {
+        from: Rgba8::opaque(255, 200, 90),
+        to: Rgba8::opaque(180, 40, 70),
+        ..Default::default()
+    });
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::Grid,
+        scale: 9.0,
+        color: Rgba8::opaque(255, 255, 255),
+        opacity: 0.35,
+        ..Default::default()
+    });
+    fx.bevel = Some(Bevel { size: 6.0, depth: 1.2, ..Default::default() });
+    cases.push(("Gradient + pattern", fx));
 
     // Stroke only: fill opacity to zero leaves the effects behind.
     let mut fx = LayerEffects::new();

@@ -143,12 +143,23 @@ fn the_panel_lists_the_effects_that_are_on() {
     fx.drop_shadow = Some(Shadow::default());
     fx.stroke = Some(Stroke::default());
     fx.bevel = Some(Bevel::default());
+    fx.gradient_overlay = Some(GradientOverlay::default());
+    fx.pattern_overlay = Some(PatternOverlay::default());
     // Listed top-first, the order they stack in.
-    assert_eq!(fx.active_names(), vec!["Stroke", "Bevel & Emboss", "Drop Shadow"]);
+    assert_eq!(
+        fx.active_names(),
+        vec![
+            "Stroke",
+            "Pattern Overlay",
+            "Gradient Overlay",
+            "Bevel & Emboss",
+            "Drop Shadow"
+        ]
+    );
 
     fx.enabled = false;
     assert!(!fx.any(), "the whole set can be switched off without losing it");
-    assert_eq!(fx.active_names().len(), 3, "and the settings are still there");
+    assert_eq!(fx.active_names().len(), 5, "and the settings are still there");
 }
 
 /// Effects need pixels, so the kinds that have none should say so rather than

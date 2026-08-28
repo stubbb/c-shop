@@ -706,8 +706,20 @@ pub fn build_effects_demo(app: &mut CShopApp) {
 
     let id = draw(app, ShapeKind::Rectangle { radius: 8.0 }, grey, (640.0, 50.0), (800.0, 160.0));
     let mut fx = LayerEffects::new();
+    fx.gradient_overlay = Some(GradientOverlay {
+        from: Rgba8::opaque(90, 220, 255),
+        to: Rgba8::opaque(30, 60, 150),
+        angle: 90.0,
+        ..Default::default()
+    });
+    fx.pattern_overlay = Some(PatternOverlay {
+        kind: PatternKind::Grid,
+        scale: 10.0,
+        color: Rgba8::opaque(255, 255, 255),
+        opacity: 0.3,
+        ..Default::default()
+    });
     fx.bevel = Some(Bevel { style: BevelStyle::Pillow, size: 12.0, depth: 1.5, ..Default::default() });
-    fx.satin = Some(Satin::default());
     style(app, id, fx);
 
     // Type with a full style, and a stroke-only layer beside it.
