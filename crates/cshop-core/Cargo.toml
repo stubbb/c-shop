@@ -1,0 +1,15 @@
+[package]
+name = "cshop-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }
+rayon = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+ahash = { workspace = true }
+ab_glyph = { workspace = true }
+ttf-parser = { workspace = true }

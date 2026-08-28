@@ -1,0 +1,19 @@
+[package]
+name = "cshop-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cshop-core = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }
+pollster = { workspace = true }
+thiserror = { workspace = true }
+ahash = { workspace = true }
+half = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

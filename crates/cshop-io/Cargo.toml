@@ -1,0 +1,12 @@
+[package]
+name = "cshop-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cshop-core = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

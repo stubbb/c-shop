@@ -1,0 +1,24 @@
+[package]
+name = "cshop-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cshop"
+path = "src/main.rs"
+
+[dependencies]
+cshop-core = { workspace = true }
+cshop-gpu = { workspace = true }
+cshop-io = { workspace = true }
+cshop-ui = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+pollster = { workspace = true }

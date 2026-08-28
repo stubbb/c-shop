@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Offscreen renders produced by --screenshot while working.
+/*.png
+!/docs/*.png

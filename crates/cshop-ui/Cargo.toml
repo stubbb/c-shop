@@ -1,0 +1,19 @@
+[package]
+name = "cshop-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cshop-core = { workspace = true }
+cshop-gpu = { workspace = true }
+cshop-io = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+log = { workspace = true }
+ahash = { workspace = true }
+
+[dev-dependencies]
+cshop-io = { workspace = true }

@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cshop-core",
+    "crates/cshop-gpu",
+    "crates/cshop-io",
+    "crates/cshop-ui",
+    "crates/cshop-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["C-Shop contributors"]
+
+[workspace.dependencies]
+cshop-core = { path = "crates/cshop-core" }
+cshop-gpu  = { path = "crates/cshop-gpu" }
+cshop-io   = { path = "crates/cshop-io" }
+cshop-ui   = { path = "crates/cshop-ui" }
+
+wgpu        = "30.0"
+winit       = "0.30.13"
+egui        = "0.36.1"
+egui-wgpu   = "0.36.1"
+egui-winit  = { version = "0.36.1", default-features = false, features = ["links", "x11", "wayland"] }
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga", "gif", "webp", "tiff", "ico"] }
+bytemuck    = { version = "1.25", features = ["derive"] }
+rayon       = "1.12"
+pollster    = "1.0"
+log         = "0.4"
+env_logger  = "0.11"
+half        = { version = "2.7", features = ["bytemuck"] }
+thiserror   = "2.0"
+ahash       = "0.8"
+ab_glyph    = "0.2.32"
+ttf-parser  = "0.25"
+
+[profile.dev]
+opt-level = 1
+
+# Pixel-pushing code is unusable at -O0 even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "abort"
