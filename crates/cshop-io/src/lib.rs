@@ -7,7 +7,10 @@
 //! hand-written reader and writer in a later phase; this module covers the
 //! flat formats.
 
+pub mod bytes;
 pub mod format;
+pub mod project;
+pub mod psd;
 
 use cshop_core::color::Rgba8;
 use cshop_core::pixels::PixelBuffer;
@@ -25,6 +28,12 @@ pub enum IoError {
     Unsupported(String),
     #[error("image is {0}x{1}, which exceeds the {2} pixel limit")]
     TooLarge(u32, u32, u32),
+    /// The file's own structure is wrong: truncated, mis-signed, or claiming
+    /// something inconsistent. Kept separate from `Decode` so a corrupt
+    /// project file can be reported differently from an image the decoder
+    /// merely did not like.
+    #[error("this file is damaged or not what it claims to be: {0}")]
+    Malformed(String),
 }
 
 /// Refuses anything larger than this in either dimension.
@@ -33,6 +42,75 @@ pub enum IoError {
 /// gigantic size and provoking a multi-gigabyte allocation before decoding
 /// even starts.
 pub const MAX_DIMENSION: u32 = 65_536;
+
+/// Load a layered document: a project, a PSD, or any flat image as a single
+/// layer.
+///
+/// Which one it is comes from the file's own bytes where they say so, and from
+/// the extension otherwise — a project renamed to `.png` still opens.
+pub fn load_document(path: &std::path::Path) -> Result<cshop_core::document::Document, IoError> {
+    let bytes = std::fs::read(path)?;
+    let mut doc = decode_document(&bytes, Some(path))?;
+    doc.name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| doc.name.clone());
+    doc.path = Some(path.to_path_buf());
+    Ok(doc)
+}
+
+/// Decode a layered document from memory.
+pub fn decode_document(
+    bytes: &[u8],
+    hint: Option<&std::path::Path>,
+) -> Result<cshop_core::document::Document, IoError> {
+    if bytes.starts_with(b"CSHOP\0") {
+        return project::read(bytes);
+    }
+    if bytes.starts_with(b"8BPS") {
+        return psd::read(bytes);
+    }
+    // Not layered: one image becomes one background layer.
+    let pixels = decode(bytes, hint)?;
+    let (w, h) = (pixels.width(), pixels.height());
+    let mut doc = cshop_core::document::Document::new(
+        "Untitled",
+        w,
+        h,
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+    let id = doc.tree.alloc_id();
+    let mut layer = cshop_core::layer::Layer::raster(id, "Background", pixels);
+    layer.is_background = true;
+    doc.tree.push(layer, None);
+    doc.active = doc.tree.root().last().copied();
+    doc.selected_layers = doc.active.into_iter().collect();
+    doc.modified = false;
+    Ok(doc)
+}
+
+/// Write a layered document. `composite` is the flattened image, which PSD
+/// carries so other programs can show something without reading layers.
+pub fn save_document(
+    path: &std::path::Path,
+    doc: &cshop_core::document::Document,
+    composite: &PixelBuffer,
+) -> Result<(), IoError> {
+    let format = ImageFormat::from_path(path)
+        .ok_or_else(|| IoError::Unsupported(path.display().to_string()))?;
+    let bytes = match format {
+        ImageFormat::Cshop => project::write(doc),
+        ImageFormat::Psd => psd::write(doc, composite)?,
+        // Everything else is flat, so only the composite goes out.
+        other => {
+            let _ = other;
+            return save(path, composite, 92);
+        }
+    };
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
 
 /// Decode an image file into a pixel buffer.
 ///

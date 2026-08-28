@@ -501,6 +501,7 @@ dependencies = [
  "cshop-core",
  "image",
  "log",
+ "miniz_oxide",
  "thiserror 2.0.20",
 ]
 

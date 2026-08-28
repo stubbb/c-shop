@@ -166,6 +166,27 @@ A stroke that changed nothing never becomes a history entry, which is what
 tells you the clone stamp's source has wandered off the canvas instead of
 leaving an "undo" that undoes nothing.
 
+## The project format is written by hand
+
+A derive-based encoding ties the file layout to the *order* of fields and enum
+variants, so reordering a struct silently changes the format and corrupts every
+file already written. Documents outlive the code that wrote them, so `.cshop`
+is spelled out byte by byte in `cshop-io/src/project.rs`, where changing the
+layout is a deliberate act rather than a side effect of tidying a struct.
+
+The file is a short header followed by tagged chunks, so a reader skips what it
+does not recognise: a newer file loses only the parts an older build has no
+idea about instead of failing outright. Pixel and mask data are deflated;
+everything else is small enough not to matter.
+
+PSD is a different problem — the layout is someone else's and fixed. The part
+worth knowing is that it has no nesting: layers are a flat list stored bottom
+to top, and a group is a pair of marker entries around its children, a bounding
+divider below and a header carrying the name above. Reading walks bottom to top
+opening a scope at one and closing it at the other; writing emits the same
+pair. Channels are PackBits run-length encoded, one plane per channel, with the
+per-row byte counts ahead of the data.
+
 ## Testing what usually goes untested
 
 Three classes of bug kept getting through ordinary unit tests, so each has its

@@ -37,6 +37,7 @@ thiserror   = "2.0"
 ahash       = "0.8"
 ab_glyph    = "0.2.32"
 ttf-parser  = "0.25"
+miniz_oxide = "0.8"
 
 [profile.dev]
 opt-level = 1

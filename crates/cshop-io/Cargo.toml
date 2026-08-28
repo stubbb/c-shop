@@ -10,3 +10,4 @@ cshop-core = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+miniz_oxide = { workspace = true }

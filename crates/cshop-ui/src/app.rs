@@ -1365,17 +1365,18 @@ impl CShopApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
-        match cshop_io::load(&path) {
-            Ok(pixels) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Untitled".into());
-                let (w, h) = (pixels.width(), pixels.height());
-                let mut doc = Document::from_image(name.clone(), pixels);
-                doc.path = Some(path);
+        // A project or a PSD arrives with its layers; anything else becomes a
+        // single background layer, which `load_document` also handles.
+        match cshop_io::load_document(&path) {
+            Ok(doc) => {
+                let (name, w, h) = (doc.name.clone(), doc.width, doc.height);
+                let layers = doc.tree.len();
                 self.add_document(doc, "Open");
-                self.notify(format!("Opened {name} ({w} x {h})"));
+                if layers > 1 {
+                    self.notify(format!("Opened {name} ({w} x {h}, {layers} layers)"));
+                } else {
+                    self.notify(format!("Opened {name} ({w} x {h})"));
+                }
             }
             Err(e) => self.fail(format!("Could not open {}: {e}", path.display())),
         }
@@ -1393,16 +1394,34 @@ impl CShopApp {
             view.read_composite(&gpu)
         };
 
-        match cshop_io::save(&path, &pixels, 92) {
+        // A layered format saves the document itself; a flat one gets the
+        // composite. `save_document` decides from the extension.
+        let result = {
+            let view = &self.docs[i];
+            cshop_io::save_document(&path, &view.doc, &pixels)
+        };
+        match result {
             Ok(()) => {
+                let layered = cshop_io::ImageFormat::from_path(&path)
+                    .is_some_and(|f| f.is_layered());
                 let view = &mut self.docs[i];
+                let layers = view.doc.tree.len();
                 view.doc.modified = false;
                 view.doc.path = Some(path.clone());
                 if let Some(name) = path.file_name() {
                     view.doc.name = name.to_string_lossy().to_string();
                 }
-                let name = view.doc.name.clone();
-                self.notify(format!("Saved {name}"));
+                let shown = view.doc.name.clone();
+                // A flat format keeps the composite and nothing else. Saying
+                // so is the difference between an export and quietly losing
+                // the stack the next time this file is opened.
+                if !layered && layers > 1 {
+                    self.notify(format!(
+                        "Saved {shown} — flattened. Save as .cshop or .psd to keep the {layers} layers."
+                    ));
+                } else {
+                    self.notify(format!("Saved {shown}"));
+                }
             }
             Err(e) => self.fail(format!("Could not save {}: {e}", path.display())),
         }

@@ -12,9 +12,9 @@ pub enum ImageFormat {
     WebP,
     Tga,
     Ico,
-    /// C-Shop's own layered format. Reading and writing land with the PSD work.
+    /// C-Shop's own layered format: the whole document, still editable.
     Cshop,
-    /// Layered PSD document. Reading and writing land in a later phase.
+    /// Layered PSD document.
     Psd,
 }
 
@@ -28,9 +28,25 @@ impl ImageFormat {
         ImageFormat::Tga,
     ];
 
+    /// Formats the Save dialog offers.
+    ///
+    /// Wider than [`ImageFormat::WRITABLE`]: the layered formats keep the
+    /// document rather than a flat image, so they go out through
+    /// [`crate::save_document`] instead of the encoder.
+    pub const SAVEABLE: &'static [ImageFormat] = &[
+        ImageFormat::Cshop,
+        ImageFormat::Psd,
+        ImageFormat::Png,
+        ImageFormat::Jpeg,
+        ImageFormat::Bmp,
+        ImageFormat::Tiff,
+        ImageFormat::Tga,
+    ];
+
     /// Extensions the Open dialog offers, lowercase and without the dot.
     pub const OPENABLE_EXTENSIONS: &'static [&'static str] = &[
-        "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp", "tga", "ico",
+        "cshop", "csd", "psd", "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp",
+        "tga", "ico",
     ];
 
     pub fn from_extension(ext: &str) -> Option<ImageFormat> {
@@ -43,7 +59,7 @@ impl ImageFormat {
             "webp" => ImageFormat::WebP,
             "tga" => ImageFormat::Tga,
             "ico" => ImageFormat::Ico,
-            "csd" => ImageFormat::Cshop,
+            "cshop" | "csd" => ImageFormat::Cshop,
             "psd" => ImageFormat::Psd,
             _ => return None,
         })
@@ -88,7 +104,7 @@ impl ImageFormat {
             ImageFormat::WebP => "webp",
             ImageFormat::Tga => "tga",
             ImageFormat::Ico => "ico",
-            ImageFormat::Cshop => "csd",
+            ImageFormat::Cshop => "cshop",
             ImageFormat::Psd => "psd",
         }
     }

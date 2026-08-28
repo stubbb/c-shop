@@ -924,7 +924,7 @@ impl FileBrowser {
                     .width(160.0)
                     .selected_text(self.format.display_name())
                     .show_ui(ui, |ui| {
-                        for f in ImageFormat::WRITABLE {
+                        for f in ImageFormat::SAVEABLE {
                             ui.selectable_value(&mut self.format, *f, f.display_name());
                         }
                     });

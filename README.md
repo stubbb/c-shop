@@ -77,7 +77,12 @@ constrains, Alt works from the centre and Ctrl pulls a corner into a true
 perspective distort. Fixed rotations and flips, Crop with aspect presets, Image
 Size with four resampling filters, Canvas Size with a nine-way anchor.
 
-**Files.** Open and save PNG, JPEG, BMP, TIFF, TGA, GIF, WebP and ICO.
+**Files.** A native layered project format, `.cshop`, that keeps the whole
+document — the layer tree, groups, masks, adjustment settings, live type and
+shape descriptions, effects and saved channels — still editable when reopened.
+**PSD** import and export carries layers, groups, masks, opacity, blend modes,
+clipping and visibility both ways, plus the flattened composite other programs
+read. Flat formats: PNG, JPEG, BMP, TIFF, TGA, GIF, WebP and ICO.
 
 ## Build and run
 
@@ -142,7 +147,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-544 tests, and the interesting ones are not unit tests:
+560 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -154,6 +159,10 @@ avoid special-casing everything downstream.
 - **Offscreen rendering.** The `--screenshot` path exercises the identical
   egui and compositor pipeline as the window, so the interface can be looked
   at in CI.
+- **Round trips and damaged files.** Both layered formats are written and read
+  back and compared property by property, and both are fed truncated and
+  bit-flipped versions of their own output — which must be refused, never
+  crash.
 
 ```sh
 cargo test --workspace
@@ -162,9 +171,11 @@ cargo clippy --workspace --all-targets
 
 ## Not there yet
 
-A layered project format, PSD import, clipboard commands, custom pattern tiles
-loaded from an image (the pattern overlay draws six generated figures), boolean
-shape combining, and selecting a range within a text layer.
+Clipboard commands, custom pattern tiles loaded from an image (the pattern
+overlay draws six generated figures), boolean shape combining, and selecting a
+range within a text layer. PSD carries layers as raster: type and shapes are
+flattened on the way out and 16-bit and CMYK files are refused rather than
+misread.
 The toolbar is complete: every tool it shows is implemented.
 
 ## Licence
