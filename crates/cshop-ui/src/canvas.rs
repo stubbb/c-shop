@@ -462,6 +462,12 @@ fn interact(
 ) {
     let Some(index) = app.active else { return };
 
+    // A dialog that is not modal — the Layer Style window, which the user can
+    // push aside to watch the canvas — leaves clicks reaching the tools. The
+    // canvas may still be scrolled and zoomed to look at the preview, but a
+    // stray click must not paint on it.
+    let dialog_open = app.dialog.is_open();
+
     // --- scroll and zoom ---------------------------------------------------
     if response.hovered() {
         let (scroll, zoom_delta, modifiers) = ui.input(|i| {
@@ -506,6 +512,10 @@ fn interact(
             let zoom = app.docs[index].zoom;
             app.docs[index].center -= response.drag_delta() / zoom;
         }
+        return;
+    }
+
+    if dialog_open {
         return;
     }
 

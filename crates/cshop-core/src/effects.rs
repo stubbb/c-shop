@@ -110,7 +110,9 @@ impl Default for Shadow {
             angle: 120.0,
             use_global_light: true,
             distance: 8.0,
-            spread: 0.0,
+            // A little spread reads as a shadow rather than a smudge; a pure
+            // blur at these sizes looks weaker than people expect.
+            spread: 0.05,
             size: 8.0,
         }
     }

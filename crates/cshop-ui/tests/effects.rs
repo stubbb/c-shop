@@ -213,3 +213,50 @@ fn editing_a_styled_layer_dirties_the_area_the_effect_reaches() {
         );
     }
 }
+
+/// The Layer Style window is not modal — it can be pushed aside to watch the
+/// canvas — so nothing else blocks clicks from reaching the tools. A stray
+/// click on the canvas must not paint while it is open.
+#[test]
+fn a_click_on_the_canvas_does_not_paint_while_a_dialog_is_open() {
+    let Some((mut h, id)) = ready() else { return };
+    h.app.tool = cshop_ui::tools::Tool::Brush;
+    h.app.foreground = Rgba8::opaque(255, 0, 0);
+    h.app.brush.size = 20.0;
+    h.app.brush.hardness = 1.0;
+
+    h.app.dispatch(Action::ShowLayerStyle);
+    h.settle(2);
+    assert!(h.app.dialog.is_open(), "the Layer Style window should be open");
+
+    let before = h
+        .app
+        .doc()
+        .and_then(|v| v.doc.tree.get(id))
+        .and_then(|l| l.pixels())
+        .map(|p| p.get(100, 100));
+    let at = h.doc_to_screen(100.0, 100.0).expect("a visible canvas");
+    h.click(at);
+    h.settle(2);
+
+    let after = h
+        .app
+        .doc()
+        .and_then(|v| v.doc.tree.get(id))
+        .and_then(|l| l.pixels())
+        .map(|p| p.get(100, 100));
+    assert_eq!(after, before, "the click should not have reached the brush");
+    assert!(
+        !h.app.doc().unwrap().history.labels().iter().any(|l| l.contains("Brush")),
+        "and left no stroke in the history"
+    );
+}
+
+/// A pure blur reads as a smudge at these sizes, so shadows start with a
+/// little spread.
+#[test]
+fn a_drop_shadow_starts_with_some_spread() {
+    let s = Shadow::default();
+    assert!(s.spread > 0.0, "the default shadow should have some spread, got {}", s.spread);
+    assert!((s.spread - 0.05).abs() < 1e-6);
+}

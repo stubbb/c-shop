@@ -397,13 +397,15 @@ impl CShopApp {
         // room; everything else is a column of fields.
         let max_width = if matches!(dialog, Dialog::Filter(_)) { 780.0 } else { 620.0 };
 
-        egui::Modal::new(egui::Id::new("modal"))
-            .frame(frame)
-            .backdrop_color(egui::Color32::from_black_alpha(150))
-            .show(ctx, |ui| {
+        // The Layer Style dialog applies as it goes, so the canvas is its
+        // preview — which is no use behind a dimmed modal sitting over the
+        // middle of it. That one gets a window the user can push aside; the
+        // rest stay modal.
+        let movable = matches!(dialog, Dialog::LayerStyle(_));
+
+        let gpu = self.gpu.clone();
+        let mut body = |ui: &mut egui::Ui| {
             ui.set_max_width(max_width);
-            ui.heading(title);
-            ui.add_space(8.0);
             match &mut dialog {
                 Dialog::NewDocument(d) => close = d.ui(ui, &mut actions),
                 Dialog::FileBrowser(b) => close = b.ui(ui, &mut actions),
@@ -421,8 +423,8 @@ impl CShopApp {
                     ui.label(
                         egui::RichText::new(format!(
                             "Renderer: {} ({:?})",
-                            self.gpu.adapter_name(),
-                            self.gpu.adapter.get_info().backend
+                            gpu.adapter_name(),
+                            gpu.adapter.get_info().backend
                         ))
                         .color(Palette::DARK.text_dim)
                         .small(),
@@ -432,12 +434,33 @@ impl CShopApp {
                         close = true;
                     }
                 }
-                Dialog::None => close = true,
+                Dialog::None => {}
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                close = true;
-            }
-        });
+        };
+
+        if movable {
+            egui::Window::new(title)
+                // A fixed id, so dragging it somewhere keeps it there across
+                // frames and across openings.
+                .id(egui::Id::new("layer-style-window"))
+                .frame(frame)
+                .collapsible(false)
+                .resizable(false)
+                .constrain(true)
+                // Out of the middle of the canvas to begin with, since the
+                // point is to watch what the effects do.
+                .default_pos(egui::pos2(60.0, 90.0))
+                .show(ctx, |ui| body(ui));
+        } else {
+            egui::Modal::new(egui::Id::new("modal"))
+                .frame(frame)
+                .backdrop_color(egui::Color32::from_black_alpha(150))
+                .show(ctx, |ui| {
+                    ui.heading(title);
+                    ui.add_space(8.0);
+                    body(ui);
+                });
+        }
 
         if !close {
             self.dialog = dialog;
