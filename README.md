@@ -4,6 +4,11 @@ A native, GPU-accelerated, layer-based image editor. No browser, no Electron,
 no web view — a real desktop binary that composites on the GPU and is on screen
 in about 400 ms.
 
+It also has an **agentic harness**: the same editor drives from a script with
+no window at all, so something that cannot see a canvas or click a button can
+still edit images with it — placing type from measurements and reading back a
+report of what it drew.
+
 ![C-Shop](docs/screenshot.png)
 
 ## Status
