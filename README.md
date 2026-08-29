@@ -146,9 +146,9 @@ applied to anything: `style pencil-sketch blur=60`.
 examples of an agent taking a photograph from an instruction to a finished
 image.
 
-| | | |
-|---|---|---|
-| ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) | ![Pencil sketch](docs/example-sketch-after.jpg) |
+| | | | |
+|---|---|---|---|
+| ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) | ![Pencil sketch](docs/example-sketch-after.jpg) | ![Coloured pencil](docs/example-coloured-after.jpg) |
 
 ## Interface
 
@@ -187,7 +187,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-593 tests, and the interesting ones are not unit tests:
+597 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

@@ -70,6 +70,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 |---|---|
 | `new W H [background=]` | Start a document. Background is `white`, `transparent` or a colour. |
 | `open PATH` | Open an image, a `.psd` or a `.cshop` project, with its layers. |
+| `place [PATH]` | Bring an image in as a layer above the active one, `x=` `y=`. With no path it re-places the file the document was opened from. |
 | `text X Y "..."` | A type layer, its baseline starting at X Y. `size= color= family= bold italic align= leading= tracking= wrap=` |
 | `measure text "..."` | Report the size the same options would draw, without drawing it. |
 | `shape KIND X Y W H` | `rect ellipse polygon star line`. `fill= stroke= stroke-width= stroke-align= radius= sides= inner= thickness=` |
@@ -247,13 +248,17 @@ to the line of the file it came from.
 Styles compose. The worked example below applies one to a photograph and
 another to the type on top of it.
 
-### The two that ship
+### The three that ship
 
-`pencil-sketch` turns a photograph into bright graphite on white paper, and
-`pencil-lettering` makes type look drawn rather than typeset. Both are in
-[`styles/`](../styles) with their reasoning written down.
+`pencil-sketch` turns a photograph into bright graphite on white paper,
+`coloured-pencil` lays its own colour back over that, and `pencil-lettering`
+makes type look drawn rather than typeset. All three are in
+[`styles/`](../styles) with their reasoning written down, and they compose.
 
-![Pencil sketch](example-sketch-after.jpg)
+| | |
+|---|---|
+| ![Pencil sketch](example-sketch-after.jpg) | ![Coloured pencil](example-coloured-after.jpg) |
+| `pencil-sketch` + `pencil-lettering` | `coloured-pencil`, lettered in a script face |
 
 The sketch is the old darkroom trick done in layers: desaturate, take a copy,
 invert it, blur it, and colour-dodge it back over the original. Dodge divides
@@ -264,7 +269,22 @@ pencil: small is a hard line, large a soft shaded stroke. `contrast` lifts the
 paper to white and pushes the strokes toward black, which is what "bright" is
 made of.
 
-Two things that cost a round of rework and are worth knowing:
+`coloured-pencil` then lays the photograph back over its own drawing with
+**Color** blending, which takes hue and saturation from the top layer and
+lightness from what is underneath — so the paper stays paper and the strokes
+pick up the subject's own greens. It calls `pencil-sketch` with a *lower*
+contrast than the graphite look uses, and that is the part worth knowing:
+colour blending keeps the backdrop's lightness, so a sketch pushed all the way
+to white paper leaves colour nowhere to live. There is no such thing as a
+saturated green at 98% lightness. Turning the contrast up makes the drawing
+brighter and the colour weaker at the same time.
+
+The other order — the sketch on top in **Luminosity** — is the same result at
+full opacity, because the two modes are duals. They differ only in what partial
+opacity mixes toward: Color fades toward the grey drawing, Luminosity toward
+the untouched photograph.
+
+Three things that cost a round of rework and are worth knowing:
 
 **Pixel figures are relative to the image, not the picture.** `blur=12` was
 tuned on a fifth-scale copy; the full-size render needed `blur=60` to look the

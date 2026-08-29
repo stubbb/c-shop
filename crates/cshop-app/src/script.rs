@@ -510,6 +510,7 @@ impl Runner {
         match cmd.name.as_str() {
             "new" => self.cmd_new(cmd),
             "open" => self.cmd_open(cmd),
+            "place" => self.cmd_place(cmd),
             "text" => self.cmd_text(cmd),
             "measure" => self.cmd_measure(cmd),
             "shape" => self.cmd_shape(cmd),
@@ -528,8 +529,8 @@ impl Runner {
             "export" | "save" => self.cmd_write(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
-                 select, gradient, style, effect, filter, adjust, layer, set, move, order, \
-                 info, export, save"
+                 place, select, gradient, style, effect, filter, adjust, layer, set, move, \
+                 order, info, export, save"
             )),
         }
     }
@@ -557,6 +558,58 @@ impl Runner {
         let (w, h, n) = (doc.width, doc.height, doc.tree.len());
         self.app.open_document(doc);
         Ok(format!("opened {} ({w}x{h}, {n} layer{})", path.display(), if n == 1 { "" } else { "s" }))
+    }
+
+    /// Bring an image in as a new layer above the active one.
+    ///
+    /// `open` replaces the document; this composites into it, which is what
+    /// blending one picture over another needs — and what a style cannot do
+    /// for itself, since a style that flattens has nothing left to blend with.
+    ///
+    /// With no path it re-places the file the document was opened from. That
+    /// is what lets a style lay an original back over its own treatment
+    /// without being told where the original lives.
+    fn cmd_place(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let path = match cmd.args.first() {
+            Some(given) => resolve(&self.base, given),
+            None => self
+                .app
+                .doc()
+                .and_then(|v| v.doc.path.clone())
+                .ok_or("place needs a path; this document was not opened from a file")?,
+        };
+        let pixels = cshop_io::load(&path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let (w, h) = (pixels.width(), pixels.height());
+        // Positioned where asked, or at the origin.
+        let x = cmd.f32("x")?.unwrap_or(0.0) as i32;
+        let y = cmd.f32("y")?.unwrap_or(0.0) as i32;
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Placed".into());
+        let Some(view) = self.app.doc_mut() else { return Err("no document".into()) };
+        let id = view.doc.tree.alloc_id();
+        let mut layer = cshop_core::layer::Layer::raster(id, name.clone(), pixels);
+        layer.offset = (x, y);
+        let pos = view
+            .doc
+            .active
+            .and_then(|a| view.doc.tree.position(a))
+            .map(|p| cshop_core::tree::LayerPos { parent: p.parent, index: p.index + 1 })
+            .unwrap_or(cshop_core::tree::LayerPos {
+                parent: None,
+                index: view.doc.tree.root().len(),
+            });
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::AddLayer::new(layer, pos, "Place")),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!("placed {name} ({w}x{h}) at ({x}, {y})"))
     }
 
     /// Build the type style a `text` or `measure` command asks for.

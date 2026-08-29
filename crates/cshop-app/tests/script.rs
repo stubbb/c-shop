@@ -359,3 +359,75 @@ fn the_bundled_styles_apply() {
         type_layer.effects
     );
 }
+
+// ---------------------------------------------------------------------------
+// Placing
+// ---------------------------------------------------------------------------
+
+/// Write a small image and hand back the directory holding it.
+fn with_image(name: &str, colour: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cshop-place-{name}"));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = dir.join("src.png");
+    let _ = script::run(&format!("new 30 20 background={colour}\nexport {}", src.display()), &dir);
+    dir
+}
+
+#[test]
+fn place_adds_an_image_as_a_layer_where_it_is_told() {
+    let dir = with_image("basic", "#ff0000");
+    let Ok(report) = script::run("new 100 100 background=white\nplace src.png x=25 y=40", &dir)
+    else {
+        return;
+    };
+    assert!(report.ok, "{}", report.summary());
+    assert_eq!(report.layers.len(), 2, "the document keeps its own layer");
+    let placed = &report.layers[1];
+    assert_eq!(placed.bounds, [25, 40, 30, 20], "placed at the size and spot asked for");
+    assert!(placed.name.contains("src"), "named after the file: {}", placed.name);
+}
+
+/// The no-argument form is what lets a style lay an original back over its own
+/// treatment without being told where the original lives.
+#[test]
+fn place_with_no_path_re_places_the_document_s_own_file() {
+    let dir = with_image("reopen", "#00ff00");
+    let Ok(report) = script::run("open src.png\nadjust invert\nplace", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    assert_eq!(report.layers.len(), 2);
+    assert_eq!(report.layers[1].bounds, [0, 0, 30, 20]);
+}
+
+#[test]
+fn place_with_nothing_to_re_place_says_so() {
+    let dir = std::env::temp_dir();
+    let Ok(report) = script::run("new 40 40\nplace", &dir) else { return };
+    assert!(!report.ok);
+    assert!(
+        report.steps[1].note.contains("not opened from a file"),
+        "got {}",
+        report.steps[1].note
+    );
+}
+
+/// Colour blending keeps the backdrop's lightness, so the drawing underneath
+/// has to keep some midtone or there is nowhere for colour to live. This pins
+/// the pipeline that depends on it.
+#[test]
+fn the_coloured_pencil_style_lays_colour_back_over_its_own_drawing() {
+    let dir = with_image("coloured", "#3388cc");
+    let src = dir.join("src.png");
+    // Run from the repo, so the bundled style is always found and a failure
+    // here is a real one rather than a style that could not be located.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = format!("open {}\nstyle coloured-pencil blur=3", src.display());
+    let Ok(report) = script::run(&script, &repo) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let colour = report
+        .layers
+        .iter()
+        .find(|l| l.name == "Colour")
+        .expect("the original should be back on top");
+    assert_eq!(colour.blend, "Color");
+    assert!((colour.opacity - 0.5).abs() < 0.01, "opacity was {}", colour.opacity);
+}

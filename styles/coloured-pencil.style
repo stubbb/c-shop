@@ -1,0 +1,27 @@
+# A coloured pencil drawing.
+#
+# The graphite sketch with the photograph laid back over its own drawing.
+# Colour blending takes hue and saturation from the top layer and lightness
+# from what is underneath, so the paper stays paper and the pencil strokes
+# pick up the subject's own colours.
+#
+# The sketch underneath is deliberately *softer* than the graphite one. That
+# is the whole trick, and it is not obvious: colour blending keeps the
+# backdrop's lightness, so a sketch pushed all the way to white paper leaves
+# colour nowhere to live — there is no such thing as a saturated green at 98%
+# lightness. Less contrast means more midtone, and midtones are what carry
+# colour. Turning `contrast` up makes the drawing brighter and the colour
+# weaker at the same time.
+#
+# `colour` is how much of it comes through. Half is a delicate, faded look;
+# three quarters reads more like the pencils were pressed harder.
+#
+# Takes no source: it re-places the file the document was opened from.
+
+param blur = 60
+param contrast = 0.10
+param colour = 0.5
+
+style pencil-sketch blur={blur} contrast={contrast} brightness=0.0
+place
+set name="Colour" blend="Color" opacity={colour}
