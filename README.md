@@ -122,6 +122,20 @@ cargo run --release -- --screenshot out.png --demo --size 1500x900
 `--help` lists the rest. [docs/SHORTCUTS.md](docs/SHORTCUTS.md) is the full
 keyboard reference.
 
+It can also be driven without a window at all, by a script rather than a
+pointer — for batch work, for tests, and for callers that cannot see:
+
+```sh
+cshop --run 'new 400 240 background=#20304a
+text 40 154 "Hello" size=54 color=#ffffff bold
+effect drop-shadow distance=6 size=8
+export out.png'
+```
+
+Every run answers with a report of where each layer landed and what failed,
+and `measure` sizes text before anything is drawn.
+[docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference.
+
 ## Interface
 
 | | |
