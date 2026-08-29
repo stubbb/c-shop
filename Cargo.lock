@@ -547,6 +547,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "log",
+ "rayon",
  "wgpu",
 ]
 

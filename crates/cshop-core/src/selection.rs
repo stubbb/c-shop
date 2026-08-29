@@ -196,13 +196,14 @@ impl Selection {
 
     /// A selection whose extent is already known.
     ///
-    /// The marquees draw into a region they chose, so scanning the whole mask
-    /// afterwards to find out where they drew is work with a known answer —
+    /// The marquees draw into a region they chose, and a flood fill knows
+    /// which runs it claimed, so scanning the whole mask afterwards to find out
+    /// where they drew is work with a known answer —
     /// and on a large canvas it is the most expensive part of making a
     /// selection at all. Passing a wrong rect here would leave tools skipping
     /// parts of the selection, so it is only for callers that computed the
     /// region they filled.
-    fn from_mask_bounded(mask: MaskBuffer, bounds: IRect) -> Self {
+    pub fn from_mask_bounded(mask: MaskBuffer, bounds: IRect) -> Self {
         debug_assert_eq!(
             bounds,
             mask.coverage_bounds(),

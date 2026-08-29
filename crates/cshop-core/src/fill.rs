@@ -42,13 +42,19 @@ impl Default for BucketOptions {
 ///
 /// This is the Magic Wand's matching rule, which is exactly right — the two
 /// tools differ only in what they do with the region they find.
+/// What a bucket click would cover.
+///
+/// Returns the selection rather than a bare mask so the caller keeps its
+/// extent and its sparse storage: flattening it to a document-sized buffer and
+/// then scanning that buffer to rediscover where the fill was cost more, on a
+/// large canvas, than finding the region in the first place.
 pub fn bucket_coverage(
     source: &PixelBuffer,
     seed_x: i32,
     seed_y: i32,
     options: BucketOptions,
-) -> MaskBuffer {
-    let wand = crate::wand::magic_wand(
+) -> crate::selection::Selection {
+    crate::wand::magic_wand(
         source,
         seed_x,
         seed_y,
@@ -57,8 +63,7 @@ pub fn bucket_coverage(
             contiguous: options.contiguous,
             antialias: options.antialias,
         },
-    );
-    wand.to_mask()
+    )
 }
 
 /// Composite `color` onto `dst` wherever `coverage` allows.
@@ -438,8 +443,8 @@ mod tests {
             8,
             BucketOptions { antialias: false, ..Default::default() },
         );
-        assert_eq!(coverage.get(4, 8), 255, "the clicked half");
-        assert_eq!(coverage.get(28, 8), 0, "the other half");
+        assert_eq!(coverage.coverage(4, 8), 255, "the clicked half");
+        assert_eq!(coverage.coverage(28, 8), 0, "the other half");
     }
 
     #[test]
@@ -454,7 +459,7 @@ mod tests {
             4,
             BucketOptions { contiguous: true, antialias: false, ..Default::default() },
         );
-        assert_eq!(near.get(28, 4), 0);
+        assert_eq!(near.coverage(28, 4), 0);
 
         let far = bucket_coverage(
             &src,
@@ -462,7 +467,7 @@ mod tests {
             4,
             BucketOptions { contiguous: false, antialias: false, ..Default::default() },
         );
-        assert_eq!(far.get(28, 4), 255);
+        assert_eq!(far.coverage(28, 4), 255);
     }
 
     #[test]

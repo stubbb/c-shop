@@ -46,6 +46,8 @@ pub fn magic_wand(
     seed_y: i32,
     options: WandOptions,
 ) -> Selection {
+    use rayon::prelude::*;
+
     let (w, h) = (source.width(), source.height());
     let mut mask = MaskBuffer::hide_all(w, h);
     if !source.bounds().contains(seed_x, seed_y) {
@@ -53,19 +55,30 @@ pub fn magic_wand(
     }
     let target = source.get(seed_x, seed_y);
 
-    if options.contiguous {
-        flood_fill(source, &mut mask, seed_x, seed_y, target, options.tolerance);
+    let covered = if options.contiguous {
+        flood_fill(source, &mut mask, seed_x, seed_y, target, options.tolerance)
     } else {
-        for y in 0..h {
-            for x in 0..w {
-                if difference(source.get(x as i32, y as i32), target) <= options.tolerance {
-                    mask.set(x as i32, y as i32, 255);
+        // Every pixel is judged on its own, so this is one parallel pass.
+        let width = w as usize;
+        mask.as_bytes_mut()
+            .par_chunks_mut(width)
+            .enumerate()
+            .map(|(y, out)| {
+                let row = source.row(y as u32);
+                let mut covered = IRect::EMPTY;
+                for (x, slot) in out.iter_mut().enumerate() {
+                    if difference(row[x], target) <= options.tolerance {
+                        *slot = 255;
+                        covered =
+                            covered.union(&IRect::new(x as i32, y as i32, x as i32 + 1, y as i32 + 1));
+                    }
                 }
-            }
-        }
-    }
+                covered
+            })
+            .reduce(|| IRect::EMPTY, |a, b| a.union(&b))
+    };
 
-    finish(mask, options.antialias)
+    finish(mask, Some(covered), options.antialias)
 }
 
 /// Extend `selection` into neighbouring pixels that match the colours it
@@ -102,7 +115,7 @@ pub fn grow(source: &PixelBuffer, selection: &Selection, options: WandOptions) -
         }
     }
 
-    finish(mask, options.antialias)
+    finish(mask, None, options.antialias)
 }
 
 /// Select every pixel in the image resembling one already selected —
@@ -149,13 +162,63 @@ pub fn similar(source: &PixelBuffer, selection: &Selection, options: WandOptions
         }
     }
 
-    finish(mask, options.antialias)
+    finish(mask, None, options.antialias)
 }
 
 /// Scanline flood fill.
 ///
 /// Filling whole runs at a time rather than pushing every pixel keeps the
 /// stack shallow; a naive four-way recursion overflows on large flat areas.
+/// A horizontal stretch of matching pixels, `start..end`.
+#[derive(Clone, Copy)]
+struct Run {
+    start: u32,
+    end: u32,
+}
+
+/// Reduce one row to the stretches of it that match.
+fn runs_of_row(row: &[Rgba8], target: Rgba8, tolerance: u8) -> Vec<Run> {
+    let mut runs = Vec::new();
+    let mut x = 0usize;
+    while x < row.len() {
+        if difference(row[x], target) > tolerance {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        while x < row.len() && difference(row[x], target) <= tolerance {
+            x += 1;
+        }
+        runs.push(Run { start: start as u32, end: x as u32 });
+    }
+    runs
+}
+
+/// Every run in `row` that touches `span` horizontally.
+///
+/// The runs are sorted and disjoint, so the first candidate can be found by
+/// bisection and the rest follow immediately after it.
+fn overlapping(runs: &[Run], span: Run) -> std::ops::Range<usize> {
+    let first = runs.partition_point(|r| r.end <= span.start);
+    let mut last = first;
+    while last < runs.len() && runs[last].start < span.end {
+        last += 1;
+    }
+    first..last
+}
+
+/// The connected region of matching pixels containing the seed.
+///
+/// Whether a pixel matches does not depend on the fill's progress — it is a
+/// comparison against one colour — so the picture can be reduced to runs of
+/// matching pixels a row at a time, in parallel, and the traversal then walks
+/// runs rather than pixels. A flat row becomes one run, so the sequential part
+/// shrinks from a hundred million steps to one per row.
+///
+/// Rows are reduced only when the fill reaches them. Computing them all up
+/// front would be simpler and would make filling a small region on a large
+/// canvas cost the whole canvas, which is the common case and was previously
+/// free.
 fn flood_fill(
     source: &PixelBuffer,
     mask: &mut MaskBuffer,
@@ -163,67 +226,116 @@ fn flood_fill(
     seed_y: i32,
     target: Rgba8,
     tolerance: u8,
-) {
+) -> IRect {
+    use rayon::prelude::*;
+
     let (w, h) = (source.width() as i32, source.height() as i32);
+    if seed_x < 0 || seed_y < 0 || seed_x >= w || seed_y >= h {
+        return IRect::EMPTY;
+    }
 
-    // Row slices rather than `get`/`set` per pixel. A flood fill is inherently
-    // sequential, so the only thing left to win is the bounds check and the
-    // multiply on every one of a hundred million lookups.
-    let mut stack = vec![(seed_x, seed_y)];
-    while let Some((sx, sy)) = stack.pop() {
-        if sy < 0 || sy >= h || sx < 0 || sx >= w {
-            continue;
+    let mut runs: Vec<Option<Vec<Run>>> = vec![None; h as usize];
+    // Which runs the fill has claimed, one flag per run.
+    let mut taken: Vec<Vec<bool>> = vec![Vec::new(); h as usize];
+
+    // Reduce any of `rows` not already done, all at once.
+    let reduce = |rows: &[i32], runs: &mut Vec<Option<Vec<Run>>>, taken: &mut Vec<Vec<bool>>| {
+        let mut wanted: Vec<i32> = rows
+            .iter()
+            .copied()
+            .filter(|y| *y >= 0 && *y < h && runs[*y as usize].is_none())
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let done: Vec<(i32, Vec<Run>)> = wanted
+            .par_iter()
+            .map(|&y| (y, runs_of_row(source.row(y as u32), target, tolerance)))
+            .collect();
+        for (y, r) in done {
+            taken[y as usize] = vec![false; r.len()];
+            runs[y as usize] = Some(r);
         }
-        let (left, right) = {
-            let src = source.row(sy as u32);
-            let cov = mask.row(sy as u32);
-            let matches = |x: i32| difference(src[x as usize], target) <= tolerance;
-            if cov[sx as usize] != 0 || !matches(sx) {
-                continue;
-            }
-            // Walk left and right to the ends of this run.
-            let mut left = sx;
-            while left > 0 && cov[left as usize - 1] == 0 && matches(left - 1) {
-                left -= 1;
-            }
-            let mut right = sx;
-            while right < w - 1 && cov[right as usize + 1] == 0 && matches(right + 1) {
-                right += 1;
-            }
-            (left, right)
-        };
+    };
 
-        mask.row_mut(sy as u32)[left as usize..=right as usize].fill(255);
+    reduce(&[seed_y], &mut runs, &mut taken);
+    let seed_run = {
+        let row = runs[seed_y as usize].as_ref().expect("just reduced");
+        match row.iter().position(|r| (r.start..r.end).contains(&(seed_x as u32))) {
+            Some(i) => i,
+            // The seed itself does not match, so nothing is selected.
+            None => return IRect::EMPTY,
+        }
+    };
+    taken[seed_y as usize][seed_run] = true;
+    let mut frontier: Vec<(i32, usize)> = vec![(seed_y, seed_run)];
 
-        // Seed the rows above and below, once per contiguous run rather than
-        // once per pixel.
-        for (dy, row) in [(-1, sy - 1), (1, sy + 1)] {
-            let _ = dy;
-            if row < 0 || row >= h {
-                continue;
-            }
-            let src = source.row(row as u32);
-            let cov = mask.row(row as u32);
-            let matches = |x: i32| difference(src[x as usize], target) <= tolerance;
-            let mut x = left;
-            while x <= right {
-                if cov[x as usize] == 0 && matches(x) {
-                    stack.push((x, row));
-                    // Skip the rest of this run; the pop above will expand it.
-                    while x <= right && matches(x) {
-                        x += 1;
+    while !frontier.is_empty() {
+        // Everything the frontier could spread into, reduced in one parallel
+        // step rather than one row at a time.
+        let neighbours: Vec<i32> =
+            frontier.iter().flat_map(|&(y, _)| [y - 1, y + 1]).collect();
+        reduce(&neighbours, &mut runs, &mut taken);
+
+        let mut next: Vec<(i32, usize)> = Vec::new();
+        for &(y, i) in &frontier {
+            let span = runs[y as usize].as_ref().expect("frontier rows are reduced")[i];
+            for row in [y - 1, y + 1] {
+                if row < 0 || row >= h {
+                    continue;
+                }
+                let candidates = {
+                    let there = runs[row as usize].as_ref().expect("just reduced");
+                    overlapping(there, span)
+                };
+                for j in candidates {
+                    if !taken[row as usize][j] {
+                        taken[row as usize][j] = true;
+                        next.push((row, j));
                     }
-                } else {
-                    x += 1;
                 }
             }
         }
+        frontier = next;
     }
+
+    // Writing is per row and independent, so it goes wide too. The extent is
+    // accumulated here rather than rescanned afterwards: the fill knows
+    // exactly which runs it claimed, and looking for them again in a hundred
+    // megabytes of mostly-zero mask would be asking a question already answered.
+    let width = mask.width() as usize;
+    mask.as_bytes_mut()
+        .par_chunks_mut(width)
+        .enumerate()
+        .map(|(y, out)| {
+            let (Some(row), flags) = (&runs[y], &taken[y]) else { return IRect::EMPTY };
+            let mut covered = IRect::EMPTY;
+            for (r, &claimed) in row.iter().zip(flags) {
+                if claimed {
+                    out[r.start as usize..r.end as usize].fill(255);
+                    covered = covered.union(&IRect::new(
+                        r.start as i32,
+                        y as i32,
+                        r.end as i32,
+                        y as i32 + 1,
+                    ));
+                }
+            }
+            covered
+        })
+        .reduce(|| IRect::EMPTY, |a, b| a.union(&b))
 }
 
 /// Turn a binary mask into a selection, softening the boundary if asked.
-fn finish(mask: MaskBuffer, antialias: bool) -> Selection {
-    let mut selection = Selection::from_mask(mask);
+/// Wrap a finished coverage mask as a selection.
+///
+/// `covered` is the extent when the caller already knows it — a flood fill
+/// does, having tracked the runs it claimed — so that the mask is not scanned
+/// again to rediscover it. `None` asks for the scan.
+fn finish(mask: MaskBuffer, covered: Option<IRect>, antialias: bool) -> Selection {
+    let mut selection = match covered {
+        Some(bounds) => Selection::from_mask_bounded(mask, bounds),
+        None => Selection::from_mask(mask),
+    };
     if antialias && !selection.is_empty() {
         // Just enough to take the staircase off a diagonal edge without
         // visibly moving it.

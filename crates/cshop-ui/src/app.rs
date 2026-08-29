@@ -3420,7 +3420,9 @@ impl CShopApp {
 
         let coverage =
             cshop_core::fill::bucket_coverage(&source, at.x as i32, at.y as i32, options);
-        let region = coverage.coverage_bounds();
+        // The wand already tracked what it covered; asking the mask again
+        // would mean scanning the whole document to rediscover it.
+        let region = coverage.bounds();
         if region.is_empty() {
             self.notify("Nothing matched at that point");
             return;
@@ -3439,35 +3441,48 @@ impl CShopApp {
 
         let mut patch = px.copy_rect(rect.translate(-offset.0, -offset.1));
         let preserve = layer.locks.transparency;
-        for y in 0..patch.height() as i32 {
-            for x in 0..patch.width() as i32 {
-                let (dx, dy) = (rect.x0 + x, rect.y0 + y);
-                let mut amount = coverage.get(dx, dy) as f32 / 255.0
-                    * view.doc.selection_coverage(dx, dy)
-                    * options.opacity.clamp(0.0, 1.0);
-                if amount <= 0.0 {
-                    continue;
-                }
-                let existing = patch.get(x, y);
-                if preserve {
-                    if existing.a == 0 {
+        let selection = view.doc.selection.as_ref();
+        let opacity = options.opacity.clamp(0.0, 1.0);
+        let mode = options.mode;
+
+        // A row at a time across every core. Filling the background of a large
+        // picture is one of the few operations that really does touch every
+        // pixel, so it is worth spreading.
+        {
+            use rayon::prelude::*;
+            let width = patch.width() as usize;
+            patch.pixels_mut().par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+                let dy = rect.y0 + y as i32;
+                for (x, slot) in row.iter_mut().enumerate() {
+                    let dx = rect.x0 + x as i32;
+                    let selected =
+                        selection.map_or(1.0, |s| s.coverage(dx, dy) as f32 / 255.0);
+                    let mut amount =
+                        coverage.coverage(dx, dy) as f32 / 255.0 * selected * opacity;
+                    if amount <= 0.0 {
                         continue;
                     }
-                    amount *= existing.a as f32 / 255.0;
+                    let existing = *slot;
+                    if preserve {
+                        if existing.a == 0 {
+                            continue;
+                        }
+                        amount *= existing.a as f32 / 255.0;
+                    }
+                    let out = cshop_core::blend::composite(
+                        mode,
+                        existing.to_f32(),
+                        colour.to_f32(),
+                        amount,
+                    );
+                    let out = if preserve {
+                        cshop_core::color::Rgba { a: existing.a as f32 / 255.0, ..out }
+                    } else {
+                        out
+                    };
+                    *slot = out.to_u8();
                 }
-                let out = cshop_core::blend::composite(
-                    options.mode,
-                    existing.to_f32(),
-                    colour.to_f32(),
-                    amount,
-                );
-                let out = if preserve {
-                    cshop_core::color::Rgba { a: existing.a as f32 / 255.0, ..out }
-                } else {
-                    out
-                };
-                patch.set(x, y, out.to_u8());
-            }
+            });
         }
 
         let dirty = view.history.apply(
