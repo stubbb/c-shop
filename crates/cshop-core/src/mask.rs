@@ -58,6 +58,21 @@ impl MaskBuffer {
         IRect::from_size(self.width, self.height)
     }
 
+    /// One row of coverage. Panics if `y` is outside the buffer, which is a
+    /// caller error rather than something to paper over.
+    #[inline]
+    pub fn row(&self, y: u32) -> &[u8] {
+        let start = y as usize * self.width as usize;
+        &self.data[start..start + self.width as usize]
+    }
+
+    #[inline]
+    pub fn row_mut(&mut self, y: u32) -> &mut [u8] {
+        let start = y as usize * self.width as usize;
+        let w = self.width as usize;
+        &mut self.data[start..start + w]
+    }
+
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.data

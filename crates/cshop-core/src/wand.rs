@@ -165,27 +165,35 @@ fn flood_fill(
     tolerance: u8,
 ) {
     let (w, h) = (source.width() as i32, source.height() as i32);
-    let matches = |x: i32, y: i32| difference(source.get(x, y), target) <= tolerance;
 
+    // Row slices rather than `get`/`set` per pixel. A flood fill is inherently
+    // sequential, so the only thing left to win is the bounds check and the
+    // multiply on every one of a hundred million lookups.
     let mut stack = vec![(seed_x, seed_y)];
     while let Some((sx, sy)) = stack.pop() {
-        if sy < 0 || sy >= h || mask.get(sx, sy) != 0 || !matches(sx, sy) {
+        if sy < 0 || sy >= h || sx < 0 || sx >= w {
             continue;
         }
+        let (left, right) = {
+            let src = source.row(sy as u32);
+            let cov = mask.row(sy as u32);
+            let matches = |x: i32| difference(src[x as usize], target) <= tolerance;
+            if cov[sx as usize] != 0 || !matches(sx) {
+                continue;
+            }
+            // Walk left and right to the ends of this run.
+            let mut left = sx;
+            while left > 0 && cov[left as usize - 1] == 0 && matches(left - 1) {
+                left -= 1;
+            }
+            let mut right = sx;
+            while right < w - 1 && cov[right as usize + 1] == 0 && matches(right + 1) {
+                right += 1;
+            }
+            (left, right)
+        };
 
-        // Walk left and right to the ends of this run.
-        let mut left = sx;
-        while left > 0 && mask.get(left - 1, sy) == 0 && matches(left - 1, sy) {
-            left -= 1;
-        }
-        let mut right = sx;
-        while right < w - 1 && mask.get(right + 1, sy) == 0 && matches(right + 1, sy) {
-            right += 1;
-        }
-
-        for x in left..=right {
-            mask.set(x, sy, 255);
-        }
+        mask.row_mut(sy as u32)[left as usize..=right as usize].fill(255);
 
         // Seed the rows above and below, once per contiguous run rather than
         // once per pixel.
@@ -194,12 +202,15 @@ fn flood_fill(
             if row < 0 || row >= h {
                 continue;
             }
+            let src = source.row(row as u32);
+            let cov = mask.row(row as u32);
+            let matches = |x: i32| difference(src[x as usize], target) <= tolerance;
             let mut x = left;
             while x <= right {
-                if mask.get(x, row) == 0 && matches(x, row) {
+                if cov[x as usize] == 0 && matches(x) {
                     stack.push((x, row));
                     // Skip the rest of this run; the pop above will expand it.
-                    while x <= right && matches(x, row) {
+                    while x <= right && matches(x) {
                         x += 1;
                     }
                 } else {

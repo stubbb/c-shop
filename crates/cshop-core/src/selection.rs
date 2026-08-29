@@ -929,22 +929,58 @@ fn box_blur_h(src: &[u8], dst: &mut [u8], w: u32, h: u32, radius: u32) {
     });
 }
 
+/// Rows per band of the vertical blur.
+///
+/// Each band re-seeds its running sums, which costs `2r+1` rows of reading, so
+/// bands want to be tall enough for that to disappear and numerous enough to
+/// keep every core busy.
+const BLUR_BAND: usize = 64;
+
 fn box_blur_v(src: &[u8], dst: &mut [u8], w: u32, h: u32, radius: u32) {
+    use rayon::prelude::*;
     let (w, h) = (w as usize, h as usize);
     let r = radius as i32;
-    for x in 0..w {
-        let mut sum: u32 = 0;
-        for y in -r..=r {
-            sum += src[y.clamp(0, h as i32 - 1) as usize * w + x] as u32;
-        }
-        let n = (2 * r + 1) as u32;
-        for y in 0..h {
-            dst[y * w + x] = (sum / n) as u8;
-            let out = (y as i32 - r).clamp(0, h as i32 - 1) as usize;
-            let inc = (y as i32 + r + 1).clamp(0, h as i32 - 1) as usize;
-            sum = sum + src[inc * w + x] as u32 - src[out * w + x] as u32;
-        }
+    let n = (2 * r + 1) as u32;
+    if w == 0 || h == 0 {
+        return;
     }
+
+    // Bands of rows rather than a column at a time. The obvious way to write a
+    // vertical blur — walk down each column keeping a running sum — steps a
+    // whole row through memory on every iteration, so on a large mask nearly
+    // every read is a cache miss; it was two thirds of the cost of a bucket
+    // fill. Here each band keeps one running sum per column and walks *down*
+    // it row by row, so every read and write is sequential, and the bands are
+    // independent so they spread across cores.
+    dst.par_chunks_mut(w * BLUR_BAND).enumerate().for_each(|(band, out)| {
+        let y0 = (band * BLUR_BAND) as i32;
+        let rows = out.len() / w;
+
+        // Seed the window as it stands just above this band.
+        let mut sums = vec![0u32; w];
+        for dy in -r..=r {
+            let y = (y0 + dy).clamp(0, h as i32 - 1) as usize;
+            let row = &src[y * w..][..w];
+            for (acc, &v) in sums.iter_mut().zip(row) {
+                *acc += v as u32;
+            }
+        }
+
+        for i in 0..rows {
+            let y = y0 + i as i32;
+            let slot = &mut out[i * w..][..w];
+            for (o, acc) in slot.iter_mut().zip(sums.iter()) {
+                *o = (*acc / n) as u8;
+            }
+            // Slide the window down one row.
+            let leaving = (y - r).clamp(0, h as i32 - 1) as usize;
+            let entering = (y + r + 1).clamp(0, h as i32 - 1) as usize;
+            let (a, b) = (&src[leaving * w..][..w], &src[entering * w..][..w]);
+            for ((acc, &gone), &came) in sums.iter_mut().zip(a).zip(b) {
+                *acc = *acc + came as u32 - gone as u32;
+            }
+        }
+    });
 }
 
 /// Exact Euclidean distance from every pixel to the nearest pixel of the

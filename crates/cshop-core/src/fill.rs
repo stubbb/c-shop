@@ -74,37 +74,50 @@ pub fn fill_region(
     opacity: f32,
     preserve_transparency: bool,
 ) -> IRect {
+    use rayon::prelude::*;
+
     let opacity = opacity.clamp(0.0, 1.0);
     let src = color.to_f32();
-    let mut touched = IRect::EMPTY;
+    let width = dst.width() as usize;
 
-    for y in 0..dst.height() as i32 {
-        for x in 0..dst.width() as i32 {
-            let mut amount = coverage.get(x, y) as f32 / 255.0 * opacity;
-            if amount <= 0.0 {
-                continue;
-            }
-            let existing = dst.get(x, y);
-            if preserve_transparency {
-                if existing.a == 0 {
+    // Rows in parallel, and a rectangle unioned once per row rather than once
+    // per pixel — which on a large fill cost more than the compositing did.
+    let rows: Vec<IRect> = dst
+        .pixels_mut()
+        .par_chunks_mut(width)
+        .enumerate()
+        .map(|(y, row)| {
+            let y = y as i32;
+            let mut touched = IRect::EMPTY;
+            for x in 0..width as i32 {
+                let mut amount = coverage.get(x, y) as f32 / 255.0 * opacity;
+                if amount <= 0.0 {
                     continue;
                 }
-                // Scale by what is already there so the fill cannot spread
-                // beyond the layer's own shape.
-                amount *= existing.a as f32 / 255.0;
+                let existing = row[x as usize];
+                if preserve_transparency {
+                    if existing.a == 0 {
+                        continue;
+                    }
+                    // Scale by what is already there so the fill cannot spread
+                    // beyond the layer's own shape.
+                    amount *= existing.a as f32 / 255.0;
+                }
+                let out = composite(mode, existing.to_f32(), src, amount);
+                let out = if preserve_transparency {
+                    // Compositing raises alpha; the lock says it must not.
+                    Rgba { a: existing.a as f32 / 255.0, ..out }
+                } else {
+                    out
+                };
+                row[x as usize] = out.to_u8();
+                touched = touched.union(&IRect::new(x, y, x + 1, y + 1));
             }
-            let out = composite(mode, existing.to_f32(), src, amount);
-            let out = if preserve_transparency {
-                // Compositing raises alpha; the lock says it must not.
-                Rgba { a: existing.a as f32 / 255.0, ..out }
-            } else {
-                out
-            };
-            dst.set(x, y, out.to_u8());
-            touched = touched.union(&IRect::at(x, y, 1, 1));
-        }
-    }
-    touched
+            touched
+        })
+        .collect();
+
+    rows.into_iter().fold(IRect::EMPTY, |a, b| a.union(&b))
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +126,27 @@ pub fn fill_region(
 
 /// A colour stop along a gradient.
 pub use crate::adjust::GradientStop;
+
+/// Entries in a baked ramp.
+///
+/// A gradient is read at 8-bit precision and dithered besides, so a table this
+/// long is finer than anything that survives to the screen; the interpolation
+/// between entries is there for the dither to have something to move between.
+const RAMP_SIZE: usize = 1024;
+
+/// A gradient's colours, sampled once so they can be read per pixel.
+#[derive(Debug, Clone)]
+pub struct Ramp {
+    table: [Rgba8; RAMP_SIZE],
+}
+
+impl Ramp {
+    #[inline]
+    pub fn at(&self, t: f32) -> Rgba8 {
+        let i = (t.clamp(0.0, 1.0) * (RAMP_SIZE - 1) as f32) as usize;
+        self.table[i.min(RAMP_SIZE - 1)]
+    }
+}
 
 /// How a gradient's parameter is derived from position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -251,6 +285,20 @@ impl Gradient {
     }
 
     /// Colour at a point along the ramp.
+    /// The ramp sampled into a table, for the paths that read it per pixel.
+    ///
+    /// [`Gradient::color_at`] sorts the stops on every call, which is fine for
+    /// a swatch and ruinous for a fill: rendering a 10000x10000 gradient meant
+    /// a hundred million heap allocations and sorts, and was over two seconds
+    /// of the five it took. The same mistake the curves dialog once made.
+    pub fn bake(&self) -> Ramp {
+        let mut table = [Rgba8::TRANSPARENT; RAMP_SIZE];
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = self.color_at(i as f32 / (RAMP_SIZE - 1) as f32);
+        }
+        Ramp { table }
+    }
+
     pub fn color_at(&self, t: f32) -> Rgba8 {
         if self.stops.is_empty() {
             return Rgba8::TRANSPARENT;
@@ -308,47 +356,64 @@ impl Gradient {
         coverage: Option<&MaskBuffer>,
         preserve_transparency: bool,
     ) -> IRect {
+        use rayon::prelude::*;
+
         let opacity = self.opacity.clamp(0.0, 1.0);
-        let mut touched = IRect::EMPTY;
+        // Sampled once rather than per pixel; see `Gradient::bake`.
+        let ramp = self.bake();
+        let width = dst.width() as i32;
 
-        for y in 0..dst.height() as i32 {
-            for x in 0..dst.width() as i32 {
-                let doc = Vec2::new((origin.0 + x) as f32 + 0.5, (origin.1 + y) as f32 + 0.5);
-                let mut t = self.parameter(doc, a, b);
-                if self.dither {
-                    // A quarter-level of noise, which is below what the eye
-                    // sees but enough to break up banding on a long ramp.
-                    let n = crate::filters::plane::Rng::at(0x9E37, origin.0 + x, origin.1 + y)
-                        .next_f32();
-                    t = (t + (n - 0.5) / 255.0).clamp(0.0, 1.0);
-                }
-                let colour = self.color_at(t);
+        // A row at a time, so the work spreads across every core and the
+        // extent each row touched comes back with it. Unioning a rectangle per
+        // *pixel*, as this used to, cost more than the compositing did.
+        let width_usize = width as usize;
+        let rows: Vec<IRect> = dst
+            .pixels_mut()
+            .par_chunks_mut(width_usize)
+            .enumerate()
+            .map(|(y, row)| {
+                let y = y as i32;
+                let mut touched = IRect::EMPTY;
+                for x in 0..width {
+                    let doc = Vec2::new((origin.0 + x) as f32 + 0.5, (origin.1 + y) as f32 + 0.5);
+                    let mut t = self.parameter(doc, a, b);
+                    if self.dither {
+                        // A quarter-level of noise, which is below what the eye
+                        // sees but enough to break up banding on a long ramp.
+                        let n = crate::filters::plane::Rng::at(0x9E37, origin.0 + x, origin.1 + y)
+                            .next_f32();
+                        t = (t + (n - 0.5) / 255.0).clamp(0.0, 1.0);
+                    }
+                    let colour = ramp.at(t);
 
-                let mut amount = opacity;
-                if let Some(mask) = coverage {
-                    amount *= mask.get(origin.0 + x, origin.1 + y) as f32 / 255.0;
-                }
-                if amount <= 0.0 {
-                    continue;
-                }
-                let existing = dst.get(x, y);
-                if preserve_transparency {
-                    if existing.a == 0 {
+                    let mut amount = opacity;
+                    if let Some(mask) = coverage {
+                        amount *= mask.get(origin.0 + x, origin.1 + y) as f32 / 255.0;
+                    }
+                    if amount <= 0.0 {
                         continue;
                     }
-                    amount *= existing.a as f32 / 255.0;
+                    let existing = row[x as usize];
+                    if preserve_transparency {
+                        if existing.a == 0 {
+                            continue;
+                        }
+                        amount *= existing.a as f32 / 255.0;
+                    }
+                    let out = composite(self.mode, existing.to_f32(), colour.to_f32(), amount);
+                    let out = if preserve_transparency {
+                        Rgba { a: existing.a as f32 / 255.0, ..out }
+                    } else {
+                        out
+                    };
+                    row[x as usize] = out.to_u8();
+                    touched = touched.union(&IRect::new(x, y, x + 1, y + 1));
                 }
-                let out = composite(self.mode, existing.to_f32(), colour.to_f32(), amount);
-                let out = if preserve_transparency {
-                    Rgba { a: existing.a as f32 / 255.0, ..out }
-                } else {
-                    out
-                };
-                dst.set(x, y, out.to_u8());
-                touched = touched.union(&IRect::at(x, y, 1, 1));
-            }
-        }
-        touched
+                touched
+            })
+            .collect();
+
+        rows.into_iter().fold(IRect::EMPTY, |a, b| a.union(&b))
     }
 }
 
