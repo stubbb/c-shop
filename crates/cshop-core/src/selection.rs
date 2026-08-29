@@ -46,12 +46,29 @@ impl SelectionMode {
     }
 }
 
-/// A coverage mask over the whole document.
+/// A coverage mask over the document, stored only where it is not zero.
+///
+/// The mask covers `window` rather than the whole document; everything outside
+/// it reads as unselected. A marquee in one corner of a 10000x10000 document
+/// therefore costs its own area rather than a hundred megabytes, and the
+/// operations that walk the mask walk what is really there.
+///
+/// `window` is a rectangle rather than tiles because every selection this
+/// editor makes is one connected region or a few near each other, and a
+/// rectangle needs no indirection in the inner loop — coverage is read once
+/// per pixel by the brush, and that path has to stay a bounds check and an
+/// index.
 #[derive(Debug, Clone)]
 pub struct Selection {
+    /// Coverage over `window`. Zero everywhere else.
     mask: MaskBuffer,
+    /// Where `mask` sits in the document.
+    window: IRect,
+    /// The document's own size, which `window` is a part of.
+    size: (u32, u32),
     /// Cached bounding box of non-zero coverage, kept in step with edits so
-    /// tools can skip work outside it without rescanning.
+    /// tools can skip work outside it without rescanning. Always inside
+    /// `window`.
     bounds: IRect,
     /// Cached marching-ants outlines in document coordinates.
     contours: Option<Vec<Vec<Vec2>>>,
@@ -64,6 +81,8 @@ impl Selection {
     pub fn all(width: u32, height: u32) -> Self {
         Self {
             mask: MaskBuffer::reveal_all(width, height),
+            window: IRect::from_size(width, height),
+            size: (width, height),
             bounds: IRect::from_size(width, height),
             contours: None,
             dropped_contours: 0,
@@ -74,17 +93,105 @@ impl Selection {
     /// fully editable again, drop the selection instead.
     pub fn empty(width: u32, height: u32) -> Self {
         Self {
-            mask: MaskBuffer::hide_all(width, height),
+            mask: MaskBuffer::hide_all(0, 0),
+            window: IRect::EMPTY,
+            size: (width, height),
             bounds: IRect::EMPTY,
             contours: None,
             dropped_contours: 0,
         }
     }
 
-    /// Adopt an existing coverage buffer.
+    /// Adopt an existing document-sized coverage buffer.
     pub fn from_mask(mask: MaskBuffer) -> Self {
+        let size = (mask.width(), mask.height());
         let bounds = mask.coverage_bounds();
-        Self { mask, bounds, contours: None, dropped_contours: 0 }
+        let window = IRect::from_size(size.0, size.1);
+        let mut s = Self { mask, window, size, bounds, contours: None, dropped_contours: 0 };
+        // A mask handed in whole is usually mostly empty; keep only the part
+        // that matters, so adopting one is not a way to smuggle the old cost
+        // back in.
+        s.shrink_window_to_bounds();
+        s
+    }
+
+    /// Adopt a buffer that already covers exactly `window`.
+    pub fn from_window(mask: MaskBuffer, window: IRect, size: (u32, u32)) -> Selection {
+        debug_assert_eq!(
+            (mask.width(), mask.height()),
+            (window.width(), window.height()),
+            "the buffer must be the size of its window"
+        );
+        let mut s = Selection {
+            mask,
+            window,
+            size,
+            bounds: IRect::EMPTY,
+            contours: None,
+            dropped_contours: 0,
+        };
+        s.invalidate();
+        s.shrink_window_to_bounds();
+        s
+    }
+
+    /// Narrow the stored window to the selection's own extent.
+    fn shrink_window_to_bounds(&mut self) {
+        if self.bounds == self.window {
+            return;
+        }
+        if self.bounds.is_empty() {
+            self.mask = MaskBuffer::hide_all(0, 0);
+            self.window = IRect::EMPTY;
+            return;
+        }
+        let local = self.bounds.translate(-self.window.x0, -self.window.y0);
+        self.mask = self.mask.copy_rect(local);
+        self.window = self.bounds;
+    }
+
+    /// Grow the stored window so that `wanted` is inside it.
+    ///
+    /// Anything newly covered reads as zero, which is what it was.
+    fn widen_window(&mut self, wanted: IRect) {
+        let canvas = IRect::from_size(self.size.0, self.size.1);
+        let wanted = wanted.intersect(&canvas);
+        if wanted.is_empty() || self.window.contains_rect(&wanted) {
+            return;
+        }
+        let next = if self.window.is_empty() { wanted } else { self.window.union(&wanted) };
+        let mut grown = MaskBuffer::hide_all(next.width(), next.height());
+        if !self.window.is_empty() {
+            grown.paste(&self.mask, self.window.x0 - next.x0, self.window.y0 - next.y0);
+        }
+        self.mask = grown;
+        self.window = next;
+    }
+
+    /// Make the stored window the whole document.
+    ///
+    /// For the callers that genuinely paint anywhere — Quick Mask — rather
+    /// than growing the window a dab at a time.
+    pub fn widen_to_document(&mut self) {
+        self.widen_window(IRect::from_size(self.size.0, self.size.1));
+    }
+
+    /// The coverage as a document-sized buffer.
+    ///
+    /// Materialises what the window leaves implicit, so it costs the document.
+    /// For saving a selection as a channel, writing it to a file, or handing it
+    /// to something that must see every pixel — not for the drawing paths.
+    pub fn to_mask(&self) -> MaskBuffer {
+        let mut out = MaskBuffer::hide_all(self.size.0, self.size.1);
+        if !self.window.is_empty() {
+            out.paste(&self.mask, self.window.x0, self.window.y0);
+        }
+        out
+    }
+
+    /// Where the coverage is actually stored, and where that sits.
+    pub fn window(&self) -> (&MaskBuffer, IRect) {
+        (&self.mask, self.window)
     }
 
     /// A selection whose extent is already known.
@@ -101,19 +208,19 @@ impl Selection {
             mask.coverage_bounds(),
             "a bounded selection must agree with what is actually in its mask"
         );
-        Self { mask, bounds, contours: None, dropped_contours: 0 }
+        let size = (mask.width(), mask.height());
+        let window = IRect::from_size(size.0, size.1);
+        let mut s = Self { mask, window, size, bounds, contours: None, dropped_contours: 0 };
+        s.shrink_window_to_bounds();
+        s
     }
 
     pub fn width(&self) -> u32 {
-        self.mask.width()
+        self.size.0
     }
 
     pub fn height(&self) -> u32 {
-        self.mask.height()
-    }
-
-    pub fn mask(&self) -> &MaskBuffer {
-        &self.mask
+        self.size.1
     }
 
     /// Bounding box of everything selected.
@@ -129,26 +236,57 @@ impl Selection {
     /// the per-pixel multiply entirely.
     pub fn is_everything(&self) -> bool {
         self.bounds == IRect::from_size(self.width(), self.height())
+            && self.window == self.bounds
             && self.mask.as_bytes().iter().all(|&v| v == 255)
     }
 
+    /// Coverage at a document pixel. Outside the stored window it is zero,
+    /// which is what "not selected" is.
     #[inline]
     pub fn coverage(&self, x: i32, y: i32) -> u8 {
-        self.mask.get(x, y)
+        if x < self.window.x0 || x >= self.window.x1 || y < self.window.y0 || y >= self.window.y1 {
+            return 0;
+        }
+        self.mask.get(x - self.window.x0, y - self.window.y0)
     }
 
     /// Recompute the cached bounds and drop the cached outlines. Call after any
     /// direct mutation of the mask.
     pub fn invalidate(&mut self) {
-        self.bounds = self.mask.coverage_bounds();
+        let local = self.mask.coverage_bounds();
+        self.bounds = if local.is_empty() {
+            IRect::EMPTY
+        } else {
+            local.translate(self.window.x0, self.window.y0)
+        };
         self.contours = None;
         self.dropped_contours = 0;
+        // Deliberately does not narrow the window. Quick Mask paints straight
+        // into the mask and then calls this, and a window trimmed to what is
+        // currently covered would throw away the next dab that landed outside
+        // it. Narrowing happens where the extent is known to be final.
     }
 
     /// Direct access for tools that paint into the selection, such as Quick
-    /// Mask. The caller must follow up with [`Selection::invalidate`].
+    /// Mask.
+    ///
+    /// The window must already cover wherever the caller intends to paint —
+    /// call [`Selection::widen_to_document`] first — and the caller must
+    /// follow up with [`Selection::invalidate`].
     pub fn mask_mut(&mut self) -> &mut MaskBuffer {
         &mut self.mask
+    }
+
+    /// Where the stored window sits in the document, for callers holding
+    /// [`Selection::mask_mut`].
+    pub fn window_origin(&self) -> (i32, i32) {
+        (self.window.x0, self.window.y0)
+    }
+
+    /// Bytes of coverage actually held, which is the window rather than the
+    /// document.
+    pub fn memory_bytes(&self) -> u64 {
+        self.mask.as_bytes().len() as u64
     }
 
     // -----------------------------------------------------------------------
@@ -347,31 +485,39 @@ impl Selection {
         match mode {
             SelectionMode::Replace => {
                 self.mask = other.mask.clone();
+                self.window = other.window;
                 self.bounds = other.bounds;
             }
             SelectionMode::Intersect => {
-                // Everything outside the other's coverage is cleared, which is
-                // most of the mask and is a fill rather than a walk.
+                // The result cannot reach outside either, so the window can
+                // only shrink — narrow it first and the walk is over the
+                // overlap alone.
                 let keep = self.bounds.intersect(&other.bounds);
-                for y in self.bounds.y0..self.bounds.y1 {
-                    for x in self.bounds.x0..self.bounds.x1 {
-                        let v = if keep.contains(x, y) {
-                            let a = self.mask.get(x, y) as u16;
-                            let b = other.mask.get(x, y) as u16;
-                            ((a * b) / 255) as u8
-                        } else {
-                            0
-                        };
-                        self.mask.set(x, y, v);
+                if keep.is_empty() {
+                    *self = Selection::empty(self.size.0, self.size.1);
+                    return;
+                }
+                let mut kept = MaskBuffer::hide_all(keep.width(), keep.height());
+                for y in keep.y0..keep.y1 {
+                    for x in keep.x0..keep.x1 {
+                        let a = self.coverage(x, y) as u16;
+                        let b = other.coverage(x, y) as u16;
+                        kept.set(x - keep.x0, y - keep.y0, ((a * b) / 255) as u8);
                     }
                 }
-                self.bounds = self.mask.coverage_bounds_within(self.bounds);
+                self.mask = kept;
+                self.window = keep;
+                self.invalidate();
+                self.shrink_window_to_bounds();
+                return;
             }
             SelectionMode::Add => {
+                // The result can reach as far as either, so make room first.
+                self.widen_window(self.bounds.union(&other.bounds));
                 for y in region.y0..region.y1 {
                     for x in region.x0..region.x1 {
-                        let v = self.mask.get(x, y).max(other.mask.get(x, y));
-                        self.mask.set(x, y, v);
+                        let v = self.coverage(x, y).max(other.coverage(x, y));
+                        self.mask.set(x - self.window.x0, y - self.window.y0, v);
                     }
                 }
                 self.bounds = self.bounds.union(&other.bounds);
@@ -379,12 +525,18 @@ impl Selection {
             SelectionMode::Subtract => {
                 for y in region.y0..region.y1 {
                     for x in region.x0..region.x1 {
-                        let a = self.mask.get(x, y) as u16;
-                        let b = other.mask.get(x, y) as u16;
-                        self.mask.set(x, y, ((a * (255 - b)) / 255) as u8);
+                        let a = self.coverage(x, y) as u16;
+                        let b = other.coverage(x, y) as u16;
+                        self.mask.set(
+                            x - self.window.x0,
+                            y - self.window.y0,
+                            ((a * (255 - b)) / 255) as u8,
+                        );
                     }
                 }
-                self.bounds = self.mask.coverage_bounds_within(self.bounds);
+                self.invalidate();
+                self.shrink_window_to_bounds();
+                return;
             }
         }
         self.contours = None;
@@ -392,6 +544,7 @@ impl Selection {
     }
 
     pub fn invert(&mut self) {
+        self.widen_to_document();
         self.mask.invert();
         self.invalidate();
     }
@@ -498,21 +651,28 @@ impl Selection {
             return;
         }
 
-        if region == canvas {
-            // Nothing saved by copying; run in place.
-            let (w, h) = (self.width(), self.height());
+        // The operation may push coverage outward, so the stored window has to
+        // reach as far as the region does before it runs.
+        self.widen_window(region);
+        let local = region.translate(-self.window.x0, -self.window.y0);
+
+        if local == self.mask.bounds() {
+            // The window is exactly the region; run in place.
+            let (w, h) = (self.mask.width(), self.mask.height());
             op(&mut self.mask, w, h);
-            self.bounds = self.mask.coverage_bounds();
         } else {
-            let mut sub = self.mask.copy_rect(region);
-            op(&mut sub, region.width(), region.height());
-            self.mask.paste(&sub, region.x0, region.y0);
-            // Only the region changed, and outside the old bounds was zero, so
-            // the new extent is whatever is now inside the region.
-            self.bounds = self.mask.coverage_bounds_within(region);
+            let mut sub = self.mask.copy_rect(local);
+            op(&mut sub, local.width(), local.height());
+            self.mask.paste(&sub, local.x0, local.y0);
         }
+        // Only the region changed, and outside the old bounds was zero, so the
+        // new extent is whatever is now inside it.
+        let found = self.mask.coverage_bounds_within(local);
+        self.bounds =
+            if found.is_empty() { IRect::EMPTY } else { found.translate(self.window.x0, self.window.y0) };
         self.contours = None;
         self.dropped_contours = 0;
+        self.shrink_window_to_bounds();
     }
 
     /// Shared implementation of expand and contract via a distance field.
@@ -568,7 +728,17 @@ impl Selection {
     /// selection changes, because tracing costs a scan of the bounding box.
     pub fn contours(&mut self) -> &[Vec<Vec2>] {
         if self.contours.is_none() {
-            let (loops, dropped) = trace_outline(&self.mask, self.bounds);
+            let local = self.bounds.translate(-self.window.x0, -self.window.y0);
+            let (mut loops, dropped) = trace_outline(&self.mask, local);
+            // `trace_outline` works in the buffer's coordinates; the caller
+            // draws in the document's.
+            let (ox, oy) = (self.window.x0 as f32, self.window.y0 as f32);
+            for line in &mut loops {
+                for p in line.iter_mut() {
+                    p.x += ox;
+                    p.y += oy;
+                }
+            }
             self.contours = Some(loops);
             self.dropped_contours = dropped;
         }
@@ -594,7 +764,10 @@ impl Selection {
             data: if self.bounds.is_empty() {
                 Vec::new()
             } else {
-                self.mask.copy_rect(self.bounds).as_bytes().to_vec()
+                self.mask
+                    .copy_rect(self.bounds.translate(-self.window.x0, -self.window.y0))
+                    .as_bytes()
+                    .to_vec()
             },
         }
     }
@@ -610,20 +783,22 @@ pub struct CompressedSelection {
 }
 
 impl CompressedSelection {
+    /// Rebuild the selection.
+    ///
+    /// The stored rectangle becomes the window directly rather than being
+    /// painted into a document-sized mask that is then trimmed back to it —
+    /// which on a large canvas was the most expensive step of an undo.
     pub fn restore(&self) -> Selection {
-        let mut mask = MaskBuffer::hide_all(self.width, self.height);
-        if !self.bounds.is_empty() {
-            let stride = self.bounds.width() as usize;
-            for y in 0..self.bounds.height() {
-                for x in 0..self.bounds.width() {
-                    let v = self.data[y as usize * stride + x as usize];
-                    if v != 0 {
-                        mask.set(self.bounds.x0 + x as i32, self.bounds.y0 + y as i32, v);
-                    }
-                }
-            }
+        if self.bounds.is_empty() {
+            return Selection::empty(self.width, self.height);
         }
-        Selection::from_mask(mask)
+        let mask = MaskBuffer::from_bytes(
+            self.bounds.width(),
+            self.bounds.height(),
+            self.data.clone(),
+        )
+        .expect("a compressed selection carries exactly its bounds");
+        Selection::from_window(mask, self.bounds, (self.width, self.height))
     }
 
     /// Bytes held, for the memory readout.
@@ -1090,6 +1265,7 @@ mod tests {
         // Antialiased edges must stay soft through boolean operations.
         let mut a = Selection::from_rect(16, 16, rect(0.0, 0.0, 16.0, 16.0), false);
         let mut half = Selection::empty(16, 16);
+        half.widen_to_document();
         half.mask_mut().fill(128);
         half.invalidate();
         a.combine(&half, SelectionMode::Subtract);
@@ -1234,7 +1410,7 @@ mod tests {
         let mut s = Selection::from_ellipse(64, 64, rect(10.0, 10.0, 50.0, 40.0), true);
         s.feather(3.0);
         let restored = s.compress().restore();
-        assert_eq!(restored.mask().as_bytes(), s.mask().as_bytes());
+        assert_eq!(restored.to_mask().as_bytes(), s.to_mask().as_bytes());
         assert_eq!(restored.bounds(), s.bounds());
     }
 

@@ -1171,7 +1171,7 @@ impl CShopApp {
                     self.notify("Nothing is selected");
                     return;
                 };
-                let data = selection.mask().clone();
+                let data = selection.to_mask();
                 let i = view.doc.add_channel(data);
                 let name = view.doc.channels[i].name.clone();
                 self.notify(format!("Saved selection as {name}"));
@@ -2011,11 +2011,11 @@ impl CShopApp {
                     return;
                 };
                 snapshot.capture(&*pixels, recent);
-                let clip = selection.as_ref().map(|s| Clip { mask: s.mask(), offset });
+                let clip = selection.as_ref().map(|s| Clip { selection: s, offset });
                 active.stroke.render_region(snapshot, pixels, recent, clip.as_ref());
             }
             StrokeTarget::Mask(snapshot) => {
-                let clip = selection.as_ref().map(|s| Clip { mask: s.mask(), offset });
+                let clip = selection.as_ref().map(|s| Clip { selection: s, offset });
                 let Some(mask) = tree.get_mut(active.layer).and_then(|l| l.mask.as_mut()) else {
                     return;
                 };
@@ -2032,7 +2032,11 @@ impl CShopApp {
                 let (sw, sh) = (snapshot.width(), snapshot.height());
                 let target = selection
                     .get_or_insert_with(|| Selection::from_mask(MaskBuffer::reveal_all(sw, sh)));
-                snapshot.capture(target.mask(), recent);
+                // A Quick Mask stroke can land anywhere, so the selection has
+                // to hold the whole document rather than only what is already
+                // covered.
+                target.widen_to_document();
+                snapshot.capture(target.window().0, recent);
                 active.stroke.render_region_into_mask(
                     snapshot,
                     target.mask_mut(),
@@ -2621,6 +2625,7 @@ impl CShopApp {
                 let after = view.doc.selection.clone();
                 let rect = active.stroke.bounds();
                 if let Some(sel) = view.doc.selection.as_mut() {
+                    sel.widen_to_document();
                     snapshot.restore(sel.mask_mut(), rect);
                     sel.invalidate();
                 }
@@ -2654,6 +2659,7 @@ impl CShopApp {
             }
             StrokeTarget::QuickMask(snapshot) => {
                 if let Some(sel) = view.doc.selection.as_mut() {
+                    sel.widen_to_document();
                     snapshot.restore(sel.mask_mut(), rect);
                     sel.invalidate();
                 }
@@ -2921,7 +2927,7 @@ impl CShopApp {
                 self.notify("Nothing is selected");
                 return;
             };
-            let mut data = selection.mask().clone();
+            let mut data = selection.to_mask();
             if invert {
                 data.invert();
             }
@@ -2953,7 +2959,7 @@ impl CShopApp {
 
         if let Some(selection) = &view.doc.selection {
             layer.mask = Some(LayerMask {
-                data: selection.mask().clone(),
+                data: selection.to_mask(),
                 offset: (0, 0),
                 enabled: true,
                 linked: true,
@@ -3509,7 +3515,7 @@ impl CShopApp {
         }
 
         let mut patch = px.copy_rect(rect.translate(-offset.0, -offset.1));
-        let coverage = view.doc.selection.as_ref().map(|s| s.mask().clone());
+        let coverage = view.doc.selection.as_ref().map(|s| s.to_mask());
         gradient.render(
             &mut patch,
             (rect.x0, rect.y0),

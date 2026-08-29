@@ -58,7 +58,7 @@ pub fn bucket_coverage(
             antialias: options.antialias,
         },
     );
-    wand.mask().clone()
+    wand.to_mask()
 }
 
 /// Composite `color` onto `dst` wherever `coverage` allows.

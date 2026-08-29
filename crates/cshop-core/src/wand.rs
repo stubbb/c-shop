@@ -72,7 +72,7 @@ pub fn magic_wand(
 /// already covers — Select > Grow.
 pub fn grow(source: &PixelBuffer, selection: &Selection, options: WandOptions) -> Selection {
     let (w, h) = (source.width(), source.height());
-    let mut mask = selection.mask().clone();
+    let mut mask = selection.to_mask();
 
     // Seed the queue with every pixel already selected, then flood outward.
     let mut queue: Vec<(i32, i32)> = Vec::new();

@@ -93,6 +93,16 @@ impl IRect {
     }
 
     #[inline]
+    /// Whether `other` lies wholly inside this rectangle. An empty `other` is
+    /// inside anything, since it asks for nothing.
+    pub fn contains_rect(&self, other: &IRect) -> bool {
+        other.is_empty()
+            || (other.x0 >= self.x0
+                && other.y0 >= self.y0
+                && other.x1 <= self.x1
+                && other.y1 <= self.y1)
+    }
+
     pub fn translate(&self, dx: i32, dy: i32) -> IRect {
         IRect { x0: self.x0 + dx, y0: self.y0 + dy, x1: self.x1 + dx, y1: self.y1 + dy }
     }

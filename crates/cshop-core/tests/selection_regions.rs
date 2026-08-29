@@ -27,6 +27,9 @@ fn shape() -> Selection {
 /// The same shape, but with its bounds forced to the whole canvas.
 fn shape_spanning() -> Selection {
     let mut s = shape();
+    // The mask is stored only where there is coverage, so make room before
+    // writing into the corners of the document.
+    s.widen_to_document();
     for (x, y) in [(0, 0), (SIDE as i32 - 1, 0), (0, SIDE as i32 - 1), (SIDE as i32 - 1, SIDE as i32 - 1)] {
         s.mask_mut().set(x, y, 255);
     }
@@ -162,4 +165,41 @@ fn combining_is_the_same_either_way() {
         }
         assert_eq!(bounded.bounds(), expected, "bounds after {mode:?}");
     }
+}
+
+/// A selection stores coverage where it has some, not across the document.
+#[test]
+fn a_small_selection_on_a_big_canvas_holds_little() {
+    let big = 10_000u32;
+    let s = Selection::from_rect(
+        big,
+        big,
+        Rectf::from_points(Vec2::new(100.0, 100.0), Vec2::new(300.0, 260.0)),
+        true,
+    );
+    // 200x160 of coverage, not 10000x10000.
+    assert_eq!(s.memory_bytes(), 200 * 160, "should hold its own area");
+    assert!(
+        s.memory_bytes() < big as u64 * big as u64 / 1000,
+        "held {} bytes on a {big}x{big} canvas",
+        s.memory_bytes()
+    );
+
+    // And it must still answer correctly everywhere, including far outside.
+    assert_eq!(s.coverage(200, 200), 255);
+    assert_eq!(s.coverage(9_000, 9_000), 0);
+    assert_eq!(s.coverage(-5, -5), 0);
+    assert_eq!(s.bounds(), IRect::new(100, 100, 300, 260));
+
+    // Compressing and restoring keeps both the coverage and the thrift.
+    let back = s.compress().restore();
+    assert_eq!(back.bounds(), s.bounds());
+    assert_eq!(back.memory_bytes(), s.memory_bytes());
+    assert_eq!(back.coverage(200, 200), 255);
+
+    // Inverting genuinely does cover the document, and says so.
+    let mut inverted = s.clone();
+    inverted.invert();
+    assert_eq!(inverted.coverage(9_000, 9_000), 255);
+    assert_eq!(inverted.memory_bytes(), big as u64 * big as u64);
 }

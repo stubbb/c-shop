@@ -22,6 +22,7 @@ use crate::color::{Rgba, Rgba8};
 use crate::geom::{IRect, Vec2};
 use crate::mask::MaskBuffer;
 use crate::pixels::PixelBuffer;
+use crate::selection::Selection;
 use crate::snapshot::Snapshot;
 
 /// A selection limiting where a stroke may land.
@@ -30,8 +31,10 @@ use crate::snapshot::Snapshot;
 /// copying one per stroke would be the most expensive thing about painting.
 #[derive(Debug, Clone, Copy)]
 pub struct Clip<'a> {
-    /// Selection coverage, in document coordinates.
-    pub mask: &'a MaskBuffer,
+    /// The selection to clip against. Held whole rather than as its buffer,
+    /// because a selection stores coverage only where it has any and knows
+    /// where that sits; a bare buffer would not.
+    pub selection: &'a Selection,
     /// Offset of the buffer being painted, so layer-local coordinates can be
     /// mapped into the selection's document space.
     pub offset: (i32, i32),
@@ -41,7 +44,7 @@ impl Clip<'_> {
     /// Selection coverage at a layer-local pixel, as a `0..=1` multiplier.
     #[inline]
     fn coverage(&self, lx: i32, ly: i32) -> f32 {
-        self.mask.get(lx + self.offset.0, ly + self.offset.1) as f32 / 255.0
+        self.selection.coverage(lx + self.offset.0, ly + self.offset.1) as f32 / 255.0
     }
 }
 
@@ -641,7 +644,7 @@ mod tests {
         let mut px = PixelBuffer::filled(64, 64, Rgba8::WHITE);
         let selection =
             Selection::from_rect(64, 64, Rectf { x0: 16.0, y0: 16.0, x1: 48.0, y1: 48.0 }, false);
-        let clip = Clip { mask: selection.mask(), offset: (0, 0) };
+        let clip = Clip { selection: &selection, offset: (0, 0) };
 
         let mut s = Stroke::new(64, 64, brush(40.0), PaintMode::Paint, Rgba8::BLACK);
         s.add_point(Vec2::new(32.0, 32.0));
@@ -658,7 +661,8 @@ mod tests {
         let mut px = PixelBuffer::filled(32, 32, Rgba8::WHITE);
         let mut mask = MaskBuffer::hide_all(32, 32);
         mask.fill_rect(IRect::new(0, 0, 32, 32), 128);
-        let clip = Clip { mask: &mask, offset: (0, 0) };
+        let half = Selection::from_mask(mask);
+        let clip = Clip { selection: &half, offset: (0, 0) };
 
         let mut s = Stroke::new(32, 32, brush(20.0), PaintMode::Paint, Rgba8::BLACK);
         s.add_point(Vec2::new(16.0, 16.0));
@@ -680,7 +684,7 @@ mod tests {
             Rectf { x0: 100.0, y0: 100.0, x1: 116.0, y1: 116.0 },
             false,
         );
-        let clip = Clip { mask: selection.mask(), offset: (100, 100) };
+        let clip = Clip { selection: &selection, offset: (100, 100) };
 
         let mut s = Stroke::new(32, 32, brush(60.0), PaintMode::Paint, Rgba8::BLACK);
         s.add_point(Vec2::new(16.0, 16.0));
@@ -773,7 +777,7 @@ mod tests {
         let mut dst = PixelBuffer::filled(64, 64, Rgba8::WHITE);
         let selection =
             Selection::from_rect(64, 64, Rectf { x0: 0.0, y0: 0.0, x1: 32.0, y1: 64.0 }, false);
-        let clip = Clip { mask: selection.mask(), offset: (0, 0) };
+        let clip = Clip { selection: &selection, offset: (0, 0) };
 
         let mut s = Stroke::with_source(
             64,

@@ -71,7 +71,7 @@ pub fn write(doc: &Document) -> Vec<u8> {
     doc_chunk.u64(doc.active.map(|id| id.0).unwrap_or(0));
     // The pixel selection, if there is one.
     write_option(&mut doc_chunk, doc.selection.as_ref(), |w, s: &cshop_core::selection::Selection| {
-        write_mask(w, s.mask());
+        write_mask(w, &s.to_mask());
     });
     chunk(&mut w, CHUNK_DOC, &doc_chunk.bytes);
 
