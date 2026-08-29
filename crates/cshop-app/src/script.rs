@@ -40,7 +40,7 @@
 
 use cshop_core::color::Rgba8;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Reporting
@@ -403,6 +403,111 @@ pub fn resolve(base: &Path, given: &str) -> PathBuf {
     }
 }
 
+/// Keeping a script inside a directory.
+///
+/// The script language can open and write files. Run from a terminal that is
+/// the point; served over a socket it is a filesystem primitive handed to
+/// whoever can reach the port, so the server resolves every path a script
+/// names through one of these instead of through [`resolve`].
+///
+/// Two checks, because either alone can be walked around. The lexical one
+/// refuses `..` and absolute paths, which stops the obvious traversal. The
+/// canonical one resolves the deepest part of the path that actually exists
+/// and confirms it is still inside the root, which stops a symlink planted in
+/// the workspace from pointing out of it. Only the pair is worth anything: the
+/// lexical check cannot see a symlink, and the canonical check cannot see a
+/// file that does not exist yet — which every export target is.
+#[derive(Clone, Debug)]
+pub struct Sandbox {
+    root: PathBuf,
+}
+
+impl Sandbox {
+    /// Take a directory as the root, creating it if it is not there.
+    ///
+    /// The root is canonicalised once, here, so that every later comparison is
+    /// against a path with no symlinks or `.` left in it.
+    pub fn new(root: &Path) -> Result<Sandbox, String> {
+        std::fs::create_dir_all(root)
+            .map_err(|e| format!("could not make the workspace {}: {e}", root.display()))?;
+        let root = root
+            .canonicalize()
+            .map_err(|e| format!("could not resolve the workspace {}: {e}", root.display()))?;
+        Ok(Sandbox { root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Resolve a path a script gave, or say why it is refused.
+    ///
+    /// The messages name the rule rather than only refusing, because the
+    /// caller is usually a program that can correct itself if it is told what
+    /// the shape of an acceptable path is.
+    pub fn resolve(&self, given: &str) -> Result<PathBuf, String> {
+        if given.is_empty() {
+            return Err("an empty path".to_string());
+        }
+        if given.starts_with('~') {
+            return Err(format!(
+                "{given:?} starts at a home directory; paths must be relative to the workspace"
+            ));
+        }
+
+        let candidate = Path::new(given);
+        if candidate.is_absolute() {
+            return Err(format!(
+                "{given:?} is absolute; paths must be relative to the workspace"
+            ));
+        }
+
+        // Lexical: build the path a component at a time, refusing anything
+        // that could climb. `.` is dropped; `..` is refused outright rather
+        // than popped, so a path cannot climb out and back in through a
+        // symlink on the way.
+        let mut out = self.root.clone();
+        for component in candidate.components() {
+            match component {
+                Component::Normal(part) => out.push(part),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(format!("{given:?} contains \"..\", which is not allowed"))
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(format!("{given:?} is absolute; paths must be relative"))
+                }
+            }
+        }
+
+        // Canonical: the deepest ancestor that exists must still be inside the
+        // root. A file that does not exist yet has no canonical form, so the
+        // check climbs to the nearest directory that does.
+        let mut existing = out.as_path();
+        loop {
+            match existing.parent() {
+                _ if existing.exists() => break,
+                Some(parent) => existing = parent,
+                None => return Err(format!("{given:?} has no part that exists")),
+            }
+        }
+        let real = existing
+            .canonicalize()
+            .map_err(|e| format!("could not resolve {}: {e}", existing.display()))?;
+        if !real.starts_with(&self.root) {
+            return Err(format!("{given:?} resolves outside the workspace"));
+        }
+
+        Ok(out)
+    }
+
+    /// The part of a path a caller should see, which is the part inside the
+    /// workspace. Absolute paths on this machine are not the client's business.
+    pub fn relative(&self, path: &Path) -> String {
+        path.strip_prefix(&self.root).unwrap_or(path).display().to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Running
 // ---------------------------------------------------------------------------
@@ -419,6 +524,9 @@ pub struct Runner {
     app: CShopApp,
     gpu: GpuContext,
     base: PathBuf,
+    /// Set when the script is not being run by whoever owns the machine. Every
+    /// path the script names is then resolved through it — see [`Sandbox`].
+    sandbox: Option<Sandbox>,
     report: Report,
     /// How deep inside styles we are. A style is script, and script can apply
     /// a style, so a style that applies itself would otherwise not stop.
@@ -432,16 +540,106 @@ pub struct Runner {
 /// `base` is the directory relative paths resolve against.
 pub fn run(source: &str, base: &Path) -> Result<Report, String> {
     let gpu = GpuContext::headless().map_err(|e| format!("no GPU: {e}"))?;
-    let mut runner = Runner {
-        app: CShopApp::new(gpu.clone()),
-        gpu,
-        base: base.to_path_buf(),
-        report: Report::default(),
-        depth: 0,
-        trail: Vec::new(),
-    };
-    runner.execute(source);
-    Ok(runner.finish())
+    let mut runner = Runner::new(gpu, base.to_path_buf(), None);
+    Ok(runner.run(source))
+}
+
+impl Runner {
+    /// A runner that outlives one script.
+    ///
+    /// The one-shot [`run`] builds a GPU context per call, which is right for
+    /// a command line and wrong for a server: the context costs far more than
+    /// most scripts do, and a caller working on one picture over several calls
+    /// needs the document to still be there on the next one.
+    pub fn new(gpu: GpuContext, base: PathBuf, sandbox: Option<Sandbox>) -> Runner {
+        Runner {
+            app: CShopApp::new(gpu.clone()),
+            gpu,
+            base,
+            sandbox,
+            report: Report::default(),
+            depth: 0,
+            trail: Vec::new(),
+        }
+    }
+
+    /// Run a script over whatever this runner already holds, and report.
+    pub fn run(&mut self, source: &str) -> Report {
+        self.report = Report::default();
+        self.depth = 0;
+        self.trail.clear();
+        self.execute(source);
+        self.finish()
+    }
+
+    /// Where a path a script named actually points.
+    ///
+    /// The only route from a script to the filesystem, so that confining one
+    /// is a matter of setting a field rather than of remembering to check at
+    /// each of the places that open a file.
+    fn path(&self, given: &str) -> Result<PathBuf, String> {
+        match &self.sandbox {
+            Some(sandbox) => sandbox.resolve(given),
+            None => Ok(resolve(&self.base, given)),
+        }
+    }
+
+    /// A path as the caller should see it — relative, when there is a
+    /// workspace, since absolute paths on this machine are not their business.
+    fn shown(&self, path: &Path) -> String {
+        match &self.sandbox {
+            Some(sandbox) => sandbox.relative(path),
+            None => path.display().to_string(),
+        }
+    }
+
+    /// The current composite, as a PNG.
+    pub fn composite_png(&mut self) -> Result<Vec<u8>, String> {
+        let pixels = self.composite()?;
+        cshop_io::encode(&pixels, cshop_io::ImageFormat::Png, 100)
+            .map_err(|e| format!("could not encode a PNG: {e}"))
+    }
+
+    /// The current composite as a PNG, scaled so its longest side is `fit`.
+    ///
+    /// Scaled before encoding rather than after, so the cost is paid once and
+    /// the bytes that come back are the bytes that were asked for.
+    pub fn composite_png_fit(&mut self, fit: u32) -> Result<Vec<u8>, String> {
+        let pixels = self.composite()?;
+        let (w, h) = (pixels.width(), pixels.height());
+        let longest = w.max(h);
+        let pixels = if longest > fit && fit > 0 {
+            let scale = fit as f32 / longest as f32;
+            cshop_core::resample::resize(
+                &pixels,
+                ((w as f32 * scale).round() as u32).max(1),
+                ((h as f32 * scale).round() as u32).max(1),
+                cshop_core::resample::Resampling::Lanczos3,
+            )
+        } else {
+            pixels
+        };
+        cshop_io::encode(&pixels, cshop_io::ImageFormat::Png, 100)
+            .map_err(|e| format!("could not encode a PNG: {e}"))
+    }
+
+    /// The document's size, for a caller that wants it without a script.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        self.app.doc().map(|v| (v.doc.width, v.doc.height))
+    }
+
+    /// Name and size, for listing what a session is holding.
+    pub fn document_summary(&self) -> Option<(String, u32, u32)> {
+        self.app.doc().map(|v| (v.doc.name.clone(), v.doc.width, v.doc.height))
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.app.doc().map(|v| v.doc.tree.len()).unwrap_or(0)
+    }
+
+    pub fn has_document(&self) -> bool {
+        self.app.doc().is_some()
+    }
 }
 
 impl Runner {
@@ -477,7 +675,7 @@ impl Runner {
     }
 
     /// Describe the document as it now stands.
-    fn finish(mut self) -> Report {
+    fn finish(&mut self) -> Report {
         self.report.ok = self.report.steps.iter().all(|s| s.ok);
         if let Some(view) = self.app.doc() {
             self.report.document =
@@ -498,7 +696,7 @@ impl Runner {
                 });
             }
         }
-        self.report
+        std::mem::take(&mut self.report)
     }
 
     fn need_doc(&self) -> Result<(), String> {
@@ -562,12 +760,13 @@ impl Runner {
 
     fn cmd_open(&mut self, cmd: &Command) -> Result<String, String> {
         let given = cmd.args.first().ok_or("open needs a path")?;
-        let path = resolve(&self.base, given);
+        let path = self.path(given)?;
         let doc = cshop_io::load_document(&path)
-            .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+            .map_err(|e| format!("could not open {}: {e}", self.shown(&path)))?;
         let (w, h, n) = (doc.width, doc.height, doc.tree.len());
+        let shown = self.shown(&path);
         self.app.open_document(doc);
-        Ok(format!("opened {} ({w}x{h}, {n} layer{})", path.display(), if n == 1 { "" } else { "s" }))
+        Ok(format!("opened {shown} ({w}x{h}, {n} layer{})", if n == 1 { "" } else { "s" }))
     }
 
     /// Bring an image in as a new layer above the active one.
@@ -582,7 +781,7 @@ impl Runner {
     fn cmd_place(&mut self, cmd: &Command) -> Result<String, String> {
         self.need_doc()?;
         let path = match cmd.args.first() {
-            Some(given) => resolve(&self.base, given),
+            Some(given) => self.path(given)?,
             None => self
                 .app
                 .doc()
@@ -1001,7 +1200,7 @@ impl Runner {
     fn cmd_write(&mut self, cmd: &Command) -> Result<String, String> {
         self.need_doc()?;
         let given = cmd.args.first().ok_or("export needs a path")?;
-        let path = resolve(&self.base, given);
+        let path = self.path(given)?;
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -1606,7 +1805,7 @@ fn factor(c: &[char], at: &mut usize, v: &[(String, String)], whole: &str) -> Re
 }
 
 /// Where styles are looked for, nearest first.
-fn style_dirs(base: &Path) -> Vec<PathBuf> {
+pub fn style_dirs(base: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![base.to_path_buf(), base.join("styles")];
     // Beside the binary, which is where an installed copy keeps them.
     if let Ok(exe) = std::env::current_exe() {

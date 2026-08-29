@@ -6,6 +6,9 @@
 use std::path::Path;
 
 /// The binary's own module, reached the way an integration test can.
+// A test binary uses a subset of the module it includes; the rest being
+// unused here says nothing about whether it is used in the binary.
+#[allow(dead_code)]
 #[path = "../src/script.rs"]
 mod script;
 
@@ -551,4 +554,75 @@ fn the_coloured_pencil_style_lays_colour_back_over_its_own_drawing() {
         .expect("the original should be back on top");
     assert_eq!(colour.blend, "Color");
     assert!((colour.opacity - 0.5).abs() < 0.01, "opacity was {}", colour.opacity);
+}
+
+// ---------------------------------------------------------------------------
+// Sandboxing
+// ---------------------------------------------------------------------------
+
+mod sandbox {
+    use super::script::Sandbox;
+    use std::path::PathBuf;
+
+    fn workspace(name: &str) -> (Sandbox, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("cshop-sandbox-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sandbox = Sandbox::new(&dir).expect("make the workspace");
+        let root = sandbox.root().to_path_buf();
+        (sandbox, root)
+    }
+
+    #[test]
+    fn a_plain_relative_path_resolves_inside_the_root() {
+        let (sandbox, root) = workspace("plain");
+        let got = sandbox.resolve("out.png").expect("should resolve");
+        assert_eq!(got, root.join("out.png"));
+        // A directory that does not exist yet still resolves: export creates
+        // its parents, and the check that matters is where it lands.
+        let got = sandbox.resolve("nested/deep/out.png").expect("should resolve");
+        assert_eq!(got, root.join("nested/deep/out.png"));
+    }
+
+    #[test]
+    fn climbing_out_is_refused() {
+        let (sandbox, _) = workspace("climb");
+        for attempt in ["../secrets", "a/../../secrets", "..", "a/.."] {
+            let err = sandbox.resolve(attempt).expect_err(attempt);
+            assert!(err.contains(".."), "{attempt}: {err}");
+        }
+    }
+
+    #[test]
+    fn absolute_paths_and_home_are_refused() {
+        let (sandbox, _) = workspace("absolute");
+        assert!(sandbox.resolve("/etc/passwd").unwrap_err().contains("absolute"));
+        assert!(sandbox.resolve("~/.ssh/id_rsa").unwrap_err().contains("home"));
+        assert!(sandbox.resolve("~").unwrap_err().contains("home"));
+    }
+
+    /// The check the lexical pass cannot make on its own.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_pointing_out_of_the_workspace_is_refused() {
+        let (sandbox, root) = workspace("symlink");
+        let outside = std::env::temp_dir().join("cshop-sandbox-symlink-target");
+        std::fs::create_dir_all(&outside).expect("make the target");
+        std::fs::write(outside.join("secret.txt"), b"secret").expect("write");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).expect("link");
+
+        // Lexically this is a plain relative path with no `..` in it at all.
+        let err = sandbox.resolve("escape/secret.txt").expect_err("should refuse");
+        assert!(err.contains("outside the workspace"), "{err}");
+    }
+
+    #[test]
+    fn a_symlink_inside_the_workspace_is_allowed() {
+        let (sandbox, root) = workspace("inner-link");
+        std::fs::create_dir_all(root.join("real")).expect("make");
+        std::fs::write(root.join("real/photo.png"), b"x").expect("write");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).expect("link");
+        #[cfg(unix)]
+        assert!(sandbox.resolve("alias/photo.png").is_ok(), "staying inside is fine");
+    }
 }
