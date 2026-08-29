@@ -1,0 +1,59 @@
+# C-Shop as a service.
+#
+#   docker compose up -d
+#   curl -s localhost:7333/health
+#
+# The workspace is the only directory scripts can touch, so whatever is mounted
+# there is both what they may open and where their output lands.
+
+services:
+  cshop:
+    build: .
+    image: cshop:latest
+    # Published to loopback only. Change to "7333:7333" to expose it on the
+    # host's network — and set a token you have chosen before you do.
+    ports:
+      - "127.0.0.1:7333:7333"
+    # The workspace is a bind mount, so the container has to run as whoever
+    # owns it on the host. The image defaults to 1000, which is right on most
+    # machines; export CSHOP_UID/CSHOP_GID if yours differ (`id -u`, `id -g`).
+    user: "${CSHOP_UID:-1000}:${CSHOP_GID:-1000}"
+    volumes:
+      - ./workspace:/workspace
+    environment:
+      # Left unset, the container generates a token and logs it — enough to try
+      # it, but it changes on every restart. Pin it as soon as anything has to
+      # reconnect:
+      #
+      #     export CSHOP_TOKEN="$(openssl rand -hex 24)"
+      #
+      # Deliberately not marked required. Compose interpolates on *every*
+      # subcommand, so `:?` here would mean `docker compose logs` and
+      # `docker compose down` also failed without it — and the entrypoint
+      # already refuses to serve unauthenticated whatever this says.
+      CSHOP_TOKEN: "${CSHOP_TOKEN:-}"
+      RUST_LOG: "cshop=info,warn"
+      # A browser origin allowed to call in, if one needs to. Comma-separated.
+      # CSHOP_ALLOW_ORIGINS: "http://localhost:5173"
+    restart: unless-stopped
+
+    # Rendering is CPU-bound without a GPU, and every request is one render.
+    # Give it cores; it will use them.
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+    # A real GPU, when there is one. Needs the NVIDIA Container Toolkit on the
+    # host; nothing in the image changes.
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    security_opt:
+      - no-new-privileges:true

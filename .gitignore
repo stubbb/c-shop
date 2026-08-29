@@ -5,3 +5,7 @@
 # Offscreen renders produced by --screenshot while working.
 /*.png
 !/docs/*.png
+
+# The compose file's default bind mount. Whatever is served lives here, and it
+# is the operator's data rather than the project's.
+/workspace/

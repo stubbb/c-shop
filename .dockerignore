@@ -1,0 +1,11 @@
+# The build happens inside the image; a host target/ would only be copied in
+# and thrown away, and it is by far the largest thing here.
+target/
+.git/
+
+# Documentation and its screenshots are several megabytes of context that the
+# image never reads. The styles directory is deliberately not excluded — it is
+# installed into the image and is part of what the editor can do.
+docs/
+*.md
+LICENSE*
