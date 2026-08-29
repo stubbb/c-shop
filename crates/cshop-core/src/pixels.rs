@@ -26,6 +26,25 @@ impl std::fmt::Debug for PixelBuffer {
     }
 }
 
+/// How many samples a box-filter cell contributes along each axis.
+///
+/// Sixty-four samples per output pixel is far more than a thumbnail needs, and
+/// it makes the work proportional to the thumbnail rather than to the image:
+/// a 48-pixel square costs about 150 thousand samples whether the source is a
+/// megapixel or a hundred. Averaging *every* source pixel instead is what made
+/// large documents unusable to paint on.
+///
+/// Striding can alias against a regular pattern finer than the step, which at
+/// this size is a thumbnail that shimmers slightly as a layer is edited. That
+/// is a fair trade for the panel staying responsive.
+pub const SAMPLES_PER_CELL: u32 = 8;
+
+/// The stride that keeps a cell of `span` pixels under [`SAMPLES_PER_CELL`]
+/// samples. Never zero, so it is always safe for `step_by`.
+pub fn sample_step(span: u32) -> u32 {
+    (span / SAMPLES_PER_CELL).max(1)
+}
+
 impl PixelBuffer {
     /// Fully transparent buffer.
     pub fn new(width: u32, height: u32) -> Self {
@@ -188,6 +207,13 @@ impl PixelBuffer {
 
     /// Box-filtered downscale, used for layer thumbnails. Averaging in sRGB is
     /// deliberate: thumbnails should match what the canvas shows.
+    ///
+    /// Cost is bounded by the *output* size rather than the input's, because a
+    /// thumbnail is regenerated every time its layer changes — which, during a
+    /// brush stroke, is every frame. Averaging every source pixel makes that
+    /// cost proportional to the canvas, so a 10000x10000 document spent 150 ms
+    /// per stroke step building a 48-pixel picture nobody was looking at that
+    /// closely. See [`SAMPLES_PER_CELL`].
     pub fn downscale(&self, dst_w: u32, dst_h: u32) -> PixelBuffer {
         let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
         let mut out = PixelBuffer::new(dst_w, dst_h);
@@ -197,16 +223,20 @@ impl PixelBuffer {
         for dy in 0..dst_h {
             let sy0 = (dy as u64 * self.height as u64 / dst_h as u64) as u32;
             let sy1 = (((dy + 1) as u64 * self.height as u64 / dst_h as u64) as u32).max(sy0 + 1);
+            let step_y = sample_step(sy1.min(self.height).saturating_sub(sy0));
             for dx in 0..dst_w {
                 let sx0 = (dx as u64 * self.width as u64 / dst_w as u64) as u32;
                 let sx1 = (((dx + 1) as u64 * self.width as u64 / dst_w as u64) as u32).max(sx0 + 1);
+                let step_x = sample_step(sx1.min(self.width).saturating_sub(sx0));
 
                 // Weight colour by alpha so transparent pixels do not drag the
                 // hue toward black.
                 let (mut r, mut g, mut b, mut a) = (0f32, 0f32, 0f32, 0f32);
                 let mut n = 0f32;
-                for sy in sy0..sy1.min(self.height) {
-                    for px in &self.row(sy)[sx0 as usize..(sx1.min(self.width)) as usize] {
+                for sy in (sy0..sy1.min(self.height)).step_by(step_y as usize) {
+                    let row = self.row(sy);
+                    for sx in (sx0..sx1.min(self.width)).step_by(step_x as usize) {
+                        let px = row[sx as usize];
                         let af = px.a as f32;
                         r += px.r as f32 * af;
                         g += px.g as f32 * af;

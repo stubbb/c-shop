@@ -22,6 +22,7 @@ use crate::color::{Rgba, Rgba8};
 use crate::geom::{IRect, Vec2};
 use crate::mask::MaskBuffer;
 use crate::pixels::PixelBuffer;
+use crate::snapshot::Snapshot;
 
 /// A selection limiting where a stroke may land.
 ///
@@ -222,7 +223,7 @@ impl Stroke {
     /// coverage accumulated so far. Used for the live preview during a stroke.
     pub fn render_region(
         &self,
-        snapshot: &PixelBuffer,
+        snapshot: &Snapshot<Rgba8>,
         dst: &mut PixelBuffer,
         rect: IRect,
         clip: Option<&Clip>,
@@ -235,7 +236,7 @@ impl Stroke {
                 if let Some(clip) = clip {
                     cov *= clip.coverage(x, y);
                 }
-                let base = snapshot.get(x, y);
+                let base = snapshot.at(x, y);
                 if cov <= 0.0 {
                     dst.set(x, y, base);
                     continue;
@@ -276,7 +277,7 @@ impl Stroke {
     /// and painting white reveals, exactly as on a layer mask.
     pub fn render_region_into_mask(
         &self,
-        snapshot: &MaskBuffer,
+        snapshot: &Snapshot<u8>,
         dst: &mut MaskBuffer,
         rect: IRect,
         clip: Option<&Clip>,
@@ -291,7 +292,7 @@ impl Stroke {
                 if let Some(clip) = clip {
                     cov *= clip.coverage(x, y);
                 }
-                let base = snapshot.get(x, y) as f32;
+                let base = snapshot.at(x, y) as f32;
                 if cov <= 0.0 {
                     dst.set(x, y, base as u8);
                     continue;
@@ -602,11 +603,15 @@ mod tests {
         s1.commit(&mut oneshot, None);
 
         let mut live = base.clone();
+        let mut snapshot = Snapshot::new(48, 48, Rgba8::TRANSPARENT);
         let mut s2 = Stroke::new(48, 48, b, PaintMode::Paint, Rgba8::WHITE);
         for p in points {
             s2.add_point(p);
             let r = s2.take_recent();
-            s2.render_region(&base, &mut live, r, None);
+            // Captured from the live buffer, as the editor does — which is
+            // also a check that a tile taken once is not retaken after paint.
+            snapshot.capture(&live, r);
+            s2.render_region(&snapshot, &mut live, r, None);
         }
 
         assert!(live == oneshot, "incremental preview diverged from the final commit");
@@ -688,12 +693,13 @@ mod tests {
     #[test]
     fn painting_a_mask_moves_it_toward_the_colour_luma() {
         use crate::mask::MaskBuffer;
-        let snapshot = MaskBuffer::new(32, 32, 255);
-        let mut dst = snapshot.clone();
+        let mut dst = MaskBuffer::new(32, 32, 255);
+        let mut snapshot = Snapshot::new(32, 32, 0);
 
         let mut s = Stroke::new(32, 32, brush(12.0), PaintMode::Paint, Rgba8::BLACK);
         s.add_point(Vec2::new(16.0, 16.0));
         let r = s.take_recent();
+        snapshot.capture(&dst, r);
         s.render_region_into_mask(&snapshot, &mut dst, r, None);
 
         assert_eq!(dst.get(16, 16), 0, "black conceals");

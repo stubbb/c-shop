@@ -33,6 +33,7 @@ pub mod paint;
 pub mod pixels;
 pub mod resample;
 pub mod selection;
+pub mod snapshot;
 pub mod transform;
 pub mod tree;
 pub mod wand;

@@ -259,6 +259,10 @@ avoid special-casing everything downstream.
 - **Every style, discovered rather than listed.** The style library is read off
   disk and each one applied, so a style added later is covered without anyone
   remembering to add a test for it.
+- **Cost that must not follow the canvas.** Editing a 10000x10000 document
+  should cost what editing a small one does, so those are timed against each
+  other rather than against a stopwatch — the shape of the cost is the thing
+  being tested, not the speed of the machine.
 - **The server, over a real socket.** The MCP tests bind a port and speak HTTP
   to it, because most of what could go wrong there is in the transport and in
   the guards around it — neither of which a test that calls the handler

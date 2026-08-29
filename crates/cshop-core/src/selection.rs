@@ -87,6 +87,23 @@ impl Selection {
         Self { mask, bounds, contours: None, dropped_contours: 0 }
     }
 
+    /// A selection whose extent is already known.
+    ///
+    /// The marquees draw into a region they chose, so scanning the whole mask
+    /// afterwards to find out where they drew is work with a known answer —
+    /// and on a large canvas it is the most expensive part of making a
+    /// selection at all. Passing a wrong rect here would leave tools skipping
+    /// parts of the selection, so it is only for callers that computed the
+    /// region they filled.
+    fn from_mask_bounded(mask: MaskBuffer, bounds: IRect) -> Self {
+        debug_assert_eq!(
+            bounds,
+            mask.coverage_bounds(),
+            "a bounded selection must agree with what is actually in its mask"
+        );
+        Self { mask, bounds, contours: None, dropped_contours: 0 }
+    }
+
     pub fn width(&self) -> u32 {
         self.mask.width()
     }
@@ -150,6 +167,7 @@ impl Selection {
         let rect = if antialias { rect } else { rect.snap_to_pixels() };
         let mut mask = MaskBuffer::hide_all(width, height);
         let scan = rect.pixel_bounds().intersect(&IRect::from_size(width, height));
+        let mut filled = IRect::EMPTY;
         for y in scan.y0..scan.y1 {
             for x in scan.x0..scan.x1 {
                 // Coverage is the area of the pixel square inside the rect.
@@ -157,11 +175,15 @@ impl Selection {
                 let oy = overlap(y as f32, y as f32 + 1.0, rect.y0, rect.y1);
                 let cov = ox * oy;
                 if cov > 0.0 {
-                    mask.set(x, y, (cov.min(1.0) * 255.0 + 0.5) as u8);
+                    let v = (cov.min(1.0) * 255.0 + 0.5) as u8;
+                    if v != 0 {
+                        mask.set(x, y, v);
+                        filled = filled.union(&IRect::new(x, y, x + 1, y + 1));
+                    }
                 }
             }
         }
-        Self::from_mask(mask)
+        Self::from_mask_bounded(mask, filled)
     }
 
     /// Elliptical selection inscribed in `rect`.
@@ -180,6 +202,7 @@ impl Selection {
         // Supersampling rather than an analytic area: exact ellipse-square
         // overlap has no closed form, and 4x4 samples are visually clean.
         const SS: i32 = 4;
+        let mut filled = IRect::EMPTY;
         for y in scan.y0..scan.y1 {
             for x in scan.x0..scan.x1 {
                 let cov = if antialias {
@@ -202,11 +225,15 @@ impl Selection {
                     if dx * dx + dy * dy <= 1.0 { 1.0 } else { 0.0 }
                 };
                 if cov > 0.0 {
-                    mask.set(x, y, (cov * 255.0 + 0.5) as u8);
+                    let v = (cov * 255.0 + 0.5) as u8;
+                    if v != 0 {
+                        mask.set(x, y, v);
+                        filled = filled.union(&IRect::new(x, y, x + 1, y + 1));
+                    }
                 }
             }
         }
-        Self::from_mask(mask)
+        Self::from_mask_bounded(mask, filled)
     }
 
     /// Polygon selection, filled with the non-zero winding rule.

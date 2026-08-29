@@ -107,26 +107,29 @@ impl MaskBuffer {
 
     /// Bounding box of non-zero coverage, or [`IRect::EMPTY`] if the mask is
     /// blank. Lets tools skip work outside an active selection.
+    /// The smallest rectangle containing every non-zero pixel.
+    ///
+    /// Row-parallel, and each row stops at its own first and last non-zero
+    /// byte rather than examining every one. On a selection mask the size of a
+    /// large canvas this is the difference between a scan that is felt and one
+    /// that is not: the mask is mostly zero, and the interesting part of any
+    /// row is at its two ends.
     pub fn coverage_bounds(&self) -> IRect {
-        let (mut x0, mut y0) = (i32::MAX, i32::MAX);
-        let (mut x1, mut y1) = (i32::MIN, i32::MIN);
-        for y in 0..self.height {
-            let row = &self.data[y as usize * self.width as usize..][..self.width as usize];
-            for (x, &v) in row.iter().enumerate() {
-                if v != 0 {
-                    let x = x as i32;
-                    x0 = x0.min(x);
-                    x1 = x1.max(x + 1);
-                    y0 = y0.min(y as i32);
-                    y1 = y1.max(y as i32 + 1);
-                }
-            }
+        use rayon::prelude::*;
+        let width = self.width as usize;
+        if width == 0 || self.height == 0 {
+            return IRect::EMPTY;
         }
-        if x0 == i32::MAX {
-            IRect::EMPTY
-        } else {
-            IRect::new(x0, y0, x1, y1)
-        }
+        self.data
+            .par_chunks(width)
+            .enumerate()
+            .filter_map(|(y, row)| {
+                let first = row.iter().position(|&v| v != 0)?;
+                // Having found one, the last is a search from the other end.
+                let last = row.iter().rposition(|&v| v != 0).unwrap_or(first);
+                Some(IRect::new(first as i32, y as i32, last as i32 + 1, y as i32 + 1))
+            })
+            .reduce(|| IRect::EMPTY, |a, b| a.union(&b))
     }
 
     pub fn copy_rect(&self, rect: IRect) -> MaskBuffer {

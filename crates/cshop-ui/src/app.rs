@@ -21,6 +21,7 @@ use cshop_core::history::{
 use cshop_core::layer::{Layer, LayerId, LayerKind, LayerMask};
 use cshop_core::mask::MaskBuffer;
 use cshop_core::paint::{Brush, Clip, PaintMode, Stroke, StrokeSource};
+use cshop_core::snapshot::Snapshot;
 use cshop_core::pixels::PixelBuffer;
 use cshop_core::selection::{Selection, SelectionMode};
 use cshop_core::tree::LayerPos;
@@ -36,11 +37,11 @@ use std::path::PathBuf;
 /// onto the live buffer, which is what lets the preview match the committed
 /// result and makes the undo entry exact.
 pub enum StrokeTarget {
-    Pixels(PixelBuffer),
+    Pixels(Snapshot<Rgba8>),
     /// The active layer's mask.
-    Mask(MaskBuffer),
+    Mask(Snapshot<u8>),
     /// The selection itself, while Quick Mask is on.
-    QuickMask(MaskBuffer),
+    QuickMask(Snapshot<u8>),
 }
 
 /// A stroke in progress.
@@ -1886,10 +1887,9 @@ impl CShopApp {
 
         // --- Quick Mask: the stroke edits the selection ---------------------
         if quick_mask {
-            let snapshot = match &view.doc.selection {
-                Some(s) => s.mask().clone(),
-                None => MaskBuffer::reveal_all(doc_w, doc_h),
-            };
+            // Nothing is copied yet; the original is taken tile by tile as
+            // the stroke reaches it.
+            let snapshot = Snapshot::new(doc_w, doc_h, 0);
             // Painting black in Quick Mask protects (deselects); white selects.
             let colour = if mode == PaintMode::Erase { background } else { foreground };
             let mut stroke = Stroke::new(doc_w, doc_h, brush, PaintMode::Paint, colour);
@@ -1910,8 +1910,8 @@ impl CShopApp {
             // --- painting the layer's mask ---------------------------------
             EditTarget::Mask => {
                 let mask = layer.mask.as_ref().expect("effective_edit_target checked this");
-                let snapshot = mask.data.clone();
-                let (mw, mh) = (snapshot.width(), snapshot.height());
+                let (mw, mh) = (mask.data.width(), mask.data.height());
+                let snapshot = Snapshot::new(mw, mh, 0);
                 let offset = mask.offset;
                 let colour = if mode == PaintMode::Erase { background } else { foreground };
                 let mut stroke = Stroke::new(mw, mh, brush, PaintMode::Paint, colour);
@@ -1925,7 +1925,11 @@ impl CShopApp {
                     self.fail("Only raster layers can be painted on");
                     return;
                 };
-                let snapshot = px.clone();
+                // Deliberately not `px.clone()`. On a large canvas that copied
+                // the whole layer — 400 MB and about 150 ms on a 10000x10000
+                // document — every time the mouse went down, for a stroke that
+                // might cover a hundred pixels. See `cshop_core::snapshot`.
+                let snapshot = Snapshot::new(px.width(), px.height(), Rgba8::TRANSPARENT);
                 let layer_offset = layer.offset;
 
                 // The Clone Stamp is the brush with its colour coming from
@@ -1999,11 +2003,14 @@ impl CShopApp {
         // layer it lives beside.
         let Document { tree, selection, .. } = &mut view.doc;
 
-        match &active.target {
+        // The original has to be taken before the dab overwrites it, and only
+        // for the part the dab reaches.
+        match &mut active.target {
             StrokeTarget::Pixels(snapshot) => {
                 let Some(pixels) = tree.get_mut(active.layer).and_then(|l| l.pixels_mut()) else {
                     return;
                 };
+                snapshot.capture(&*pixels, recent);
                 let clip = selection.as_ref().map(|s| Clip { mask: s.mask(), offset });
                 active.stroke.render_region(snapshot, pixels, recent, clip.as_ref());
             }
@@ -2012,6 +2019,7 @@ impl CShopApp {
                 let Some(mask) = tree.get_mut(active.layer).and_then(|l| l.mask.as_mut()) else {
                     return;
                 };
+                snapshot.capture(&mask.data, recent);
                 active.stroke.render_region_into_mask(
                     snapshot,
                     &mut mask.data,
@@ -2021,12 +2029,10 @@ impl CShopApp {
             }
             StrokeTarget::QuickMask(snapshot) => {
                 // Editing the selection directly, so nothing clips it.
-                let target = selection.get_or_insert_with(|| {
-                    Selection::from_mask(MaskBuffer::reveal_all(
-                        snapshot.width(),
-                        snapshot.height(),
-                    ))
-                });
+                let (sw, sh) = (snapshot.width(), snapshot.height());
+                let target = selection
+                    .get_or_insert_with(|| Selection::from_mask(MaskBuffer::reveal_all(sw, sh)));
+                snapshot.capture(target.mask(), recent);
                 active.stroke.render_region_into_mask(
                     snapshot,
                     target.mask_mut(),
@@ -2610,9 +2616,14 @@ impl CShopApp {
 
             StrokeTarget::QuickMask(snapshot) => {
                 // Roll back and let the command re-apply, so undo returns to
-                // the selection as it stood before the stroke.
+                // the selection as it stood before the stroke. Only the painted
+                // area is put back, because only that was ever captured.
                 let after = view.doc.selection.clone();
-                view.doc.selection = Some(Selection::from_mask(snapshot));
+                let rect = active.stroke.bounds();
+                if let Some(sel) = view.doc.selection.as_mut() {
+                    snapshot.restore(sel.mask_mut(), rect);
+                    sel.invalidate();
+                }
                 let dirty = view.history.apply(
                     &mut view.doc,
                     Box::new(SetSelection::new(after.as_ref(), "Quick Mask")),
@@ -2627,19 +2638,25 @@ impl CShopApp {
         let Some(active) = self.stroke.take() else { return };
         let Some(index) = self.active else { return };
         let view = &mut self.docs[index];
+        // Only what the stroke painted is put back; nothing else was captured,
+        // and nothing else changed.
+        let rect = active.stroke.bounds();
         match active.target {
             StrokeTarget::Pixels(snapshot) => {
                 if let Some(px) = view.doc.tree.get_mut(active.layer).and_then(|l| l.pixels_mut()) {
-                    *px = snapshot;
+                    snapshot.restore(px, rect);
                 }
             }
             StrokeTarget::Mask(snapshot) => {
                 if let Some(m) = view.doc.tree.get_mut(active.layer).and_then(|l| l.mask.as_mut()) {
-                    m.data = snapshot;
+                    snapshot.restore(&mut m.data, rect);
                 }
             }
             StrokeTarget::QuickMask(snapshot) => {
-                view.doc.selection = Some(Selection::from_mask(snapshot));
+                if let Some(sel) = view.doc.selection.as_mut() {
+                    snapshot.restore(sel.mask_mut(), rect);
+                    sel.invalidate();
+                }
             }
         }
         view.invalidate();

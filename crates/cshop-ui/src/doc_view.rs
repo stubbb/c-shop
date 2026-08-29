@@ -418,6 +418,10 @@ impl DocView {
 
         // Box-filter the coverage down, then show it as opaque grey — a mask
         // reads as a greyscale plate, not as transparency.
+        //
+        // Sampled at a stride for the same reason the pixel thumbnail is: the
+        // cost has to belong to the thumbnail, not to the canvas, or editing a
+        // large mask stalls on redrawing a picture of it.
         let mut pixels = Vec::with_capacity((tw * th) as usize);
         for ty in 0..th {
             for tx in 0..tw {
@@ -425,9 +429,11 @@ impl DocView {
                 let sx1 = (((tx + 1) as u64 * w as u64 / tw as u64) as u32).max(sx0 as u32 + 1);
                 let sy0 = ty as u64 * h as u64 / th as u64;
                 let sy1 = (((ty + 1) as u64 * h as u64 / th as u64) as u32).max(sy0 as u32 + 1);
+                let step_x = cshop_core::pixels::sample_step(sx1.min(w).saturating_sub(sx0 as u32));
+                let step_y = cshop_core::pixels::sample_step(sy1.min(h).saturating_sub(sy0 as u32));
                 let (mut sum, mut n) = (0u32, 0u32);
-                for sy in sy0 as u32..sy1.min(h) {
-                    for sx in sx0 as u32..sx1.min(w) {
+                for sy in (sy0 as u32..sy1.min(h)).step_by(step_y as usize) {
+                    for sx in (sx0 as u32..sx1.min(w)).step_by(step_x as usize) {
                         sum += mask.data.get(sx as i32, sy as i32) as u32;
                         n += 1;
                     }
