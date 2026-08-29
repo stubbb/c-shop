@@ -295,6 +295,155 @@ like graphite when shrunk and like a mechanical plaid at full size — the
 downscale had been averaging it away. The fix was a hatch a third as coarse.
 Checking the preview alone would have shipped the plaid.
 
+**A brighter drawing takes colour worse.** Which is why `coloured-pencil` asks
+for a softer sketch than the graphite look, and why turning its `contrast` up
+makes the picture brighter and the colour weaker at the same time.
+
+The appendix at the end of this document walks through how that style was
+arrived at, attempts and dead ends included, as a worked example of pursuing a
+picture through this harness rather than a command.
+
+## Appendix: pursuing an objective through the harness
+
+The rest of this document says what the commands do. This says what *using*
+them looks like when the goal is a picture rather than a command — the whole
+sequence for one style, including the attempts that were abandoned and why,
+because the abandoned ones carry most of the information.
+
+The brief was: take the pencil sketch, lay the original back over it with
+colour blending at 50% to recolour it, make it look like a coloured pencil
+drawing; try either the colour on top or the sketch on top with lightness
+blending; and letter it in a different face with a drop shadow.
+
+### 1. Start from a known recipe, then check it exists
+
+A pencil sketch from a photograph is a solved problem: desaturate, take a copy,
+invert it, blur it, and colour-dodge it back over the original. Nothing had to
+be invented — the first question was only whether the parts were reachable.
+They were: `adjust black-and-white`, `layer duplicate`, `adjust invert`,
+`filter gaussian-blur`, `set blend="Color Dodge"`. The one thing worth checking
+before writing anything was the blend mode's exact name, because a script that
+misspells it fails on the line that matters.
+
+The first run produced a real sketch. That is the useful thing about starting
+from a recipe: the first attempt is a starting point rather than a guess.
+
+### 2. Vary one thing at a time, and look at them together
+
+The first sketch was faint. Rather than nudging one number and re-rendering,
+four variants went out at once — blur 3, 6 and 12, contrast 0 to 0.55 — tiled
+into one sheet. One look ranks four candidates; four looks rank them badly,
+because by the fourth you are comparing an image against a memory.
+
+Blur 12 had the most graphite character. Higher contrast drifted toward line
+art: crisper, but the tonal shading that makes a drawing look drawn was gone.
+
+### 3. Judge at the size it will be seen
+
+The lettering went through the same treatment — outline only, outline plus a
+wash, solid grey, then cross hatching — and hatching plus wash plus outline won
+on the small test.
+
+At full size it was a **mechanical plaid**. The hatch that read as graphite on
+a fifth-scale preview was, at 1:1, an obvious geometric grid. The downscale had
+been averaging it away and flattering it.
+
+This is the single most expensive mistake available here. Every intermediate
+check is on a small copy because that is what makes iteration fast, and the
+thing that breaks is precisely the thing a small copy hides: texture,
+antialiasing, banding. The hatch went from 35 to 14 and the outline from 8 to
+5, and both were then checked at 1:1 before anything else was believed.
+
+The same trap caught the pixel figures. `blur=12` was tuned on a fifth-scale
+copy; the full-size render needed `blur=60`. Nothing in the language multiplies
+for you, and a blur is in pixels, so it is relative to the image and not to the
+picture.
+
+### 4. When the brief will not work, find out why before trying alternatives
+
+The instruction was Color blending at 50%. It produced almost nothing. So did
+75%. So did **100%** — which is the observation that mattered, because it ruled
+out opacity as the problem and pointed at the blend itself.
+
+Color blending takes hue and saturation from the top layer and **lightness from
+the backdrop**. The backdrop was a sketch pushed to near-white paper. There is
+no such thing as a saturated green at 98% lightness, so the colour had nowhere
+to live. The instruction was not wrong; it was being applied to a drawing with
+no tonal room in it.
+
+That diagnosis is what made the next step obvious rather than a guess. Several
+alternatives were on the table at that point, and knowing *why* it failed is
+what let three of them be discarded without being tried:
+
+**The other ordering — sketch on top, Luminosity.** Tried, and it worked at
+50%: real colour, real structure. But it turned out to be the same result as
+Color at full opacity, because the two modes are duals. They differ only in
+what partial opacity fades *toward* — Color toward the grey drawing, Luminosity
+toward the untouched photograph. Which meant the choice was not "which mode"
+but "which end do I want to fade toward", and for a drawing the answer is the
+drawing. At 65% it looked like a stylised photograph rather than a drawing:
+solid grey-green blocks where the leaves should have had strokes.
+
+**Saturating the colour layer before blending.** Tried, and it did rescue the
+brightness problem: white paper with visibly coloured strokes. But it is a
+different picture — coloured *line art*, not a coloured drawing, because the
+lightness still came from a sketch with no midtones. Kept as a discovery, not
+used.
+
+**Multiply.** Discarded by reasoning rather than trial. Multiply darkens, so
+white paper times colour is fully coloured paper — the exact inverse of what
+coloured pencil does, which is leave unworked paper white. Not worth a render.
+
+**The fix was in none of them.** It was the layer underneath: turn the sketch's
+contrast down from 0.32 to 0.10 so it keeps some midtone, and the original
+instruction works exactly as written. Colour blending at 50% over a softer
+drawing gives white paper with coloured strokes.
+
+The general shape of that: when an instruction does not work, the thing to
+change is often not the thing the instruction names.
+
+### 5. Honour the brief, and report what you found
+
+Rendered at 50, 75 and 100 percent over the softened sketch, all three read as
+coloured pencil. 75% is the strongest. The delivered image uses **50%**,
+because that is what was asked for and it works now — with the finding reported
+rather than the number quietly changed. A caller who wants it stronger changes
+one word, and knows to.
+
+### 6. Let the goal reshape the tool, but only where it must
+
+Two gaps turned up, and they were handled differently.
+
+Applying the original back over the sketch was impossible: the style ends by
+flattening, so there was nothing left to blend with. Three options —
+restructure `pencil-sketch` not to flatten, `open` the original again, or add a
+way to bring an image in as a layer. The first was rejected because flattening
+is exactly what makes the style composable with everything after it; the second
+because `open` replaces the document rather than adding to it. So `place` was
+added, which was a missing capability rather than a workaround.
+
+Then making the result a *style* needed the original's path, which a style has
+no way to know. Rather than adding a required parameter that every caller would
+have to repeat, `place` with no argument re-places the file the document was
+opened from. Small, and it makes the style self-contained.
+
+### 7. Not every earlier decision survives
+
+The graphite lettering style — outline, hatching, wash — was dropped for this
+picture. The new face is a calligraphic script with thin strokes, and hatching
+inside a thin stroke is noise. A drop shadow was asked for and suits it better.
+Reusing the earlier answer because it was the earlier answer would have made a
+worse picture.
+
+### What it added up to
+
+Roughly a dozen renders, four of them tiled comparisons; two capabilities added
+to the harness; three approaches rejected, two after trying them and one on the
+reasoning alone; and one assumption in the brief that had to be diagnosed
+before it could be honoured. The finished style is nine lines. Most of the work
+was deciding what those nine lines should say, and the record of *why* they say
+it is in the style file itself, where the next person to read it will need it.
+
 ## What it does not do
 
 No loops, variables or arithmetic — a caller that needs those has a real

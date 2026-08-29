@@ -142,9 +142,10 @@ and `measure` sizes text before anything is drawn — so a caller that cannot
 see the canvas can still place things by number rather than by guessing.
 Named **styles** — parameterised script fragments — package a look so it can be
 applied to anything: `style pencil-sketch blur=60`.
-[docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference and two worked
+[docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference, two worked
 examples of an agent taking a photograph from an instruction to a finished
-image.
+image, and an appendix tracing how one of those styles was arrived at — dead
+ends included.
 
 | | | | |
 |---|---|---|---|
