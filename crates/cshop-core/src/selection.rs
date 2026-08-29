@@ -326,27 +326,69 @@ impl Selection {
         debug_assert_eq!(self.width(), other.width());
         debug_assert_eq!(self.height(), other.height());
 
+        // Only where one of them has coverage can the answer differ from what
+        // is already there. Add can only gain inside the other's bounds;
+        // Subtract and Intersect can only lose inside our own, since both
+        // shrink. Walking the whole canvas instead cost 57 ms per click on a
+        // large document, for a change covering a fraction of it.
+        let region = match mode {
+            SelectionMode::Replace => IRect::EMPTY,
+            SelectionMode::Add => other.bounds,
+            SelectionMode::Subtract | SelectionMode::Intersect => {
+                self.bounds.intersect(&match mode {
+                    // Intersect zeroes everything outside the other's bounds,
+                    // so that part has to be walked as well.
+                    SelectionMode::Subtract => other.bounds,
+                    _ => self.bounds,
+                })
+            }
+        };
+
         match mode {
             SelectionMode::Replace => {
                 self.mask = other.mask.clone();
-            }
-            SelectionMode::Add => {
-                for (a, &b) in self.mask.as_bytes_mut().iter_mut().zip(other.mask.as_bytes()) {
-                    *a = (*a).max(b);
-                }
-            }
-            SelectionMode::Subtract => {
-                for (a, &b) in self.mask.as_bytes_mut().iter_mut().zip(other.mask.as_bytes()) {
-                    *a = ((*a as u16 * (255 - b) as u16) / 255) as u8;
-                }
+                self.bounds = other.bounds;
             }
             SelectionMode::Intersect => {
-                for (a, &b) in self.mask.as_bytes_mut().iter_mut().zip(other.mask.as_bytes()) {
-                    *a = ((*a as u16 * b as u16) / 255) as u8;
+                // Everything outside the other's coverage is cleared, which is
+                // most of the mask and is a fill rather than a walk.
+                let keep = self.bounds.intersect(&other.bounds);
+                for y in self.bounds.y0..self.bounds.y1 {
+                    for x in self.bounds.x0..self.bounds.x1 {
+                        let v = if keep.contains(x, y) {
+                            let a = self.mask.get(x, y) as u16;
+                            let b = other.mask.get(x, y) as u16;
+                            ((a * b) / 255) as u8
+                        } else {
+                            0
+                        };
+                        self.mask.set(x, y, v);
+                    }
                 }
+                self.bounds = self.mask.coverage_bounds_within(self.bounds);
+            }
+            SelectionMode::Add => {
+                for y in region.y0..region.y1 {
+                    for x in region.x0..region.x1 {
+                        let v = self.mask.get(x, y).max(other.mask.get(x, y));
+                        self.mask.set(x, y, v);
+                    }
+                }
+                self.bounds = self.bounds.union(&other.bounds);
+            }
+            SelectionMode::Subtract => {
+                for y in region.y0..region.y1 {
+                    for x in region.x0..region.x1 {
+                        let a = self.mask.get(x, y) as u16;
+                        let b = other.mask.get(x, y) as u16;
+                        self.mask.set(x, y, ((a * (255 - b)) / 255) as u8);
+                    }
+                }
+                self.bounds = self.mask.coverage_bounds_within(self.bounds);
             }
         }
-        self.invalidate();
+        self.contours = None;
+        self.dropped_contours = 0;
     }
 
     pub fn invert(&mut self) {
@@ -374,15 +416,19 @@ impl Selection {
         // standard formula gives a box width, so halve it — using the width as
         // a radius blurs four times too far and washes out the interior.
         let box_r = (((4.0 * sigma * sigma + 1.0).sqrt() - 1.0) / 2.0).round().max(1.0) as u32;
+        let _ = (w, h);
 
-        let mut buf: Vec<u8> = self.mask.as_bytes().to_vec();
-        let mut tmp = vec![0u8; buf.len()];
-        for _ in 0..3 {
-            box_blur_h(&buf, &mut tmp, w, h, box_r);
-            box_blur_v(&tmp, &mut buf, w, h, box_r);
-        }
-        self.mask = MaskBuffer::from_bytes(w, h, buf).expect("blur preserved the length");
-        self.invalidate();
+        // Three passes of a box of this radius, so that is how far a set pixel
+        // can spread; one more for the rounding.
+        self.within_reach(3 * box_r + 1, |mask, w, h| {
+            let mut buf: Vec<u8> = mask.as_bytes().to_vec();
+            let mut tmp = vec![0u8; buf.len()];
+            for _ in 0..3 {
+                box_blur_h(&buf, &mut tmp, w, h, box_r);
+                box_blur_v(&tmp, &mut buf, w, h, box_r);
+            }
+            *mask = MaskBuffer::from_bytes(w, h, buf).expect("blur preserved the length");
+        });
     }
 
     /// Grow the selection by `pixels`.
@@ -400,20 +446,20 @@ impl Selection {
         if pixels == 0 {
             return;
         }
-        let (w, h) = (self.width(), self.height());
-        let inside = distance_field(&self.mask, w, h, true);
-        let outside = distance_field(&self.mask, w, h, false);
         let half = pixels as f32 / 2.0;
-
-        let bytes = self.mask.as_bytes_mut();
-        for i in 0..bytes.len() {
-            // Signed distance from the edge, negative inside.
-            let d = if bytes[i] >= 128 { -inside[i] } else { outside[i] };
-            // Antialias the band edges over one pixel.
-            let cov = (1.0 - (d.abs() - half + 0.5).clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            bytes[i] = (cov * 255.0 + 0.5) as u8;
-        }
-        self.invalidate();
+        // The band straddles the edge by half its width either way.
+        self.within_reach(pixels + 1, |mask, w, h| {
+            let inside = distance_field(mask, w, h, true);
+            let outside = distance_field(mask, w, h, false);
+            let bytes = mask.as_bytes_mut();
+            for i in 0..bytes.len() {
+                // Signed distance from the edge, negative inside.
+                let d = if bytes[i] >= 128 { -inside[i] } else { outside[i] };
+                // Antialias the band edges over one pixel.
+                let cov = (1.0 - (d.abs() - half + 0.5).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+                bytes[i] = (cov * 255.0 + 0.5) as u8;
+            }
+        });
     }
 
     /// Round off corners and remove stray specks, the way Select > Modify >
@@ -429,16 +475,58 @@ impl Selection {
         self.feather(radius as f32 * 0.5);
     }
 
+    /// Run an edit over only the part of the mask it could possibly change.
+    ///
+    /// Every one of these operations reaches a bounded distance beyond the
+    /// selection's own edge — a feather by its blur, a morph by the distance
+    /// it moves the edge — and everything past that is zero before and zero
+    /// after. Running them over the whole mask instead made them cost the
+    /// canvas rather than the selection: feathering a corner of a 10000x10000
+    /// document by three pixels took 1.2 seconds.
+    ///
+    /// The algorithms themselves are unchanged and run on a copy of the
+    /// region. That is safe because the region is a rectangle containing the
+    /// whole selection plus `reach`, so every distance and every blur tap that
+    /// could reach a pixel inside it is also inside it.
+    fn within_reach(&mut self, reach: u32, op: impl FnOnce(&mut MaskBuffer, u32, u32)) {
+        let canvas = IRect::from_size(self.width(), self.height());
+        if self.bounds.is_empty() {
+            return;
+        }
+        let region = self.bounds.inflate(reach as i32).intersect(&canvas);
+        if region.is_empty() {
+            return;
+        }
+
+        if region == canvas {
+            // Nothing saved by copying; run in place.
+            let (w, h) = (self.width(), self.height());
+            op(&mut self.mask, w, h);
+            self.bounds = self.mask.coverage_bounds();
+        } else {
+            let mut sub = self.mask.copy_rect(region);
+            op(&mut sub, region.width(), region.height());
+            self.mask.paste(&sub, region.x0, region.y0);
+            // Only the region changed, and outside the old bounds was zero, so
+            // the new extent is whatever is now inside the region.
+            self.bounds = self.mask.coverage_bounds_within(region);
+        }
+        self.contours = None;
+        self.dropped_contours = 0;
+    }
+
     /// Shared implementation of expand and contract via a distance field.
     fn morph(&mut self, distance: f32, grow: bool) {
         if distance <= 0.0 {
             return;
         }
-        let (w, h) = (self.width(), self.height());
+        // The edge moves by `distance`, so nothing further out than that can
+        // change; one more pixel for the antialiased ring.
+        self.within_reach(distance.ceil() as u32 + 1, |mask, w, h| {
         // Growing measures how far each outside pixel is from the selection;
         // shrinking measures how far each inside pixel is from the outside.
-        let field = distance_field(&self.mask, w, h, !grow);
-        let bytes = self.mask.as_bytes_mut();
+        let field = distance_field(mask, w, h, !grow);
+        let bytes = mask.as_bytes_mut();
         for i in 0..bytes.len() {
             let was_in = bytes[i] >= 128;
             // Coverage of the moved edge. The `+ 1.0` matters: the nearest ring
@@ -466,7 +554,7 @@ impl Selection {
                 bytes[i] = 0;
             }
         }
-        self.invalidate();
+        });
     }
 
     // -----------------------------------------------------------------------

@@ -132,6 +132,39 @@ impl MaskBuffer {
             .reduce(|| IRect::EMPTY, |a, b| a.union(&b))
     }
 
+    /// Write `src` back over `rect`, the inverse of [`MaskBuffer::copy_rect`].
+    pub fn paste(&mut self, src: &MaskBuffer, at_x: i32, at_y: i32) {
+        for y in 0..src.height as i32 {
+            for x in 0..src.width as i32 {
+                self.set(at_x + x, at_y + y, src.get(x, y));
+            }
+        }
+    }
+
+    /// The coverage bounds of a sub-rectangle, in the buffer's own coordinates.
+    ///
+    /// Used after an edit that could only have touched `rect`: everything
+    /// outside it is unchanged, so rescanning the whole buffer would be
+    /// asking a question whose answer is already known.
+    pub fn coverage_bounds_within(&self, rect: IRect) -> IRect {
+        let rect = rect.intersect(&self.bounds());
+        let mut found = IRect::EMPTY;
+        for y in rect.y0..rect.y1 {
+            let row = &self.data[y as usize * self.width as usize..][..self.width as usize];
+            let slice = &row[rect.x0 as usize..rect.x1 as usize];
+            if let Some(first) = slice.iter().position(|&v| v != 0) {
+                let last = slice.iter().rposition(|&v| v != 0).unwrap_or(first);
+                found = found.union(&IRect::new(
+                    rect.x0 + first as i32,
+                    y,
+                    rect.x0 + last as i32 + 1,
+                    y + 1,
+                ));
+            }
+        }
+        found
+    }
+
     pub fn copy_rect(&self, rect: IRect) -> MaskBuffer {
         let mut out = MaskBuffer::new(rect.width(), rect.height(), 0);
         let clipped = rect.intersect(&self.bounds());
