@@ -141,11 +141,15 @@ Every run answers with a report of where each layer landed and what failed,
 and `measure` sizes text before anything is drawn — so a caller that cannot
 see the canvas can still place things by number rather than by guessing.
 Named **styles** — parameterised script fragments — package a look so it can be
-applied to anything: `style pencil-sketch blur=60`.
+applied to anything: `style watercolour`, `style noir shadows=0.7`. Seventeen
+ship, each with its reasoning written down beside it, and they scale themselves
+to whatever size of image they are handed.
 [docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference, two worked
 examples of an agent taking a photograph from an instruction to a finished
 image, and an appendix tracing how one of those styles was arrived at — dead
 ends included.
+
+![The style library](docs/style-showcase.jpg)
 
 | | | | |
 |---|---|---|---|
@@ -188,7 +192,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-597 tests, and the interesting ones are not unit tests:
+605 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -204,6 +208,9 @@ avoid special-casing everything downstream.
   back and compared property by property, and both are fed truncated and
   bit-flipped versions of their own output — which must be refused, never
   crash.
+- **Every style, discovered rather than listed.** The style library is read off
+  disk and each one applied, so a style added later is covered without anyone
+  remembering to add a test for it.
 
 ```sh
 cargo test --workspace

@@ -70,6 +70,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 |---|---|
 | `new W H [background=]` | Start a document. Background is `white`, `transparent` or a colour. |
 | `open PATH` | Open an image, a `.psd` or a `.cshop` project, with its layers. |
+| `resize W [H]` | Resample. `fit=` scales the longest side and keeps the proportions, `scale=` multiplies, one dimension alone derives the other. `filter=` is `nearest bilinear bicubic lanczos`; `canvas` pads or crops instead of scaling. |
 | `place [PATH]` | Bring an image in as a layer above the active one, `x=` `y=`. With no path it re-places the file the document was opened from. |
 | `text X Y "..."` | A type layer, its baseline starting at X Y. `size= color= family= bold italic align= leading= tracking= wrap=` |
 | `measure text "..."` | Report the size the same options would draw, without drawing it. |
@@ -79,14 +80,25 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
 | `select X Y W H` \| `select all` \| `select none` | `feather=` softens the edge. |
 | `effect NAME` | See below. Applies to the active layer; repeat to stack. |
-| `filter NAME` | `gaussian-blur box-blur motion-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic` |
-| `adjust NAME` | `brightness-contrast hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
+| `filter NAME` | `gaussian-blur box-blur motion-blur surface-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic crystallize emboss solarize diffuse twirl` |
+| `adjust NAME` | `brightness-contrast levels gradient-map photo-filter hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
 | `layer WHAT` | `new group duplicate delete merge-down flatten rasterize select <index>` |
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
 | `info` | Report the document's size and layer count. |
 | `export PATH` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. |
+
+### The three tonal adjustments
+
+Most photographic looks are made of these rather than of brightness and
+contrast, so they are worth their own note.
+
+| Adjustment | Options | What it is for |
+|---|---|---|
+| `levels` | `black= white= gamma= out-black= out-white=` | Where the ends of the tonal range sit. `out-black=0.16` means no pixel may be darker than that, which is how faded stock is made — no reduction in contrast alone reproduces it. |
+| `gradient-map` | `from= to= mid= midpoint=` | Replaces colour with a ramp indexed by brightness. Two inks, a blueprint, a sun-print. |
+| `photo-filter` | `color= density= preserve-luminosity=` | A cast over everything, without the tonal shift a coloured overlay brings. |
 
 ### Effects
 
@@ -248,12 +260,73 @@ to the line of the file it came from.
 Styles compose. The worked example below applies one to a photograph and
 another to the type on top of it.
 
-### The three that ship
+### Holes, and the arithmetic in them
+
+A hole that is a bare name is replaced verbatim, so a parameter can carry a
+word — `set blend="{mode}"` works. Anything else is read as arithmetic over the
+parameters: `+ - * /`, parentheses, and nothing else. It is there so a style
+can scale itself, not so that styles can become a programming language.
+
+Six names are bound for that purpose whenever a document is open — `width`,
+`height`, `min`, `max`, `cx`, `cy` — under the style's own parameters, so a
+style that wants to declare its own `width` still can.
+
+```
+filter surface-blur radius={min*0.0325} threshold={flatten}
+gradient {cx} {cy} {cx} {cy - max*size} style=radial from=#00000000 to=#000000
+```
+
+This is what lets a style be written once and applied to a thumbnail and to a
+print. It matters more than it sounds: a blur radius is a *fraction of the
+picture*, and a style whose radii are literal pixel counts silently means
+something different on every image it is given.
+
+Not everything should scale, though, and the styles that ship disagree with
+each other on purpose. Grain is a property of the emulsion rather than of the
+enlargement, so `film-grain` is in pixels. So is the cross hatching in
+`pencil-lettering`, which stands for the width of a pencil — a hatch of 14 that
+suits 290-pixel type also suits 170-pixel type, where scaling it proportionally
+to 8 makes it vanish. Ask what the number *is* before deciding.
+
+### The style library
+
+Seventeen styles ship in [`styles/`](../styles), each with its reasoning
+written down in the file. Fifteen of them applied to one photograph — the two
+composable ones appear only inside the others:
+
+![The style library](style-showcase.jpg)
+
+**Tonal.** `noir` crushes to high-contrast monochrome and pulls the corners
+down. `faded-film` lifts the blacks so the deepest shadow is a soft grey.
+`bleach-bypass` keeps colour weakly under a much harder curve. `duotone` maps
+the picture onto a ramp between two inks. `golden-hour` warms it and blooms the
+highlights. `dreamy-bloom` does the same with a wider radius and no warmth, so
+it reads as diffusion rather than sunlight.
+
+**Illustrative.** `blueprint` turns edges into chalk lines on blue.
+`poster-print` reduces to flat screenprinted colour. `ink-and-wash` puts pen
+work over a posterised wash. `watercolour` flattens into washes and pools
+pigment at the edges. `neon-glow` lights the edges on a dark ground.
+`pencil-sketch` and `coloured-pencil` are described below.
+
+**Type.** `pencil-lettering` makes type look drawn; `gilded-lettering` stamps
+it in gold leaf.
+
+**Composable.** `vignette` and `film-grain` are finishing styles, meant to be
+called by others — `noir` and `faded-film` both do.
+
+That contact sheet is itself a script: fifteen `open` / `resize` / `style` /
+`export` runs to make the renders, then a `new`, sixteen `place` calls and
+sixteen `text` calls to lay them out. Nothing outside the editor assembled it,
+which is the point — a caller that can drive the harness can also produce the
+evidence of what it did.
+
+### The pencil styles, in detail
 
 `pencil-sketch` turns a photograph into bright graphite on white paper,
 `coloured-pencil` lays its own colour back over that, and `pencil-lettering`
-makes type look drawn rather than typeset. All three are in
-[`styles/`](../styles) with their reasoning written down, and they compose.
+makes type look drawn rather than typeset. They compose, and the appendix at
+the end of this document walks through how the second was arrived at.
 
 | | |
 |---|---|
@@ -288,7 +361,10 @@ Three things that cost a round of rework and are worth knowing:
 
 **Pixel figures are relative to the image, not the picture.** `blur=12` was
 tuned on a fifth-scale copy; the full-size render needed `blur=60` to look the
-same. Nothing in the language multiplies for you.
+same. That is what the arithmetic above was added for, and `coloured-pencil`
+now asks for a `softness` fraction instead — 0.0148 of the long side, which is
+the same 60 pixels at the size it was tuned on and the right number everywhere
+else.
 
 **Judge at 1:1, never on a preview.** The lettering's cross hatching looked
 like graphite when shrunk and like a mechanical plaid at full size — the
