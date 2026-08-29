@@ -207,3 +207,155 @@ fn a_leading_tilde_is_expanded() {
     assert_eq!(script::resolve(base, "/abs/x.jpg"), Path::new("/abs/x.jpg"));
     assert_eq!(script::resolve(base, "rel/x.jpg"), Path::new("/tmp/rel/x.jpg"));
 }
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+/// Write a style file into a temporary directory and hand back the directory.
+fn styles_dir(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cshop-style-{name}"));
+    let _ = std::fs::create_dir_all(dir.join("styles"));
+    for (file, body) in files {
+        std::fs::write(dir.join("styles").join(file), body).expect("write style");
+    }
+    dir
+}
+
+#[test]
+fn a_style_separates_its_parameters_from_its_body() {
+    let s = script::parse_style(
+        "# a comment\nparam blur = 12\nparam ink = #333333\n\nfilter gaussian-blur radius={blur}\n",
+    );
+    assert_eq!(s.params, vec![("blur".into(), "12".into()), ("ink".into(), "#333333".into())]);
+    assert!(s.body.contains("gaussian-blur radius={blur}"));
+    assert!(!s.body.contains("param blur"), "parameters are not commands");
+}
+
+#[test]
+fn substitution_fills_holes_and_refuses_unknown_ones() {
+    let values = vec![("blur".to_string(), "9".to_string())];
+    assert_eq!(script::substitute("radius={blur}", &values).unwrap(), "radius=9");
+    assert_eq!(script::substitute("{blur} and {blur}", &values).unwrap(), "9 and 9");
+    assert_eq!(script::substitute("nothing here", &values).unwrap(), "nothing here");
+
+    // Leaving an unknown name in place would draw `{radius}` pixels of blur.
+    let err = script::substitute("radius={radius}", &values).unwrap_err();
+    assert!(err.contains("no parameter \"radius\""), "{err}");
+    assert!(err.contains("blur"), "the error should list what it does take");
+
+    assert!(script::substitute("a {b", &values).unwrap_err().contains("never closed"));
+}
+
+#[test]
+fn a_style_runs_its_body_and_the_report_says_which_style() {
+    let dir = styles_dir(
+        "basic",
+        &[("tint.style", "param level = 0.3\nadjust brightness-contrast brightness={level}\n")],
+    );
+    let Ok(report) = script::run("new 40 40\nstyle tint", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    // Steps a style ran carry its name, so a failure inside one is traceable.
+    let inner = report
+        .steps
+        .iter()
+        .find(|s| s.command.contains("brightness-contrast"))
+        .expect("the style's own step should be reported");
+    assert!(inner.command.starts_with("tint:"), "got {:?}", inner.command);
+}
+
+#[test]
+fn a_parameter_the_style_does_not_declare_is_refused() {
+    let dir = styles_dir("params", &[("tint.style", "param level = 0.3\nadjust invert\n")]);
+    let Ok(report) = script::run("new 40 40\nstyle tint wobble=2", &dir) else { return };
+    assert!(!report.ok);
+    let note = &report.steps[1].note;
+    assert!(note.contains("no parameter \"wobble\""), "{note}");
+    assert!(note.contains("level"), "the error should say what it does take: {note}");
+}
+
+#[test]
+fn an_override_wins_over_the_default() {
+    let dir = styles_dir(
+        "override",
+        &[("box.style", "param w = 10\nshape rect 0 0 {w} {w} fill=#000000\n")],
+    );
+    let Ok(report) = script::run("new 100 100\nstyle box w=60", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let shape = report.layers.iter().find(|l| l.kind == "Shape").expect("a shape");
+    // The report gives what the layer *draws*, which is a couple of pixels
+    // wider than the geometry because of the antialiasing margin — so this
+    // checks the override took, not an exact edge.
+    assert!(
+        (58..=66).contains(&shape.bounds[2]),
+        "the override should have set the width to about 60, got {}",
+        shape.bounds[2]
+    );
+}
+
+#[test]
+fn an_unknown_style_lists_the_ones_there_are() {
+    let dir = styles_dir("listing", &[("alpha.style", "adjust invert\n"), ("beta.style", "adjust invert\n")]);
+    let Ok(report) = script::run("style gamma", &dir) else { return };
+    assert!(!report.ok);
+    let note = &report.steps[0].note;
+    assert!(note.contains("no style called \"gamma\""), "{note}");
+    assert!(note.contains("alpha") && note.contains("beta"), "{note}");
+    // Several search paths can find one directory; the list must not repeat.
+    assert_eq!(note.matches("alpha").count(), 1, "{note}");
+}
+
+/// A style is script, and script can apply a style, so one that applies itself
+/// would otherwise never stop.
+#[test]
+fn a_style_that_applies_itself_is_stopped() {
+    let dir = styles_dir("recursive", &[("loop.style", "style loop\n")]);
+    let Ok(report) = script::run("new 20 20\nstyle loop", &dir) else { return };
+    assert!(!report.ok);
+    assert!(
+        report.steps.iter().any(|s| s.note.contains("applying itself")),
+        "the depth limit should say what it suspects"
+    );
+    // And it must actually have stopped rather than run away.
+    assert!(report.steps.len() < 40, "ran {} steps", report.steps.len());
+}
+
+#[test]
+fn styles_compose() {
+    let dir = styles_dir(
+        "compose",
+        &[
+            ("outer.style", "param n = 3\nstyle inner levels={n}\n"),
+            ("inner.style", "param levels = 8\nadjust posterize levels={levels}\n"),
+        ],
+    );
+    let Ok(report) = script::run("new 30 30\nstyle outer n=5", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let deep = report
+        .steps
+        .iter()
+        .find(|s| s.command.contains("posterize"))
+        .expect("the inner style should have run");
+    assert!(deep.command.contains("outer > inner"), "the trail should show both: {:?}", deep.command);
+    assert!(deep.command.contains("levels=5"), "the value should pass through: {:?}", deep.command);
+}
+
+/// The two styles that ship with the editor have to keep working, since the
+/// documentation walks through them.
+#[test]
+fn the_bundled_styles_apply() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let Ok(report) = script::run(
+        "new 80 60 background=#4488aa\nstyle pencil-sketch blur=4\ntext 5 40 \"a\" size=20\nstyle pencil-lettering",
+        &repo,
+    ) else {
+        return;
+    };
+    assert!(report.ok, "{}", report.summary());
+    let type_layer = report.layers.iter().find(|l| l.kind == "Type").expect("type");
+    assert!(
+        type_layer.effects.contains(&"Stroke".to_string()),
+        "the lettering style should have outlined it: {:?}",
+        type_layer.effects
+    );
+}

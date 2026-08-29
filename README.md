@@ -140,13 +140,15 @@ export out.png'
 Every run answers with a report of where each layer landed and what failed,
 and `measure` sizes text before anything is drawn — so a caller that cannot
 see the canvas can still place things by number rather than by guessing.
-[docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference and a worked
-example of an agent taking a photograph from an instruction to a finished
+Named **styles** — parameterised script fragments — package a look so it can be
+applied to anything: `style pencil-sketch blur=60`.
+[docs/SCRIPTING.md](docs/SCRIPTING.md) has the command reference and two worked
+examples of an agent taking a photograph from an instruction to a finished
 image.
 
-| | |
-|---|---|
-| ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) |
+| | | |
+|---|---|---|
+| ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) | ![Pencil sketch](docs/example-sketch-after.jpg) |
 
 ## Interface
 

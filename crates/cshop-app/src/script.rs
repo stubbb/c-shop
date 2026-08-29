@@ -411,6 +411,11 @@ pub struct Runner {
     gpu: GpuContext,
     base: PathBuf,
     report: Report,
+    /// How deep inside styles we are. A style is script, and script can apply
+    /// a style, so a style that applies itself would otherwise not stop.
+    depth: usize,
+    /// Prefixes the steps a style runs, so a failure inside one says which.
+    trail: Vec<String>,
 }
 
 /// Run a script and return what happened.
@@ -423,6 +428,8 @@ pub fn run(source: &str, base: &Path) -> Result<Report, String> {
         gpu,
         base: base.to_path_buf(),
         report: Report::default(),
+        depth: 0,
+        trail: Vec::new(),
     };
     runner.execute(source);
     Ok(runner.finish())
@@ -433,10 +440,19 @@ impl Runner {
         for parsed in parse(source) {
             match parsed {
                 Err((line, raw, why)) => {
+                    let raw = if self.trail.is_empty() {
+                        raw
+                    } else {
+                        format!("{}: {}", self.trail.join(" > "), raw)
+                    };
                     self.report.steps.push(Step { line, command: raw, ok: false, note: why });
                 }
                 Ok(cmd) => {
-                    let raw = cmd.raw.clone();
+                    let raw = if self.trail.is_empty() {
+                        cmd.raw.clone()
+                    } else {
+                        format!("{}: {}", self.trail.join(" > "), cmd.raw)
+                    };
                     let line = cmd.line;
                     match self.step(&cmd) {
                         Ok(note) => {
@@ -498,6 +514,7 @@ impl Runner {
             "measure" => self.cmd_measure(cmd),
             "shape" => self.cmd_shape(cmd),
             "fill" => self.cmd_fill(cmd),
+            "style" => self.cmd_style(cmd),
             "gradient" => self.cmd_gradient(cmd),
             "select" => self.cmd_select(cmd),
             "effect" => self.cmd_effect(cmd),
@@ -511,8 +528,8 @@ impl Runner {
             "export" | "save" => self.cmd_write(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
-                 select, gradient, effect, filter, adjust, layer, set, move, order, info, \
-                 export, save"
+                 select, gradient, style, effect, filter, adjust, layer, set, move, order, \
+                 info, export, save"
             )),
         }
     }
@@ -750,6 +767,59 @@ impl Runner {
         self.app.gradient_drag = Some((Vec2::new(x1, y1), Vec2::new(x2, y2)));
         self.app.commit_gradient();
         Ok(format!("laid a {} gradient from ({x1}, {y1}) to ({x2}, {y2})", cmd.opt("style").unwrap_or("linear")))
+    }
+
+    /// Apply a named style, with its parameters overridden by the options
+    /// given here.
+    fn cmd_style(&mut self, cmd: &Command) -> Result<String, String> {
+        const MAX_DEPTH: usize = 8;
+        let name = cmd.args.first().ok_or("style needs a name")?.clone();
+        if self.depth >= MAX_DEPTH {
+            return Err(format!(
+                "styles are nested {MAX_DEPTH} deep at {name:?}; is one applying itself?"
+            ));
+        }
+        let (path, style) = find_style(&self.base, &name)?;
+
+        // Defaults first, then whatever the caller passed, so an override
+        // wins and a name the style does not declare is caught rather than
+        // ignored.
+        let mut values = style.params.clone();
+        for (k, v) in &cmd.opts {
+            match values.iter_mut().find(|(name, _)| name == k) {
+                Some(slot) => slot.1 = v.clone(),
+                None => {
+                    return Err(format!(
+                        "{name:?} has no parameter {k:?}; it takes: {}",
+                        if style.params.is_empty() {
+                            "none".to_string()
+                        } else {
+                            style.params.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", ")
+                        }
+                    ))
+                }
+            }
+        }
+        let body = substitute(&style.body, &values)?;
+
+        // A style's own relative paths resolve against where it lives.
+        let inner_base =
+            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.base.clone());
+        let outer_base = std::mem::replace(&mut self.base, inner_base);
+        self.depth += 1;
+        self.trail.push(name.clone());
+        self.execute(&body);
+        self.trail.pop();
+        self.depth -= 1;
+        self.base = outer_base;
+
+        let settings: Vec<String> =
+            values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        Ok(if settings.is_empty() {
+            format!("applied style {name:?}")
+        } else {
+            format!("applied style {name:?} ({})", settings.join(" "))
+        })
     }
 
     fn cmd_select(&mut self, cmd: &Command) -> Result<String, String> {
@@ -1156,4 +1226,149 @@ impl Runner {
         self.app.dispatch(Action::ReorderActiveLayer(by));
         Ok("reordered".into())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+/// A named, parameterised script fragment.
+///
+/// A style is not a new kind of thing: it is the same commands, with holes in
+/// it. That keeps one language to learn, lets a style be read and edited by
+/// anyone who can read a script, and means a style can use anything the editor
+/// can do the day it can do it.
+///
+/// ```text
+/// # A bright pencil sketch.
+/// param blur = 12
+/// param contrast = 0.32
+///
+/// adjust black-and-white
+/// layer duplicate
+/// adjust invert
+/// filter gaussian-blur radius={blur}
+/// set blend="Color Dodge"
+/// layer flatten
+/// adjust brightness-contrast contrast={contrast}
+/// ```
+pub struct Style {
+    /// Declared parameters and their defaults, in the order written.
+    pub params: Vec<(String, String)>,
+    pub body: String,
+}
+
+/// Split a style file into its parameters and its body.
+pub fn parse_style(source: &str) -> Style {
+    let mut params = Vec::new();
+    let mut body = String::new();
+    for line in source.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("param ") {
+            if let Some((k, v)) = rest.split_once('=') {
+                params.push((k.trim().to_string(), v.trim().to_string()));
+                continue;
+            }
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    Style { params, body }
+}
+
+/// Fill a style's holes.
+///
+/// An unknown `{name}` is an error rather than being left in place: a script
+/// that silently drew `{blur}` pixels of blur would be worse than one that
+/// stopped and said which name it did not know.
+pub fn substitute(body: &str, values: &[(String, String)]) -> Result<String, String> {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return Err("a { is never closed".into());
+        };
+        let key = &after[..close];
+        let value = values
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "this style has no parameter {key:?}; it takes: {}",
+                    if values.is_empty() {
+                        "none".to_string()
+                    } else {
+                        values.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", ")
+                    }
+                )
+            })?;
+        out.push_str(value);
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Where styles are looked for, nearest first.
+fn style_dirs(base: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![base.to_path_buf(), base.join("styles")];
+    // Beside the binary, which is where an installed copy keeps them.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.join("styles"));
+            // And out of a target/ directory, for a build tree.
+            for up in [1, 2, 3] {
+                if let Some(root) = dir.ancestors().nth(up) {
+                    dirs.push(root.join("styles"));
+                }
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".config/cshop/styles"));
+    }
+    dirs
+}
+
+/// Find a style by name, and say where it looked when there is none.
+pub fn find_style(base: &Path, name: &str) -> Result<(PathBuf, Style), String> {
+    // A path wins over a name, so a one-off style needs no directory.
+    let direct = resolve(base, name);
+    let candidates: Vec<PathBuf> = std::iter::once(direct.clone())
+        .chain(std::iter::once(direct.with_extension("style")))
+        .chain(style_dirs(base).into_iter().map(|d| d.join(format!("{name}.style"))))
+        .collect();
+
+    for path in &candidates {
+        if let Ok(source) = std::fs::read_to_string(path) {
+            return Ok((path.clone(), parse_style(&source)));
+        }
+    }
+    let mut available = style_dirs(base)
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "style") {
+                p.file_stem().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    // Several search paths can land on one directory — a build tree finds its
+    // own `styles/` more than once — so the same style must not be listed
+    // twice.
+    available.sort();
+    available.dedup();
+    Err(if available.is_empty() {
+        format!("no style called {name:?}, and no styles directory was found")
+    } else {
+        format!("no style called {name:?}. Available: {}", available.join(", "))
+    })
 }

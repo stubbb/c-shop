@@ -1,0 +1,24 @@
+# A bright black-and-white pencil sketch.
+#
+# The old darkroom trick, done in layers: desaturate, take a copy, invert it,
+# blur it, and colour-dodge it back over the original. Dodge divides by the
+# inverse of the blend, so anywhere the blurred copy matches its surroundings
+# the result saturates to white paper — and only where it does *not*, which is
+# where an edge is, does anything stay dark. Edges become graphite; flat areas
+# become nothing.
+#
+# `blur` is the pencil: small is a hard line, large is a soft shaded stroke.
+# `contrast` lifts the paper to white and pushes the strokes down toward black,
+# so it is what "bright" is made of. Too much and the drawing goes sparse.
+
+param blur = 12
+param contrast = 0.32
+param brightness = 0.03
+
+adjust black-and-white
+layer duplicate
+adjust invert
+filter gaussian-blur radius={blur}
+set blend="Color Dodge"
+layer flatten
+adjust brightness-contrast contrast={contrast} brightness={brightness}

@@ -74,6 +74,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `measure text "..."` | Report the size the same options would draw, without drawing it. |
 | `shape KIND X Y W H` | `rect ellipse polygon star line`. `fill= stroke= stroke-width= stroke-align= radius= sides= inner= thickness=` |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
+| `style NAME [key=value...]` | Apply a named style — see below. |
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
 | `select X Y W H` \| `select all` \| `select none` | `feather=` softens the edge. |
 | `effect NAME` | See below. Applies to the active layer; repeat to stack. |
@@ -201,6 +202,78 @@ only have been faked with a shape at zero fill opacity; and a leading `~` was
 treated as a folder of that name, so the very first line failed with a
 complaint about a directory nobody had asked for. Both are fixed. That is the
 argument for using a tool on something real before believing it is finished.
+
+## Styles
+
+A style is a named script fragment with holes in it. Not a new kind of thing:
+the same commands, parameterised — so there is one language to learn, a style
+can be read by anyone who can read a script, and a style can use anything the
+editor can do the day it can do it.
+
+```
+# styles/pencil-sketch.style
+param blur = 12
+param contrast = 0.32
+
+adjust black-and-white
+layer duplicate
+adjust invert
+filter gaussian-blur radius={blur}
+set blend="Color Dodge"
+layer flatten
+adjust brightness-contrast contrast={contrast}
+```
+
+```
+open photo.jpg
+style pencil-sketch blur=60
+export sketch.png
+```
+
+Styles are looked for beside the script, in a `styles/` directory next to it or
+next to the binary, and in `~/.config/cshop/styles`. A name that is really a
+path works too, for a one-off.
+
+Everything is checked rather than assumed. A parameter the style does not
+declare is refused with the list of the ones it takes; an unknown `{hole}` is
+an error rather than being left in the text, because a script that drew
+`{blur}` pixels of blur would be worse than one that stopped; an unknown style
+names the styles that do exist; and because a style is script and script can
+apply a style, one that applies itself is stopped rather than running away.
+Steps a style runs are prefixed with its name — `pencil-sketch: adjust invert`
+— and nested styles show the whole trail, so a failure inside one is traceable
+to the line of the file it came from.
+
+Styles compose. The worked example below applies one to a photograph and
+another to the type on top of it.
+
+### The two that ship
+
+`pencil-sketch` turns a photograph into bright graphite on white paper, and
+`pencil-lettering` makes type look drawn rather than typeset. Both are in
+[`styles/`](../styles) with their reasoning written down.
+
+![Pencil sketch](example-sketch-after.jpg)
+
+The sketch is the old darkroom trick done in layers: desaturate, take a copy,
+invert it, blur it, and colour-dodge it back over the original. Dodge divides
+by the inverse of the blend, so wherever the blurred copy matches its
+surroundings the result saturates to white paper — and only where it does
+*not*, which is where an edge is, does anything stay dark. `blur` is the
+pencil: small is a hard line, large a soft shaded stroke. `contrast` lifts the
+paper to white and pushes the strokes toward black, which is what "bright" is
+made of.
+
+Two things that cost a round of rework and are worth knowing:
+
+**Pixel figures are relative to the image, not the picture.** `blur=12` was
+tuned on a fifth-scale copy; the full-size render needed `blur=60` to look the
+same. Nothing in the language multiplies for you.
+
+**Judge at 1:1, never on a preview.** The lettering's cross hatching looked
+like graphite when shrunk and like a mechanical plaid at full size — the
+downscale had been averaging it away. The fix was a hatch a third as coarse.
+Checking the preview alone would have shipped the plaid.
 
 ## What it does not do
 

@@ -1,0 +1,30 @@
+# Lettering that belongs in a pencil drawing.
+#
+# Applies to whichever layer is active — meant for type, straight after it is
+# drawn. Three things together make a letterform read as drawn rather than
+# typeset, and none of them works alone: an outline, so the shape is a *line*;
+# cross hatching inside it, which is what a pencil actually does to fill an
+# area; and a faint wash of the fill underneath so the letters have some body.
+#
+# The wash is the layer's own pixels at low opacity. Everything else is an
+# effect, and effects escape fill opacity — which is exactly what lets the
+# outline and the hatching stay at full strength while the fill fades.
+#
+# `outline` and `hatch` are in pixels, so both are relative to the *type size*,
+# not to the canvas. Roughly, outline is a sixtieth of the cap size and hatch a
+# twentieth: at 290-pixel type that is 5 and 14. The defaults below suit type
+# of about 100 pixels.
+#
+# Judge these at 1:1 and not on a preview. Shrinking an image averages the
+# hatching away and flatters it; at full size a hatch that is too coarse stops
+# reading as graphite and starts reading as plaid.
+
+param ink = #2e2e2e
+param outline = 1.8
+param hatch = 5
+param texture = 0.28
+param wash = 0.14
+
+set fill-opacity={wash}
+effect pattern-overlay pattern="Cross Hatch" color={ink} background=transparent scale={hatch} angle=32 opacity={texture}
+effect stroke size={outline} color={ink} position=inside
