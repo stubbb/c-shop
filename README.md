@@ -178,6 +178,19 @@ checked. [docs/SERVING.md](docs/SERVING.md) has the details, the worked session
 and the reasoning. No HTTP or JSON dependency was added for any of it; both are
 in the tree, like the project format and the PSD codec.
 
+### On a server
+
+```sh
+docker compose up -d
+```
+
+The image carries a software Vulkan driver, so it renders on a machine with no
+GPU — and for this workload that costs nothing measurable, because the time
+goes on CPU-side filtering and encoding rather than on compositing. Pass
+`--gpus all` and it will use a real one instead, unchanged.
+[docs/DEPLOY.md](docs/DEPLOY.md) covers fonts, the token, workspace ownership
+and sizing, with the measurements behind that claim.
+
 ## Interface
 
 | | |
