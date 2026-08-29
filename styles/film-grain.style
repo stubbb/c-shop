@@ -1,0 +1,12 @@
+# Grain.
+#
+# The other finishing style. Monochrome by default: coloured noise reads as a
+# broken sensor, while grain in luminance alone reads as film.
+#
+# Scaled to nothing — grain is a property of the emulsion, not the enlargement,
+# so it stays the same size in pixels however large the image is. That is the
+# one place where not scaling with the document is the correct answer.
+
+param amount = 0.05
+
+filter add-noise amount={amount} monochromatic

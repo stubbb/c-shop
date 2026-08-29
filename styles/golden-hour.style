@@ -1,0 +1,18 @@
+# Late afternoon: warm light with a bloom in the highlights.
+#
+# The bloom is a blurred copy screened back over the picture, which spreads
+# the brightest areas into what surrounds them the way a lens does when it is
+# pointed near the sun. Screen only ever lightens, so the shadows are left
+# alone and the effect stays in the highlights where it belongs.
+
+param warmth = 0.32
+param glow = 0.35
+param softness = 0.022
+
+adjust photo-filter color=#ffb347 density={warmth}
+adjust levels out-black=0.03 gamma=1.06
+layer duplicate
+filter gaussian-blur radius={min*softness}
+set blend="Screen" opacity={glow}
+layer flatten
+adjust vibrance vibrance=0.18

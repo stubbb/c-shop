@@ -11,9 +11,14 @@
 # outline and the hatching stay at full strength while the fill fades.
 #
 # `outline` and `hatch` are in pixels, so both are relative to the *type size*,
-# not to the canvas. Roughly, outline is a sixtieth of the cap size and hatch a
-# twentieth: at 290-pixel type that is 5 and 14. The defaults below suit type
-# of about 100 pixels.
+# not to the canvas. Outline scales with the type — roughly a sixtieth of the
+# cap size, so 5 at 290-pixel type.
+#
+# Hatch does not, and it is worth knowing why. A hatch of 14 that suits type at
+# 290 pixels also suits type at 170, where scaling it proportionally to 8 makes
+# it vanish. The hatching stands for the width of a pencil, and a pencil is the
+# width it is regardless of how large the letters are — so treat this one as an
+# absolute mark size and only reach for it when the drawing itself is scaled.
 #
 # Judge these at 1:1 and not on a preview. Shrinking an image averages the
 # hatching away and flatters it; at full size a hatch that is too coarse stops
@@ -22,8 +27,8 @@
 param ink = #2e2e2e
 param outline = 1.8
 param hatch = 5
-param texture = 0.28
-param wash = 0.14
+param texture = 0.5
+param wash = 0.3
 
 set fill-opacity={wash}
 effect pattern-overlay pattern="Cross Hatch" color={ink} background=transparent scale={hatch} angle=32 opacity={texture}

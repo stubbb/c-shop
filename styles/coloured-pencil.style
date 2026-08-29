@@ -18,10 +18,16 @@
 #
 # Takes no source: it re-places the file the document was opened from.
 
-param blur = 60
+# `softness` is a fraction of the long side rather than a count of pixels,
+# because this blur is not drawing a line — it is deciding how much midtone
+# the sketch keeps, and that has to mean the same thing whatever size the
+# picture is. At the 3052x4060 original it works out at the 60 pixels this
+# style was originally tuned with.
+
+param softness = 0.0148
 param contrast = 0.10
 param colour = 0.5
 
-style pencil-sketch blur={blur} contrast={contrast} brightness=0.0
+style pencil-sketch blur={max*softness} contrast={contrast} brightness=0.0
 place
 set name="Colour" blend="Color" opacity={colour}

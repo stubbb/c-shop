@@ -1,0 +1,15 @@
+# Expired stock: lifted blacks, low contrast, a warm cast.
+#
+# The whole look lives in `out-black`. Raising the *output* floor means no
+# pixel can be darker than that value, so the deepest shadow in the picture is
+# a soft grey — which is what film does when it has sat in a drawer for ten
+# years, and what no amount of contrast reduction alone will reproduce.
+
+param fade = 0.16
+param warmth = 0.3
+
+adjust levels out-black={fade} out-white=0.96 gamma=1.05
+adjust brightness-contrast contrast=-0.1
+adjust hue-saturation saturation=-0.2
+adjust photo-filter color=#e8a33d density={warmth}
+style film-grain amount=0.045

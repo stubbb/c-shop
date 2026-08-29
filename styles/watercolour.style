@@ -1,0 +1,29 @@
+# Washes with pigment pooled at the edges.
+#
+# The wash is a small median followed by a wide surface blur held to a *tight*
+# threshold. That pairing is the whole thing, and the threshold is the part
+# that matters: it is the tolerance within which pixels are allowed to average,
+# so a small one flattens the inside of a leaf while refusing to average across
+# its edge. Open it up and the radius stops being reach and starts being smear
+# — the picture turns to mush and no amount of colour afterwards rescues it.
+#
+# The second layer is the pooling: edges multiplied back at low strength,
+# standing in for the dark rim that forms where a wet edge dries. It has to be
+# sparse. A dense edge map blurred and multiplied is not pooling, it is dirt.
+
+param flow = 0.09
+param edge = 0.35
+param bleed = 0.3
+
+filter median radius={min*0.0045}
+filter surface-blur radius={min*0.0295} threshold={flow}
+adjust vibrance vibrance=0.35
+adjust levels out-black=0.04 out-white=0.99 gamma=1.04
+
+place
+adjust black-and-white
+filter find-edges
+adjust levels black=0.04 white=0.46
+filter gaussian-blur radius={min*0.0015+bleed}
+set name="Pooling" blend="Multiply" opacity={edge}
+layer flatten

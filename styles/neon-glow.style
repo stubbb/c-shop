@@ -1,0 +1,27 @@
+# Edges lit up on a dark ground.
+#
+# Edge detection returns dark lines on white, which is the opposite of a lit
+# sign, so it is inverted before anything else happens — from there the picture
+# is a brightness map of where the light is, and the gradient map turns that
+# into a colour and a background in one move.
+#
+# The glow itself is a blurred copy screened back over the original. Screen
+# never darkens, so the blurred halo adds light around each line and leaves the
+# black ground black, which is what makes it read as emission rather than as a
+# line that has simply been smudged.
+
+param colour = #35e0ff
+param ground = #05070f
+param bright = 0.85
+param spread = 0.008
+param density = 0.42
+
+adjust black-and-white
+filter find-edges
+adjust invert
+adjust levels black={density} white=0.86
+adjust gradient-map from={ground} to={colour}
+layer duplicate
+filter gaussian-blur radius={min*spread}
+set blend="Screen" opacity={bright}
+layer flatten

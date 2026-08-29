@@ -1,0 +1,16 @@
+# Two inks.
+#
+# Desaturate, then map the greyscale onto a ramp between two colours. Because
+# the mapping is by brightness, the dark ink lands in the shadows and the pale
+# one in the highlights, and the picture keeps its tonal structure while losing
+# its own colour entirely.
+#
+# Defaults are a navy and a warm paper. Any two colours work, but the pair
+# wants a real difference in lightness or the result flattens to a single wash.
+
+param dark = #1b2a4a
+param light = #f2e4c9
+
+adjust black-and-white
+adjust levels black=0.03 white=0.97
+adjust gradient-map from={dark} to={light}

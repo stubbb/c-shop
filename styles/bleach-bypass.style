@@ -1,0 +1,27 @@
+# Silver retained: desaturated, but with the contrast of a print.
+#
+# Named for the lab process of skipping the bleach so the silver stays in the
+# negative alongside the dye — the result keeps colour, but weakly, under a
+# much harder tonal curve.
+#
+# In layers that is a contrasty black-and-white copy blended back by
+# Luminosity, which replaces the picture's lightness while leaving its hue
+# alone. Overlay is the obvious choice here and it is the wrong one: it
+# multiplies wherever the copy is below mid-grey, so a picture with any real
+# shadow in it comes out darker than it started, and the look wants brighter
+# highlights rather than heavier shadows.
+#
+# The gamma lift on the copy is what puts the silver in it. Without it the
+# contrast alone simply hardens the picture.
+
+param strength = 1.0
+param bite = 0.3
+param colour = 0.5
+
+layer duplicate
+adjust black-and-white
+adjust levels black=0.03 white=0.92 gamma=1.3
+adjust brightness-contrast contrast={bite}
+set blend="Luminosity" opacity={strength}
+layer flatten
+adjust hue-saturation saturation={0-colour}

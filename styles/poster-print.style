@@ -1,0 +1,26 @@
+# Flat screenprint: few colours, hard edges.
+#
+# Nearly all the work is in flattening the picture *before* it is reduced.
+# Posterise a photograph directly and every stone and every leaf sits on a band
+# boundary, so neighbouring pixels fall on opposite sides of it and the result
+# is salt-and-pepper speckle rather than flat colour. At thumbnail size that
+# speckle averages out and looks like a smooth tint, which is why this has to
+# be judged at full size.
+#
+# Median removes the speckle but dissolves shapes if it is asked to do much, so
+# it stays small and the surface blur does the flattening — it averages within
+# a tolerance and leaves anything outside it alone, which is what keeps the
+# edges of the stones while emptying their middles.
+#
+# Vibrance comes last. Applied before the reduction it widens the very channel
+# gaps that quantising then doubles, so the colour it adds arrives as banding.
+
+param levels = 6
+param punch = 0.2
+param flatten = 0.26
+
+filter median radius={min*0.0045}
+filter surface-blur radius={min*0.0325} threshold={flatten}
+adjust levels black=0.04 white=0.96
+adjust posterize levels={levels}
+adjust vibrance vibrance={punch}

@@ -1,0 +1,30 @@
+# Pen over a flat colour wash.
+#
+# Two passes over the same photograph. Underneath, the colour is flattened and
+# reduced to a handful of tones so it reads as something laid in with a brush.
+# Over it, the picture again as line work, multiplied so the white paper of the
+# line layer disappears and only the lines remain.
+#
+# `weight` is where the line layer's white point sits, inverted so that larger
+# means heavier. It is the parameter that decides what the result *is*: edge
+# detection returns a continuous field, not lines, and the white point is what
+# turns that field into marks by throwing away everything faint. Set it high
+# and every leaf edge and every crack in the stone becomes a stroke, which
+# reads as scribble rather than as drawing.
+
+param ink = 0.8
+param wash = 5
+param weight = 0.42
+
+filter median radius={min*0.006}
+filter surface-blur radius={min*0.022} threshold=0.22
+adjust posterize levels={wash}
+adjust hue-saturation saturation=-0.08
+adjust levels out-black=0.05 out-white=0.99
+
+place
+adjust black-and-white
+filter find-edges
+adjust levels black=0.06 white={1-weight}
+set name="Ink" blend="Multiply" opacity={ink}
+layer flatten

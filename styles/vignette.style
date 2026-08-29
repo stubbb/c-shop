@@ -1,0 +1,15 @@
+# Darkened corners.
+#
+# A finishing style, meant to be called by others rather than used alone. The
+# radius is measured against the long side of the image, so it lands the same
+# way on any size of photograph.
+#
+# `size` is deliberately near 1: the ramp has to reach past the corners, or
+# the corners sit at the far end of it and go solid black. At 0.95 a corner is
+# about two thirds of the way along the ramp, which is a shadow rather than a
+# hole.
+
+param strength = 0.5
+param size = 0.95
+
+gradient {cx} {cy} {cx} {cy - max*size} style=radial from=#00000000 to=#000000 opacity={strength}

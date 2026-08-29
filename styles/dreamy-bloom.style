@@ -1,0 +1,17 @@
+# Soft focus: a haze over everything.
+#
+# The same screened-blur trick as the golden hour, but with a much larger
+# radius and no warmth, so it stops reading as sunlight and starts reading as
+# diffusion. The lifted black afterwards is what sells it — a haze that still
+# has true black in it looks like a mistake rather than an atmosphere.
+
+param glow = 0.6
+param softness = 0.05
+
+layer duplicate
+filter gaussian-blur radius={min*softness}
+set blend="Screen" opacity={glow}
+layer flatten
+adjust levels out-black={glow*0.12} gamma=1.04
+adjust hue-saturation saturation=-0.08
+adjust brightness-contrast contrast=-0.06

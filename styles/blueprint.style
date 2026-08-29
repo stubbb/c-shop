@@ -1,0 +1,15 @@
+# A technical drawing: pale lines on blue.
+#
+# Edges first, which arrive as dark lines on white, then the levels move to
+# throw away everything that is not a line — without it the paper is grey and
+# the whole sheet turns muddy once it is tinted. The gradient map does the
+# rest: what was white becomes the blue ground, what was black becomes chalk.
+
+param threshold = 0.55
+param ink = #0d3b6f
+param line = #eef4fb
+
+adjust black-and-white
+filter find-edges
+adjust levels black={threshold} white=0.92
+adjust gradient-map from={ink} to={line}

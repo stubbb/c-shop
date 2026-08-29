@@ -1,0 +1,14 @@
+# High-contrast black and white.
+#
+# Blacks crushed, whites held just short of paper, and the corners pulled down.
+# The levels move happens before the contrast: clipping the ends first gives
+# the contrast curve something to work against, so the midtones separate
+# instead of the whole picture simply hardening.
+
+param contrast = 0.4
+param shadows = 0.55
+
+adjust black-and-white
+adjust levels black=0.04 white=0.95 gamma=1.0
+adjust brightness-contrast contrast={contrast}
+style vignette strength={shadows} size=0.9

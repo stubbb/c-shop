@@ -1,0 +1,23 @@
+# Type stamped in gold leaf.
+#
+# Applies to whichever layer is active — meant for type, straight after it is
+# drawn. Three effects in the order they are drawn: a vertical gradient for the
+# metal, a bevel to give it an edge, and a shadow to lift it off the page.
+#
+# The gradient runs dark at the bottom to light at the top, which is the whole
+# illusion. Metal does not have a colour so much as a *reflection*, and a
+# letterform reads as gold when its lower half reflects the ground and its
+# upper half reflects the sky. Flip it and the same colours read as plastic.
+#
+# `size` is in pixels and so is relative to the type, not to the canvas — the
+# defaults suit type of about 100 pixels, and both the bevel and the shadow
+# want scaling alongside the point size.
+
+param light = #ffeaa7
+param dark = #8a5a12
+param size = 3
+param lift = 0.45
+
+effect gradient-overlay from={dark} to={light} angle=90
+effect bevel size={size} depth=1.4 soften=1 altitude=48
+effect drop-shadow size={size*2} distance={size} opacity={lift} spread=0.05
