@@ -7,6 +7,7 @@
 //! it can idle when nothing is changing.
 
 mod screenshot;
+mod script;
 mod window;
 
 const USAGE: &str = "\
@@ -55,6 +56,9 @@ fn main() {
     let mut demo_fx = false;
     let mut demo_fx_dialog = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
+    let mut script: Option<String> = None;
+    let mut script_inline: Option<String> = None;
+    let mut report_json = false;
     let mut drag: Option<(f32, f32, f32, f32)> = None;
     let mut demo_curves = false;
     let mut demo_tools = false;
@@ -77,6 +81,16 @@ fn main() {
                     }
                 }
             }
+            // The scripted pathway: intake, draw, analyse, return.
+            "--script" => {
+                i += 1;
+                script = args.get(i).cloned();
+            }
+            "--run" => {
+                i += 1;
+                script_inline = args.get(i).cloned();
+            }
+            "--json" => report_json = true,
             "--demo" => demo = true,
             "--demo-selection" => demo_selection = true,
             "--demo-quickmask" => demo_quick_mask = true,
@@ -140,6 +154,38 @@ fn main() {
     // The font scan takes a moment; start it now so picking the Type tool
     // does not stall on it.
     cshop_core::font::FontDb::warm_up();
+
+    // A script runs headlessly and exits: no window, no event loop.
+    if script.is_some() || script_inline.is_some() {
+        let (source, base) = match &script {
+            Some(path) => {
+                let path = std::path::PathBuf::from(path);
+                let base = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                match std::fs::read_to_string(&path) {
+                    Ok(s) => (s, base),
+                    Err(e) => {
+                        eprintln!("could not read {}: {e}", path.display());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => (
+                script_inline.clone().unwrap_or_default(),
+                std::env::current_dir().unwrap_or_default(),
+            ),
+        };
+        match script::run(&source, &base) {
+            Ok(report) => {
+                print!("{}", if report_json { report.to_json() } else { report.summary() });
+                // A failed step is a failed run, so a caller can branch on it.
+                std::process::exit(if report.ok { 0 } else { 2 });
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     let result = match shot {
         Some(path) => screenshot::capture(

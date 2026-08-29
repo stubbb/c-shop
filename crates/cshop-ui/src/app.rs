@@ -1368,6 +1368,20 @@ impl CShopApp {
     ///
     /// Follow-up actions are drained too — Save falls through to Save As, Crop
     /// to Selection to Commit Crop — so this behaves as a frame would.
+    /// Composite document `index` and read it back.
+    ///
+    /// For callers with no window: the same path saving uses, exposed so a
+    /// script can render without an interface around it.
+    pub fn render_composite(
+        &mut self,
+        gpu: &cshop_gpu::context::GpuContext,
+        index: usize,
+    ) -> cshop_core::pixels::PixelBuffer {
+        let view = &mut self.docs[index];
+        view.sync_composite_only(gpu, &mut self.compositor);
+        view.read_composite(gpu)
+    }
+
     pub fn dispatch(&mut self, action: Action) {
         self.run(action);
         self.run_actions();
