@@ -128,6 +128,18 @@ cargo run --release -- --screenshot out.png --demo --size 1500x900
 `--help` lists the rest. [docs/SHORTCUTS.md](docs/SHORTCUTS.md) is the full
 keyboard reference.
 
+To put it in the desktop's application menu, with an icon and the file types it
+opens:
+
+```sh
+./packaging/install-desktop.sh          # --no-desktop to skip the desktop icon
+./packaging/install-desktop.sh --uninstall
+```
+
+Everything it writes goes under `~/.local/share`, so it needs no root. It also
+registers the `.cshop` format — matched by the file's own magic rather than its
+extension — so a project file gets an icon and something to open it with.
+
 It can also be driven without a window at all, by a script rather than a
 pointer — for batch work, for tests, and for callers that cannot see:
 

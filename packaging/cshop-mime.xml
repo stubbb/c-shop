@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The editor's own layered format, so a .cshop file has an icon, a
+     description, and something to open it with.
+
+     Matched by content as well as by name: the format opens with a six-byte
+     magic, which is more reliable than an extension and is why the writer put
+     one there. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-cshop-project">
+    <comment>C-Shop layered document</comment>
+    <glob pattern="*.cshop"/>
+    <glob pattern="*.csd"/>
+    <magic priority="60">
+      <match type="string" value="CSHOP\0" offset="0"/>
+    </magic>
+    <icon name="cshop"/>
+  </mime-type>
+</mime-info>

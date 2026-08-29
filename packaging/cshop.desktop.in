@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=C-Shop
+GenericName=Image Editor
+Comment=Layered image editor with GPU compositing
+Exec=@EXEC@ %F
+TryExec=@EXEC@
+Icon=cshop
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;Photography;
+Keywords=image;photo;editor;layers;raster;paint;composite;
+StartupNotify=true
+# Must match the window's WM_CLASS, or the launcher icon and the running
+# window are treated as two different applications and the dock shows both.
+# winit derives it from the binary's own name, which is `cshop`.
+StartupWMClass=cshop
+MimeType=@MIMETYPES@
