@@ -195,6 +195,20 @@ pub fn tool(painter: &Painter, rect: Rect, tool: Tool, color: Color32) {
             painter.rect_filled(r, 1.0, color);
         }
 
+        // A nib: a wedge running to a point, split down the middle.
+        Tool::Pen => {
+            filled(
+                painter,
+                rect,
+                color,
+                &[(0.50, 0.06), (0.78, 0.44), (0.62, 0.78), (0.38, 0.78), (0.22, 0.44)],
+            );
+            painter.line_segment(
+                [p(rect, 0.50, 0.30), p(rect, 0.50, 0.94)],
+                egui::Stroke::new(1.5, color),
+            );
+        }
+
         // A mitten: palm plus four fingers.
         Tool::Hand => {
             filled(

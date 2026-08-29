@@ -75,6 +75,8 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `text X Y "..."` | A type layer, its baseline starting at X Y. `size= color= family= bold italic align= leading= tracking= wrap=` |
 | `measure text "..."` | Report the size the same options would draw, without drawing it. |
 | `shape KIND X Y W H` | `rect ellipse polygon star line`. `fill= stroke= stroke-width= stroke-align= radius= sides= inner= thickness=` |
+| `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
+| `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
 | `style NAME [key=value...]` | Apply a named style — see below. |
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
@@ -88,6 +90,25 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `order WHERE` | `top bottom up down` |
 | `info` | Report the document's size and layer count. |
 | `export PATH` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. |
+
+### Paths and boolean operations
+
+```
+path "M 20 180 C 60 20 140 20 180 180 Z" fill=#3366cc stroke=#122244 stroke-width=3
+
+shape ellipse 10 30 100 100 fill=#3366cc
+shape ellipse 70 30 100 100 fill=#3366cc
+combine subtract
+```
+
+Combining keeps the operands inside the result rather than flattening them to
+a single outline, so the operation stays editable: the shapes are evaluated
+together each time the layer is drawn. Ordering is bottom-up, the way the
+layers are stacked — the lowest is the shape being cut into.
+
+A rectangle or an ellipse can take part in a combination as readily as a path;
+its outline is converted to contours first, which is checked by rendering the
+two against each other.
 
 ### The three tonal adjustments
 

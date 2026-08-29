@@ -1146,7 +1146,7 @@ impl SetShapeContent {
         let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
         let before = layer.bounds();
         let Some(shape) = layer.shape_mut() else { return Dirty::NONE };
-        shape.set_content(*content);
+        shape.set_content(content.clone());
         layer.offset = offset;
         Dirty::pixels(self.id, before.union(&layer.bounds()))
     }
@@ -1160,14 +1160,14 @@ impl Command for SetShapeContent {
     fn apply(&mut self, doc: &mut Document) -> Dirty {
         if self.from.is_none() {
             self.from =
-                doc.tree.get(self.id).and_then(|l| l.shape().map(|s| (*s.content(), l.offset)));
+                doc.tree.get(self.id).and_then(|l| l.shape().map(|s| (s.content().clone(), l.offset)));
         }
-        let (to, offset) = (self.to, self.to_offset);
+        let (to, offset) = (self.to.clone(), self.to_offset);
         self.write(doc, &to, offset)
     }
 
     fn revert(&mut self, doc: &mut Document) -> Dirty {
-        let Some((from, offset)) = self.from else { return Dirty::NONE };
+        let Some((from, offset)) = self.from.clone() else { return Dirty::NONE };
         self.write(doc, &from, offset)
     }
 }

@@ -321,3 +321,39 @@ fn the_format_is_recognised_from_the_bytes() {
         .expect("the magic should win over the extension");
     assert_eq!(back.tree.len(), doc.tree.len());
 }
+
+/// A path shape, with a boolean operand, has to survive the round trip.
+#[test]
+fn a_compound_path_survives_the_round_trip() {
+    use cshop_core::path::{BoolOp, PathPart, PathShape};
+    use cshop_core::shape::{outline, ShapeContent, ShapeKind, ShapeStyle};
+
+    let mut doc = Document::new("paths", 200, 200, Background::White);
+    let mut shape = PathShape::new(outline(&ShapeKind::Ellipse, (80.0, 60.0)));
+    shape.parts.push(PathPart {
+        subpaths: outline(&ShapeKind::Rectangle { radius: 6.0 }, (40.0, 40.0)),
+        op: BoolOp::Subtract,
+    });
+    let content = ShapeContent::new(ShapeKind::Path(shape.clone()), (80.0, 60.0), ShapeStyle::default());
+    let id = doc.tree.alloc_id();
+    let layer = cshop_core::layer::Layer::shape_layer(id, content).expect("a shape layer");
+    doc.tree.push(layer, None);
+
+    let bytes = cshop_io::project::write(&doc);
+    let back = cshop_io::project::read(&bytes).expect("should read back");
+
+    let restored = back
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|id| back.tree.get(id))
+        .find_map(|l| l.shape().map(|s| s.content().clone()))
+        .expect("the shape layer should have come back");
+    match restored.kind {
+        ShapeKind::Path(p) => {
+            assert_eq!(p, shape, "every anchor and operation should be identical");
+            assert_eq!(p.parts[1].op, BoolOp::Subtract);
+        }
+        other => panic!("came back as {}", other.name()),
+    }
+}

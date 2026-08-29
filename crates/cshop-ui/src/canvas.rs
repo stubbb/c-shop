@@ -319,6 +319,60 @@ fn draw_selection(app: &mut CShopApp, ui: &mut egui::Ui, painter: &egui::Painter
     }
 
     // The preview of the shape currently being dragged out.
+    // The Pen tool's work in progress: the curve so far, its anchors, and the
+    // segment that would follow the pointer. Drawn here rather than as a layer
+    // because an unfinished path is not part of the document yet.
+    if let Some(pen) = &app.pen {
+        let to_screen = |p: cshop_core::geom::Vec2| {
+            app.docs[index].doc_to_screen(viewport, egui::vec2(p.x, p.y))
+        };
+        let zoom = app.docs[index].zoom;
+        let closing = pen.cursor.is_some_and(|c| pen.would_close(c, zoom));
+
+        // The committed curve, flattened the same way it will be rendered.
+        if pen.anchors.len() >= 2 {
+            let flat = pen.to_path(false).flatten(0.4);
+            for part in &flat.parts {
+                for line in part.open.iter().chain(part.closed.iter()) {
+                    let pts: Vec<egui::Pos2> = line.iter().map(|p| to_screen(*p)).collect();
+                    if pts.len() >= 2 {
+                        painter.add(egui::Shape::line(
+                            pts,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 170, 255)),
+                        ));
+                    }
+                }
+            }
+        }
+        // The segment being placed, so the shape of the next curve is visible
+        // before the button goes down.
+        if let (Some(last), Some(cursor)) = (pen.anchors.last(), pen.cursor) {
+            let target = if closing { pen.first().unwrap_or(cursor) } else { cursor };
+            painter.line_segment(
+                [to_screen(last.at), to_screen(target)],
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 170, 255).gamma_multiply(0.6)),
+            );
+        }
+        for (i, a) in pen.anchors.iter().enumerate() {
+            let p = to_screen(a.at);
+            // Handles, drawn only where they are actually pulled out.
+            if a.at.distance(a.out_handle) > 0.5 {
+                for h in [a.in_handle, a.out_handle] {
+                    painter.line_segment(
+                        [p, to_screen(h)],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 200, 255).gamma_multiply(0.7)),
+                    );
+                    painter.circle_filled(to_screen(h), 2.5, egui::Color32::from_rgb(120, 200, 255));
+                }
+            }
+            // The first anchor grows when clicking it would close the path.
+            let first_and_closing = i == 0 && closing;
+            let r = if first_and_closing { 6.0 } else { 3.5 };
+            painter.circle_filled(p, r, egui::Color32::WHITE);
+            painter.circle_stroke(p, r, egui::Stroke::new(1.5, egui::Color32::from_rgb(40, 90, 160)));
+        }
+    }
+
     if let Some(drag) = &app.drag {
         let points = drag.preview();
         if points.len() >= 2 {
@@ -583,6 +637,43 @@ fn interact(
                         constrain: shift,
                     });
                 }
+            }
+        }
+
+        // The Pen: click for a corner, drag for a curve, click the first
+        // anchor again to close.
+        Tool::Pen => {
+            let zoom = app.doc().map_or(1.0, |v| v.zoom);
+            if response.drag_started_by(egui::PointerButton::Primary)
+                || response.clicked_by(egui::PointerButton::Primary)
+            {
+                let draft = app.pen.get_or_insert_with(Default::default);
+                if draft.would_close(doc_point, zoom) {
+                    app.push(Action::FinishPath { closed: true });
+                } else {
+                    draft.anchors.push(cshop_core::path::Anchor::corner(doc_point));
+                    draft.dragging = Some(draft.anchors.len() - 1);
+                }
+            }
+            if response.dragged_by(egui::PointerButton::Primary) {
+                if let Some(draft) = app.pen.as_mut() {
+                    if let Some(i) = draft.dragging {
+                        // Dragging pulls a handle out of the anchor just
+                        // placed, mirrored so the curve runs smoothly through.
+                        let at = draft.anchors[i].at;
+                        draft.anchors[i] = cshop_core::path::Anchor::smooth(at, doc_point);
+                    }
+                }
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary)
+                || response.clicked_by(egui::PointerButton::Primary)
+            {
+                if let Some(draft) = app.pen.as_mut() {
+                    draft.dragging = None;
+                }
+            }
+            if let Some(draft) = app.pen.as_mut() {
+                draft.cursor = Some(doc_point);
             }
         }
 

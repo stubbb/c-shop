@@ -23,6 +23,7 @@ pub enum Tool {
     PaintBucket,
     Gradient,
     Text,
+    Pen,
     Shape,
     Hand,
     Zoom,
@@ -46,6 +47,7 @@ impl Tool {
             Tool::PaintBucket => "Paint Bucket",
             Tool::Gradient => "Gradient",
             Tool::Text => "Horizontal Type",
+            Tool::Pen => "Pen",
             Tool::Shape => "Shape",
             Tool::Hand => "Hand",
             Tool::Zoom => "Zoom",
@@ -73,6 +75,7 @@ impl Tool {
             Tool::PaintBucket => "🪣",
             Tool::Gradient => "▤",
             Tool::Text => "T",
+            Tool::Pen => "✒",
             Tool::Shape => "▬",
             Tool::Hand => "✋",
             Tool::Zoom => "🔍",
@@ -124,6 +127,7 @@ impl Tool {
                 | Tool::PaintBucket
                 | Tool::Gradient
                 | Tool::Text
+                | Tool::Pen
                 | Tool::Shape
                 | Tool::Hand
                 | Tool::Zoom
@@ -178,6 +182,7 @@ pub const TOOL_GROUPS: &[ToolGroup] = &[
     ToolGroup { key: egui::Key::E, label: 'E', tools: &[Tool::Eraser] },
     ToolGroup { key: egui::Key::G, label: 'G', tools: &[Tool::PaintBucket, Tool::Gradient] },
     ToolGroup { key: egui::Key::T, label: 'T', tools: &[Tool::Text] },
+    ToolGroup { key: egui::Key::P, label: 'P', tools: &[Tool::Pen] },
     ToolGroup { key: egui::Key::U, label: 'U', tools: &[Tool::Shape] },
     ToolGroup { key: egui::Key::H, label: 'H', tools: &[Tool::Hand] },
     ToolGroup { key: egui::Key::Z, label: 'Z', tools: &[Tool::Zoom] },
@@ -219,6 +224,7 @@ mod tests {
             Tool::PaintBucket,
             Tool::Gradient,
             Tool::Text,
+            Tool::Pen,
             Tool::Shape,
             Tool::Hand,
             Tool::Zoom,

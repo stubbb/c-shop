@@ -722,6 +722,8 @@ impl Runner {
             "text" => self.cmd_text(cmd),
             "measure" => self.cmd_measure(cmd),
             "shape" => self.cmd_shape(cmd),
+            "path" => self.cmd_path(cmd),
+            "combine" => self.cmd_combine(cmd),
             "fill" => self.cmd_fill(cmd),
             "style" => self.cmd_style(cmd),
             "gradient" => self.cmd_gradient(cmd),
@@ -917,6 +919,102 @@ impl Runner {
         let fact = format!("{}x{} (offset {}, {})", r.width(), r.height(), r.x0, r.y0);
         self.report.facts.push((format!("measure {content:?}"), fact.clone()));
         Ok(format!("{content:?} measures {fact}"))
+    }
+
+    /// A Bézier path, given as a run of points.
+    ///
+    /// `path "M 10 10 C 40 0 80 0 110 10 L 110 90 Z"` — a deliberately small
+    /// subset of the usual path grammar: move, line, cubic, close. Enough to
+    /// describe a shape without inventing a second one.
+    fn cmd_path(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::path::PathShape;
+        use cshop_core::shape::ShapeKind;
+        self.need_doc()?;
+        let data = cmd.args.first().ok_or("path needs its points, as \"M x y L x y ...\"")?;
+        let subpaths = parse_path_data(data)?;
+        if subpaths.is_empty() {
+            return Err("that path has no points in it".into());
+        }
+        let shape = PathShape::new(subpaths);
+        let open = ShapeKind::Path(shape.clone()).is_open();
+
+        let mut style = cshop_core::shape::ShapeStyle {
+            fill: cmd
+                .color("fill")?
+                .or(Some(Rgba8::BLACK))
+                .filter(|_| cmd.opt("fill") != Some("none")),
+            stroke: cmd.color("stroke")?,
+            stroke_width: cmd.f32("stroke-width")?.unwrap_or(2.0),
+            stroke_align: cshop_core::shape::StrokeAlign::Center,
+            antialias: true,
+        };
+        if open {
+            // Nothing to fill, so the colour has to go on the stroke.
+            style.stroke = style.stroke.or(style.fill);
+            style.fill = None;
+        }
+        let parts = shape.parts.len();
+        let anchors = shape.anchors().count();
+        self.app.add_path_layer(shape, style, "Path");
+        Ok(format!(
+            "drew a path of {anchors} anchor{} in {parts} contour group{}",
+            if anchors == 1 { "" } else { "s" },
+            if parts == 1 { "" } else { "s" }
+        ))
+    }
+
+    /// Combine the shape layers named by index into one path.
+    fn cmd_combine(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::path::BoolOp;
+        self.need_doc()?;
+        let name = cmd.args.first().map(|s| s.as_str()).unwrap_or("union");
+        let op = BoolOp::all()
+            .into_iter()
+            .find(|o| o.name().eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                format!(
+                    "no operation called {name:?}. There are: {}",
+                    BoolOp::all().map(|o| o.name()).join(", ")
+                )
+            })?;
+
+        // Which layers, by the index `info` reports. Defaults to all of them,
+        // since combining every shape in a document is the common case in a
+        // script that just drew them.
+        let order = self
+            .app
+            .doc()
+            .map(|v| v.doc.tree.iter_all())
+            .unwrap_or_default();
+        let chosen: Vec<_> = match cmd.opt("layers") {
+            None => order
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.app.doc().and_then(|v| v.doc.tree.get(*id)).is_some_and(|l| l.shape().is_some())
+                })
+                .collect(),
+            Some(list) => {
+                let mut out = Vec::new();
+                for part in list.split(',') {
+                    let i: usize = part
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("{part:?} is not a layer index"))?;
+                    out.push(*order.get(i).ok_or_else(|| format!("no layer {i}"))?);
+                }
+                out
+            }
+        };
+        if chosen.len() < 2 {
+            return Err("combine needs two or more shape layers".into());
+        }
+
+        if let Some(view) = self.app.doc_mut() {
+            view.doc.selected_layers = chosen.clone();
+        }
+        self.app.dispatch(Action::CombineShapes(op));
+        Ok(format!("combined {} shapes with {}", chosen.len(), op.name()))
     }
 
     fn cmd_shape(&mut self, cmd: &Command) -> Result<String, String> {
@@ -1802,6 +1900,79 @@ fn factor(c: &[char], at: &mut usize, v: &[(String, String)], whole: &str) -> Re
         }
         _ => Err(format!("{whole:?} ends early")),
     }
+}
+
+/// Read a path from the small subset of the usual path grammar.
+///
+/// `M x y` moves to a new contour, `L x y` draws a line, `C x1 y1 x2 y2 x y` a
+/// cubic, `Z` closes. Absolute coordinates only, and no shorthand: a script
+/// writes these once and reads them back later, so the shortest spelling is
+/// worth less than the one that is obvious.
+pub fn parse_path_data(data: &str) -> Result<Vec<cshop_core::path::SubPath>, String> {
+    use cshop_core::path::{Anchor, SubPath};
+
+    let mut tokens = data.split([' ', ',', '\t', '\n']).filter(|t| !t.is_empty()).peekable();
+    let mut subpaths: Vec<SubPath> = Vec::new();
+    let mut current: Vec<Anchor> = Vec::new();
+    let mut closed = false;
+
+    let flush = |anchors: &mut Vec<Anchor>, closed: &mut bool, out: &mut Vec<SubPath>| {
+        if anchors.len() >= 2 {
+            out.push(SubPath { anchors: std::mem::take(anchors), closed: *closed });
+        } else {
+            anchors.clear();
+        }
+        *closed = false;
+    };
+
+    while let Some(token) = tokens.next() {
+        let mut number = |what: &str| -> Result<f32, String> {
+            tokens
+                .next()
+                .ok_or_else(|| format!("{what} is missing a number"))?
+                .parse::<f32>()
+                .map_err(|_| format!("{what} expected a number"))
+        };
+        match token {
+            "M" | "m" => {
+                let (x, y) = (number("M")?, number("M")?);
+                flush(&mut current, &mut closed, &mut subpaths);
+                current.push(Anchor::corner(Vec2::new(x, y)));
+            }
+            "L" | "l" => {
+                let (x, y) = (number("L")?, number("L")?);
+                if current.is_empty() {
+                    return Err("a path has to start with M".into());
+                }
+                current.push(Anchor::corner(Vec2::new(x, y)));
+            }
+            "C" | "c" => {
+                let v = [
+                    number("C")?,
+                    number("C")?,
+                    number("C")?,
+                    number("C")?,
+                    number("C")?,
+                    number("C")?,
+                ];
+                let Some(last) = current.last_mut() else {
+                    return Err("a path has to start with M".into());
+                };
+                // The first control point belongs to the anchor being left,
+                // the second to the one being arrived at.
+                last.out_handle = Vec2::new(v[0], v[1]);
+                let at = Vec2::new(v[4], v[5]);
+                current.push(Anchor { at, in_handle: Vec2::new(v[2], v[3]), out_handle: at });
+            }
+            "Z" | "z" => {
+                closed = true;
+                flush(&mut current, &mut closed, &mut subpaths);
+            }
+            other => return Err(format!("{other:?} is not a path command; use M, L, C or Z")),
+        }
+    }
+    flush(&mut current, &mut closed, &mut subpaths);
+    Ok(subpaths)
 }
 
 /// Where styles are looked for, nearest first.

@@ -208,7 +208,7 @@ and sizing, with the measurements behind that claim.
 | | |
 |---|---|
 | ![Shapes](docs/screenshot-shapes.png) | ![Type](docs/screenshot-type.png) |
-| Vector shape layers | Re-editable type |
+| Vector shape layers, Bézier paths and boolean operations | Re-editable type |
 | ![Curves](docs/screenshot-curves.png) | ![Filters](docs/screenshot-filter.png) |
 | Adjustments with a live histogram | Filters with a zoomable preview |
 | ![Layer effects](docs/screenshot-effects.png) | ![Selections](docs/screenshot-selection.png) |

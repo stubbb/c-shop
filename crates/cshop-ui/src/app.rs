@@ -97,6 +97,8 @@ pub struct CShopApp {
     shape_synced: Option<LayerId>,
     /// Where a Type-tool drag began, for sizing a paragraph box.
     pub drag_start: Option<Vec2>,
+    /// The path the Pen tool is laying down, before it becomes a layer.
+    pub pen: Option<PenDraft>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -183,6 +185,7 @@ impl CShopApp {
             shape_style: cshop_core::shape::ShapeStyle::default(),
             shape_synced: None,
             drag_start: None,
+            pen: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -524,12 +527,17 @@ impl CShopApp {
                         queued.push(Action::CancelTransform);
                     } else if self.crop.is_some() {
                         queued.push(Action::CancelCrop);
+                    } else if self.pen.is_some() {
+                        queued.push(Action::CancelPath);
                     } else {
                         queued.push(Action::CancelDrag);
                     }
                 }
                 if i.key_pressed(egui::Key::Enter) {
-                    if self.transform.is_some() {
+                    if self.pen.is_some() {
+                        // Enter ends the path where it is, leaving it open.
+                        queued.push(Action::FinishPath { closed: false });
+                    } else if self.transform.is_some() {
                         queued.push(Action::CommitTransform);
                     } else if self.crop.is_some() {
                         queued.push(Action::CommitCrop);
@@ -1055,6 +1063,11 @@ impl CShopApp {
             Action::DrawShape { from, to, from_centre, constrain } => {
                 self.draw_shape(from, to, from_centre, constrain)
             }
+            Action::FinishPath { closed } => self.finish_path(closed),
+            Action::CancelPath => {
+                self.pen = None;
+            }
+            Action::CombineShapes(op) => self.combine_shapes(op),
 
             Action::Copy => self.copy(false, false),
             Action::CopyMerged => self.copy(true, false),
@@ -2399,7 +2412,7 @@ impl CShopApp {
             return;
         }
         // A line runs corner to corner of the drag, so its direction survives.
-        let kind = match self.shape_kind {
+        let kind = match self.shape_kind.clone() {
             cshop_core::shape::ShapeKind::Line { thickness, .. } => {
                 let unit = |a: f32, b: f32, span: f32| {
                     if span <= 0.0 {
@@ -2446,6 +2459,165 @@ impl CShopApp {
         view.invalidate();
     }
 
+    /// Turn the Pen tool's draft into a shape layer.
+    ///
+    /// The path's own coordinates are moved into the layer's box so that the
+    /// layer can be dragged afterwards like any other, which is what keeps the
+    /// pen from being a special case everywhere downstream.
+    fn finish_path(&mut self, closed: bool) {
+        let Some(draft) = self.pen.take() else { return };
+        if draft.anchors.len() < 2 {
+            return;
+        }
+        // An open path has nothing to fill, so it is drawn from its stroke —
+        // and a stroke it has no colour for would be invisible.
+        let mut style = self.shape_style;
+        if !closed {
+            style.stroke = style.stroke.or(style.fill).or(Some(self.foreground));
+            style.fill = None;
+        }
+        let label = if closed { "Path" } else { "Open Path" };
+        self.add_path_layer(draft.to_path(closed), style, label);
+    }
+
+    /// Put a path into the document as its own shape layer.
+    ///
+    /// The path's own coordinates move into the layer's box so that the layer
+    /// can be dragged afterwards like any other, which is what keeps a path
+    /// from being a special case everywhere downstream. Shared by the Pen tool
+    /// and by the script, so both land in exactly the same place.
+    pub fn add_path_layer(
+        &mut self,
+        path: cshop_core::path::PathShape,
+        style: cshop_core::shape::ShapeStyle,
+        label: &str,
+    ) {
+        let Some(bounds) = path.bounds() else { return };
+        let origin = Vec2::new(bounds.x0, bounds.y0);
+        let local = path.translate(Vec2::new(-origin.x, -origin.y));
+        let size = ((bounds.x1 - bounds.x0).max(1.0), (bounds.y1 - bounds.y0).max(1.0));
+
+        let content = cshop_core::shape::ShapeContent::new(
+            cshop_core::shape::ShapeKind::Path(local),
+            size,
+            style,
+        );
+        let Some(view) = self.doc_mut() else { return };
+        let id = view.doc.tree.alloc_id();
+        let Some(mut layer) = Layer::shape_layer(id, content) else {
+            self.fail("That path has neither a fill nor a stroke");
+            return;
+        };
+        let anchor = layer.shape().expect("just built as a shape").anchor();
+        layer.offset = (origin.x.round() as i32 - anchor.0, origin.y.round() as i32 - anchor.1);
+
+        let pos = new_layer_pos(view);
+        let dirty = view.history.apply(&mut view.doc, Box::new(AddLayer::new(layer, pos, label)));
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Combine the selected shape layers into one path.
+    ///
+    /// The operands keep their own geometry inside the result, so the
+    /// operation stays editable — changing the mode afterwards re-combines the
+    /// same shapes rather than starting again from a flattened outline.
+    fn combine_shapes(&mut self, op: cshop_core::path::BoolOp) {
+        use cshop_core::path::{PathPart, PathShape};
+
+        let ids: Vec<LayerId> = match self.doc() {
+            Some(view) if !view.doc.selected_layers.is_empty() => {
+                view.doc.selected_layers.clone()
+            }
+            _ => Vec::new(),
+        };
+        if ids.len() < 2 {
+            self.fail("Select two or more shape layers to combine");
+            return;
+        }
+
+        // Bottom-up, so the result reads the way the layers are stacked: the
+        // lowest is the shape being cut into.
+        let Some(view) = self.doc_mut() else { return };
+        let order = view.doc.tree.iter_all();
+        let mut chosen: Vec<LayerId> =
+            order.into_iter().filter(|id| ids.contains(id)).collect();
+        if chosen.len() < 2 {
+            return;
+        }
+
+        let mut parts: Vec<PathPart> = Vec::new();
+        let mut style = None;
+        for (i, id) in chosen.iter().enumerate() {
+            let Some(layer) = view.doc.tree.get(*id) else { return };
+            let Some(shape) = layer.shape() else {
+                self.fail("Only shape layers can be combined");
+                return;
+            };
+            let content = shape.content();
+            if style.is_none() {
+                style = Some(content.style);
+            }
+            // Everything is brought into document space, since the operands
+            // came from layers that sat in different places.
+            let anchor = shape.anchor();
+            let at = Vec2::new(
+                (layer.offset.0 + anchor.0) as f32,
+                (layer.offset.1 + anchor.1) as f32,
+            );
+            let mut path = match &content.kind {
+                cshop_core::shape::ShapeKind::Path(p) => p.clone(),
+                other => PathShape::new(cshop_core::shape::outline(other, content.size)),
+            }
+            .translate(at);
+            for part in &mut path.parts {
+                // Only the first operand of each shape keeps its own mode; a
+                // compound being folded in combines as a whole.
+                part.op = op;
+            }
+            if i == 0 {
+                if let Some(first) = path.parts.first_mut() {
+                    first.op = cshop_core::path::BoolOp::Union;
+                }
+            }
+            parts.extend(path.parts);
+        }
+
+        let combined = PathShape { parts };
+        let Some(bounds) = combined.bounds() else { return };
+        let origin = Vec2::new(bounds.x0, bounds.y0);
+        let local = combined.translate(Vec2::new(-origin.x, -origin.y));
+        let size = ((bounds.x1 - bounds.x0).max(1.0), (bounds.y1 - bounds.y0).max(1.0));
+
+        let content = cshop_core::shape::ShapeContent::new(
+            cshop_core::shape::ShapeKind::Path(local),
+            size,
+            style.unwrap_or_default(),
+        );
+        let id = view.doc.tree.alloc_id();
+        let Some(mut layer) = Layer::shape_layer(id, content) else {
+            self.fail("The combined path has neither a fill nor a stroke");
+            return;
+        };
+        let anchor = layer.shape().expect("just built as a shape").anchor();
+        layer.offset = (origin.x.round() as i32 - anchor.0, origin.y.round() as i32 - anchor.1);
+
+        // One history step: the operands go, the result arrives.
+        let pos = new_layer_pos(view);
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> =
+            vec![Box::new(AddLayer::new(layer, pos, op.name()))];
+        chosen.reverse();
+        for id in chosen {
+            steps.push(Box::new(cshop_core::history::DeleteLayer::new(id)));
+        }
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new(op.name(), steps)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
     /// The shape layer the options bar is editing, if any.
     fn editing_shape(&self) -> Option<LayerId> {
         if self.tool != Tool::Shape {
@@ -2468,7 +2640,7 @@ impl CShopApp {
         self.shape_synced = selected;
         let Some(id) = selected else { return };
         let Some(view) = self.doc() else { return };
-        let Some(content) = view.doc.tree.get(id).and_then(|l| l.shape()).map(|s| *s.content())
+        let Some(content) = view.doc.tree.get(id).and_then(|l| l.shape()).map(|s| s.content().clone())
         else {
             return;
         };
@@ -2482,19 +2654,19 @@ impl CShopApp {
     /// step per drag by the command itself.
     pub fn refresh_shape_style(&mut self) {
         let Some(id) = self.editing_shape() else { return };
-        let (kind, style) = (self.shape_kind, self.shape_style);
+        let (kind, style) = (self.shape_kind.clone(), self.shape_style);
         let Some(view) = self.doc_mut() else { return };
         let Some(layer) = view.doc.tree.get(id) else { return };
         let Some(shape) = layer.shape() else { return };
-        let current = *shape.content();
+        let current = shape.content().clone();
 
         // Keep the shape's own size and, for a line, its direction; only the
         // options the bar actually shows are pushed onto it.
-        let kind = match (kind, current.kind) {
+        let kind = match (kind, &current.kind) {
             (
                 cshop_core::shape::ShapeKind::Line { thickness, .. },
                 cshop_core::shape::ShapeKind::Line { from, to, .. },
-            ) => cshop_core::shape::ShapeKind::Line { thickness, from, to },
+            ) => cshop_core::shape::ShapeKind::Line { thickness, from: *from, to: *to },
             (k, _) => k,
         };
         let next = cshop_core::shape::ShapeContent { kind, size: current.size, style };
@@ -3596,5 +3768,46 @@ impl CShopApp {
         let mut full = PixelBuffer::new(view.doc.width, view.doc.height);
         full.paste(pixels, layer.offset.0, layer.offset.1);
         Some(full)
+    }
+}
+
+/// A path being drawn with the Pen tool.
+///
+/// Kept on the app rather than in a layer until it is finished, because an
+/// unfinished path has no interior and nothing to composite — and because
+/// abandoning it should leave the document exactly as it was.
+#[derive(Debug, Clone, Default)]
+pub struct PenDraft {
+    pub anchors: Vec<cshop_core::path::Anchor>,
+    /// The anchor being dragged out, if the button is still down. Held apart
+    /// from the committed ones so releasing without moving leaves a corner.
+    pub dragging: Option<usize>,
+    /// Where the pointer is now, for the segment that follows the last anchor.
+    pub cursor: Option<Vec2>,
+}
+
+impl PenDraft {
+    /// How close to the first anchor a click has to be to close the path, in
+    /// document pixels at 100%.
+    pub const CLOSE_RADIUS: f32 = 8.0;
+
+    pub fn first(&self) -> Option<Vec2> {
+        self.anchors.first().map(|a| a.at)
+    }
+
+    /// Whether clicking here would close the path rather than extend it.
+    pub fn would_close(&self, at: Vec2, zoom: f32) -> bool {
+        // The radius is in screen pixels, so zooming in does not make the
+        // target harder to hit.
+        let radius = Self::CLOSE_RADIUS / zoom.max(0.05);
+        self.anchors.len() >= 2 && self.first().is_some_and(|p| p.distance(at) <= radius)
+    }
+
+    /// The path as it stands, for drawing the work in progress.
+    pub fn to_path(&self, closed: bool) -> cshop_core::path::PathShape {
+        cshop_core::path::PathShape::new(vec![cshop_core::path::SubPath {
+            anchors: self.anchors.clone(),
+            closed,
+        }])
     }
 }

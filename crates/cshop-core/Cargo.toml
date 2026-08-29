@@ -13,3 +13,6 @@ thiserror = { workspace = true }
 ahash = { workspace = true }
 ab_glyph = { workspace = true }
 ttf-parser = { workspace = true }
+
+[dev-dependencies]
+image = { workspace = true }

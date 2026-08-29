@@ -57,7 +57,7 @@ impl StrokeAlign {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ShapeKind {
     /// A rectangle, rounded when `radius` is above zero.
     Rectangle { radius: f32 },
@@ -68,24 +68,41 @@ pub enum ShapeKind {
     /// A straight line of the given thickness, between two points given as
     /// fractions of the box so any drag direction is representable.
     Line { thickness: f32, from: (f32, f32), to: (f32, f32) },
+    /// Bézier contours, in box-local pixels, combined by boolean operations.
+    ///
+    /// The only kind whose geometry is not derived from the box, so the box is
+    /// a record of where the path is rather than a frame that defines it.
+    Path(crate::path::PathShape),
 }
 
 impl ShapeKind {
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
-            ShapeKind::Rectangle { radius } if radius > 0.0 => "Rounded Rectangle",
+            ShapeKind::Rectangle { radius } if *radius > 0.0 => "Rounded Rectangle",
             ShapeKind::Rectangle { .. } => "Rectangle",
             ShapeKind::Ellipse => "Ellipse",
             ShapeKind::Polygon { star: true, .. } => "Star",
             ShapeKind::Polygon { .. } => "Polygon",
             ShapeKind::Line { .. } => "Line",
+            ShapeKind::Path(p) if p.parts.len() > 1 => "Compound Path",
+            ShapeKind::Path(_) => "Path",
         }
     }
 
     /// A line has no interior, so it is drawn from its stroke colour and
     /// ignores the fill.
-    pub fn is_open(self) -> bool {
-        matches!(self, ShapeKind::Line { .. })
+    /// Whether the shape has no interior to fill.
+    ///
+    /// A path is open only when none of its contours close; one that does is
+    /// filled like any other region, and one that does not is a stroke.
+    pub fn is_open(&self) -> bool {
+        match self {
+            ShapeKind::Line { .. } => true,
+            ShapeKind::Path(p) => {
+                !p.parts.iter().any(|part| part.subpaths.iter().any(|s| s.closed))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -110,7 +127,7 @@ impl Default for ShapeStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShapeContent {
     pub kind: ShapeKind,
     /// The shape's box, in pixels. Geometry is defined inside it, so moving
@@ -162,6 +179,73 @@ impl ShapeContent {
     }
 }
 
+/// The shape's outline as Bézier contours, in box-local pixels.
+///
+/// What lets a rectangle or an ellipse take part in a boolean operation: the
+/// operations work on contours, so anything that wants to join one has to be
+/// able to say what its outline is. A line has no interior and contributes
+/// nothing.
+pub fn outline(kind: &ShapeKind, size: (f32, f32)) -> Vec<crate::path::SubPath> {
+    use crate::path::{Anchor, SubPath};
+    let (w, h) = (size.0.max(1.0), size.1.max(1.0));
+    match kind {
+        ShapeKind::Path(p) => p.parts.iter().flat_map(|part| part.subpaths.clone()).collect(),
+        ShapeKind::Line { .. } => Vec::new(),
+        ShapeKind::Rectangle { radius } => {
+            let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
+            if r <= 0.0 {
+                return vec![SubPath::polygon(&[
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(w, 0.0),
+                    Vec2::new(w, h),
+                    Vec2::new(0.0, h),
+                ])];
+            }
+            // A rounded corner is a quarter ellipse, which is one cubic with
+            // handles this far along the tangent.
+            let k = r * KAPPA;
+            let a = |at: Vec2, inh: Vec2, outh: Vec2| Anchor { at, in_handle: inh, out_handle: outh };
+            vec![SubPath::closed(vec![
+                a(Vec2::new(r, 0.0), Vec2::new(r - k, 0.0), Vec2::new(r + k, 0.0)),
+                a(Vec2::new(w - r, 0.0), Vec2::new(w - r - k, 0.0), Vec2::new(w - r + k, 0.0)),
+                a(Vec2::new(w, r), Vec2::new(w, r - k), Vec2::new(w, r + k)),
+                a(Vec2::new(w, h - r), Vec2::new(w, h - r - k), Vec2::new(w, h - r + k)),
+                a(Vec2::new(w - r, h), Vec2::new(w - r + k, h), Vec2::new(w - r - k, h)),
+                a(Vec2::new(r, h), Vec2::new(r + k, h), Vec2::new(r - k, h)),
+                a(Vec2::new(0.0, h - r), Vec2::new(0.0, h - r + k), Vec2::new(0.0, h - r - k)),
+                a(Vec2::new(0.0, r), Vec2::new(0.0, r + k), Vec2::new(0.0, r - k)),
+            ])]
+        }
+        ShapeKind::Ellipse => {
+            let (rx, ry) = (w / 2.0, h / 2.0);
+            let (cx, cy) = (rx, ry);
+            let (kx, ky) = (rx * KAPPA, ry * KAPPA);
+            let p = |x: f32, y: f32| Vec2::new(cx + x, cy + y);
+            vec![SubPath::closed(vec![
+                Anchor { at: p(0.0, -ry), in_handle: p(-kx, -ry), out_handle: p(kx, -ry) },
+                Anchor { at: p(rx, 0.0), in_handle: p(rx, -ky), out_handle: p(rx, ky) },
+                Anchor { at: p(0.0, ry), in_handle: p(kx, ry), out_handle: p(-kx, ry) },
+                Anchor { at: p(-rx, 0.0), in_handle: p(-rx, ky), out_handle: p(-rx, -ky) },
+            ])]
+        }
+        ShapeKind::Polygon { sides, star, inner } => {
+            let content = ShapeContent::new(kind.clone(), size, ShapeStyle::default());
+            vec![SubPath::polygon(&content.polygon_points(*sides, *star, *inner))]
+        }
+    }
+}
+
+/// How closely a flattened curve has to follow the real one, in pixels.
+///
+/// The chords of a subdivided curve sit *inside* it, so a coarse tolerance
+/// does not merely roughen the outline — it shrinks the shape. At a third of a
+/// pixel an ellipse came out half a percent small against the exact area,
+/// which is a visible thinning next to the same ellipse drawn directly.
+pub const PATH_FLATNESS: f32 = 0.05;
+
+/// How far a Bézier handle reaches to approximate a quarter circle.
+const KAPPA: f32 = 0.552_284_8;
+
 /// Distance from `p` to a segment.
 fn sd_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let pa = Vec2::new(p.x - a.x, p.y - a.y);
@@ -200,10 +284,24 @@ fn sd_polygon(p: Vec2, verts: &[Vec2]) -> f32 {
 }
 
 /// Signed distance to the shape's outline, in box-local coordinates.
-fn distance(content: &ShapeContent, polygon: &[Vec2], p: Vec2) -> f32 {
+fn distance(
+    content: &ShapeContent,
+    polygon: &[Vec2],
+    flat: &crate::path::Flattened,
+    p: Vec2,
+) -> f32 {
     let (w, h) = (content.size.0.max(1.0), content.size.1.max(1.0));
     let (cx, cy) = (w / 2.0, h / 2.0);
     match content.kind {
+        ShapeKind::Path(_) => {
+            // A closed path is a region; an open one is a stroke of its own
+            // width, the same way a line is.
+            if flat.has_interior() {
+                flat.fill_distance(p)
+            } else {
+                flat.open_distance(p) - content.style.stroke_width.max(0.1) / 2.0
+            }
+        }
         ShapeKind::Rectangle { radius } => {
             let r = radius.max(0.0).min(cx.min(cy));
             // Rounded box: shrink the half-extents by the radius, then take
@@ -269,6 +367,12 @@ pub fn rasterize(content: &ShapeContent) -> Option<Rasterized> {
         ShapeKind::Polygon { sides, star, inner } => content.polygon_points(sides, star, inner),
         _ => Vec::new(),
     };
+    // Curves are subdivided once here rather than per pixel. Half a pixel is
+    // finer than the antialiasing can show.
+    let flat = match &content.kind {
+        ShapeKind::Path(path) => path.flatten(PATH_FLATNESS),
+        _ => crate::path::Flattened::default(),
+    };
     let style = content.style;
     // A line has no interior to fill; its own thickness is the whole shape.
     let fill = if content.kind.is_open() { None } else { style.fill };
@@ -293,7 +397,7 @@ pub fn rasterize(content: &ShapeContent) -> Option<Rasterized> {
             for (x, slot) in row.iter_mut().enumerate() {
                 // Sample at the pixel's centre.
                 let p = Vec2::new(x as f32 - m as f32 + 0.5, y as f32 - m as f32 + 0.5);
-                let d = distance(content, &polygon, p);
+                let d = distance(content, &polygon, &flat, p);
 
                 let mut out = crate::color::Rgba::new(0.0, 0.0, 0.0, 0.0);
                 if let Some(c) = line_colour {
@@ -458,7 +562,7 @@ mod tests {
         );
         let hard = ShapeContent {
             style: ShapeStyle { antialias: false, ..soft.style },
-            ..soft
+            ..soft.clone()
         };
         let partial = |c: &ShapeContent| {
             rasterize(c).unwrap().pixels.pixels().iter().filter(|p| p.a > 0 && p.a < 255).count()

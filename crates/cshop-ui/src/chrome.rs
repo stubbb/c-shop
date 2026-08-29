@@ -562,6 +562,27 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
+            // Boolean operations on shape layers. Enabled only with two or
+            // more selected, since combining one shape with nothing is not an
+            // operation.
+            let combinable = app
+                .doc()
+                .is_some_and(|d| {
+                    d.doc.selected_layers.len() >= 2
+                        && d.doc
+                            .selected_layers
+                            .iter()
+                            .all(|id| d.doc.tree.get(*id).is_some_and(|l| l.shape().is_some()))
+                });
+            ui.menu_button("Combine Shapes", |ui| {
+                for op in cshop_core::path::BoolOp::all() {
+                    if item_enabled(ui, op.name(), "", combinable).clicked() {
+                        app.push(Action::CombineShapes(op));
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
             if item_enabled(ui, "Merge Down", &k::MERGE_DOWN.label(), has_doc).clicked() {
                 app.push(Action::MergeDown);
                 ui.close();
@@ -1217,7 +1238,7 @@ fn shape_options(app: &mut CShopApp, ui: &mut egui::Ui) {
     // Adopt the selected shape's settings before showing them, so the bar
     // describes the layer rather than overwriting it.
     app.sync_shape_options();
-    let before = (app.shape_kind, app.shape_style);
+    let before = (app.shape_kind.clone(), app.shape_style);
 
     // The kinds, as the Gradient tool lists its own.
     let kinds = [
@@ -1232,11 +1253,11 @@ fn shape_options(app: &mut CShopApp, ui: &mut egui::Ui) {
         // Compare by shape, not by settings, so switching back keeps whatever
         // radius or side count was chosen.
         let selected = std::mem::discriminant(&app.shape_kind) == std::mem::discriminant(&kind)
-            && match (app.shape_kind, kind) {
+            && match (&app.shape_kind, &kind) {
                 (
                     ShapeKind::Rectangle { radius: a },
                     ShapeKind::Rectangle { radius: b },
-                ) => (a > 0.0) == (b > 0.0),
+                ) => (*a > 0.0) == (*b > 0.0),
                 (ShapeKind::Polygon { star: a, .. }, ShapeKind::Polygon { star: b, .. }) => a == b,
                 _ => true,
             };
@@ -1341,7 +1362,7 @@ fn shape_options(app: &mut CShopApp, ui: &mut egui::Ui) {
     );
 
     // A selected shape layer follows the options, so it stays editable.
-    if (app.shape_kind, app.shape_style) != before {
+    if (app.shape_kind.clone(), app.shape_style) != before {
         app.refresh_shape_style();
     }
 }

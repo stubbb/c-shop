@@ -30,6 +30,7 @@ pub mod history;
 pub mod layer;
 pub mod mask;
 pub mod paint;
+pub mod path;
 pub mod pixels;
 pub mod resample;
 pub mod selection;

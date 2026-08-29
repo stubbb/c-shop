@@ -503,6 +503,7 @@ dependencies = [
  "ab_glyph",
  "ahash",
  "bytemuck",
+ "image",
  "log",
  "rayon",
  "thiserror 2.0.20",

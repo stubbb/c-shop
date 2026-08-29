@@ -20,7 +20,7 @@ fn ready() -> Option<Harness> {
 fn active_shape(h: &Harness) -> Option<cshop_core::shape::ShapeContent> {
     let view = h.app.doc()?;
     let id = view.doc.active?;
-    view.doc.tree.get(id)?.shape().map(|s| *s.content())
+    view.doc.tree.get(id)?.shape().map(|s| s.content().clone())
 }
 
 #[test]

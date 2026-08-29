@@ -626,3 +626,88 @@ mod sandbox {
         assert!(sandbox.resolve("alias/photo.png").is_ok(), "staying inside is fine");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_data_parses_the_four_commands() {
+    let subs = script::parse_path_data("M 0 0 L 10 0 C 20 0 30 10 30 20 Z")
+        .expect("should parse");
+    assert_eq!(subs.len(), 1);
+    let sub = &subs[0];
+    assert!(sub.closed, "Z closes it");
+    assert_eq!(sub.anchors.len(), 3, "move, line, curve");
+    // The curve's first control point belongs to the anchor it leaves.
+    assert_eq!(sub.anchors[1].out_handle, cshop_core::geom::Vec2::new(20.0, 0.0));
+    assert_eq!(sub.anchors[2].in_handle, cshop_core::geom::Vec2::new(30.0, 10.0));
+
+    // Two contours, and only the closed one says so.
+    let subs = script::parse_path_data("M 0 0 L 5 5 Z M 10 10 L 20 20").expect("should parse");
+    assert_eq!(subs.len(), 2);
+    assert!(subs[0].closed && !subs[1].closed);
+}
+
+#[test]
+fn malformed_path_data_says_what_is_wrong() {
+    assert!(script::parse_path_data("L 1 2").unwrap_err().contains("start with M"));
+    assert!(script::parse_path_data("M 1").unwrap_err().contains("number"));
+    assert!(script::parse_path_data("Q 1 2 3 4").unwrap_err().contains("not a path command"));
+}
+
+#[test]
+fn a_path_becomes_a_shape_layer() {
+    let Some(report) = run("new 120 120\npath \"M 10 10 L 100 10 L 100 100 Z\" fill=#ff0000")
+    else {
+        return;
+    };
+    assert!(report.ok, "{}", report.summary());
+    let shape = report.layers.iter().find(|l| l.kind == "Shape").expect("a shape layer");
+    // The layer is placed where the path is, not at the origin.
+    assert!(shape.bounds[0] <= 10 && shape.bounds[1] <= 10, "{:?}", shape.bounds);
+}
+
+/// An unclosed path is a stroke, so it must not arrive with a fill.
+#[test]
+fn an_open_path_is_given_a_stroke_rather_than_a_fill() {
+    let Some(report) = run("new 120 120\npath \"M 10 10 L 100 60\" fill=#0000ff") else {
+        return;
+    };
+    assert!(report.ok, "{}", report.summary());
+    assert!(report.layers.iter().any(|l| l.kind == "Shape"));
+}
+
+#[test]
+fn shapes_combine_into_one_path_layer() {
+    for op in ["union", "subtract", "intersect", "exclude"] {
+        let source = format!(
+            "new 200 140\nshape ellipse 10 20 90 90 fill=#3366cc\n\
+             shape ellipse 60 20 90 90 fill=#3366cc\ncombine {op}"
+        );
+        let Some(report) = run(&source) else { return };
+        assert!(report.ok, "{op}: {}", report.summary());
+        let shapes: Vec<_> = report.layers.iter().filter(|l| l.kind == "Shape").collect();
+        assert_eq!(shapes.len(), 1, "{op}: the operands should have become one layer");
+    }
+}
+
+#[test]
+fn combining_needs_something_to_combine() {
+    let Some(report) = run("new 100 100\nshape ellipse 10 10 50 50\ncombine union") else {
+        return;
+    };
+    assert!(!report.ok, "one shape is not a combination");
+    assert!(
+        report.steps.iter().any(|s| s.note.contains("two or more")),
+        "should say what is missing: {:?}",
+        report.steps.last().map(|s| &s.note)
+    );
+
+    let Some(report) = run("new 100 100\nshape ellipse 0 0 40 40\nshape ellipse 20 0 40 40\ncombine wibble")
+    else {
+        return;
+    };
+    assert!(!report.ok);
+    assert!(report.steps.iter().any(|s| s.note.contains("Union")), "should list the operations");
+}

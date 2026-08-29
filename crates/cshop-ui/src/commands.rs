@@ -246,6 +246,13 @@ pub enum Action {
     ClearLayerEffects(LayerId),
     /// Create a shape layer from a drag, in document space.
     DrawShape { from: cshop_core::geom::Vec2, to: cshop_core::geom::Vec2, from_centre: bool, constrain: bool },
+    /// Turn the Pen tool's draft into a shape layer. Closed paths get a fill,
+    /// open ones only a stroke.
+    FinishPath { closed: bool },
+    /// Throw the Pen tool's draft away.
+    CancelPath,
+    /// Combine the selected shape layers into one path with this operation.
+    CombineShapes(cshop_core::path::BoolOp),
     /// Step the brush diameter one notch, as `[` and `]` do.
     StepBrushSize(i32),
     /// Step the brush hardness one notch, as Shift+`[` and Shift+`]` do.

@@ -326,21 +326,45 @@ fn write_text(w: &mut Writer, t: &TextContent) {
 }
 
 fn write_shape(w: &mut Writer, c: &ShapeContent) {
-    match c.kind {
+    match &c.kind {
         ShapeKind::Rectangle { radius } => {
             w.u8(0);
-            w.f32(radius);
+            w.f32(*radius);
         }
         ShapeKind::Ellipse => w.u8(1),
         ShapeKind::Polygon { sides, star, inner } => {
             w.u8(2);
-            w.u32(sides);
-            w.bool(star);
-            w.f32(inner);
+            w.u32(*sides);
+            w.bool(*star);
+            w.f32(*inner);
         }
         ShapeKind::Line { thickness, from, to } => {
             w.u8(3);
-            w.f32s(&[thickness, from.0, from.1, to.0, to.1]);
+            w.f32s(&[*thickness, from.0, from.1, to.0, to.1]);
+        }
+        // Tag 4. Written as counts followed by flat runs of anchors, so a
+        // reader that stops early cannot mistake one part for another.
+        ShapeKind::Path(path) => {
+            w.u8(4);
+            w.u32(path.parts.len() as u32);
+            for part in &path.parts {
+                w.u8(part.op as u8);
+                w.u32(part.subpaths.len() as u32);
+                for sub in &part.subpaths {
+                    w.bool(sub.closed);
+                    w.u32(sub.anchors.len() as u32);
+                    for a in &sub.anchors {
+                        w.f32s(&[
+                            a.at.x,
+                            a.at.y,
+                            a.in_handle.x,
+                            a.in_handle.y,
+                            a.out_handle.x,
+                            a.out_handle.y,
+                        ]);
+                    }
+                }
+            }
         }
     }
     w.f32(c.size.0);
@@ -826,6 +850,48 @@ fn read_shape(r: &mut Reader<'_>) -> Result<ShapeContent, IoError> {
         3 => {
             let v: [f32; 5] = r.f32s()?;
             ShapeKind::Line { thickness: v[0], from: (v[1], v[2]), to: (v[3], v[4]) }
+        }
+        4 => {
+            use cshop_core::geom::Vec2;
+            use cshop_core::path::{Anchor, BoolOp, PathPart, PathShape, SubPath};
+            let parts = r.u32()? as usize;
+            // Bounded against a corrupt count claiming millions of parts.
+            if parts > 4096 {
+                return Err(IoError::Malformed(format!("{parts} path parts")));
+            }
+            let mut out = Vec::with_capacity(parts);
+            for _ in 0..parts {
+                let op = match r.u8()? {
+                    1 => BoolOp::Subtract,
+                    2 => BoolOp::Intersect,
+                    3 => BoolOp::Exclude,
+                    _ => BoolOp::Union,
+                };
+                let subs = r.u32()? as usize;
+                if subs > 65_536 {
+                    return Err(IoError::Malformed(format!("{subs} subpaths")));
+                }
+                let mut subpaths = Vec::with_capacity(subs);
+                for _ in 0..subs {
+                    let closed = r.bool()?;
+                    let n = r.u32()? as usize;
+                    if n > 1_000_000 {
+                        return Err(IoError::Malformed(format!("{n} anchors")));
+                    }
+                    let mut anchors = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let v: [f32; 6] = r.f32s()?;
+                        anchors.push(Anchor {
+                            at: Vec2::new(v[0], v[1]),
+                            in_handle: Vec2::new(v[2], v[3]),
+                            out_handle: Vec2::new(v[4], v[5]),
+                        });
+                    }
+                    subpaths.push(SubPath { anchors, closed });
+                }
+                out.push(PathPart { subpaths, op });
+            }
+            ShapeKind::Path(PathShape { parts: out })
         }
         other => return Err(IoError::Malformed(format!("unknown shape {other}"))),
     };
