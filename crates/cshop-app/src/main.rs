@@ -6,6 +6,7 @@
 //! to egui as a texture, and the render loop needs to stay under our control so
 //! it can idle when nothing is changing.
 
+mod mcp;
 mod screenshot;
 mod script;
 mod window;
@@ -15,8 +16,19 @@ C-Shop — a native, GPU-accelerated layered image editor
 
 USAGE:
     cshop [FILES]...                open the given images
+    cshop --script PATH             run a script headlessly and exit
+    cshop --run 'SCRIPT'            run a script given inline
+    cshop --serve [ADDR]            serve the editor over MCP and stay up
     cshop --screenshot PATH [FILES] render one frame offscreen and exit
     cshop --help                    show this message
+
+SERVE OPTIONS:
+    --serve [ADDR]                  default 127.0.0.1:7333
+    --workspace DIR                 the only directory scripts may touch
+                                    (default: the working directory)
+    --token SECRET                  require `Authorization: Bearer SECRET`;
+                                    mandatory when ADDR is not loopback
+    --allow-origin ORIGIN           permit a browser origin besides localhost
 
 SCREENSHOT OPTIONS:
     --size WxH                      output size (default 1600x980)
@@ -24,6 +36,26 @@ SCREENSHOT OPTIONS:
     --demo-selection                build a document with an active selection
     --right-click X,Y               right-click there, to capture a context menu
 ";
+
+/// Read what `--serve` was given.
+///
+/// Accepts a full `host:port`, a bare port, or nothing at all — a caller
+/// writing `--serve 8080` means a port, and refusing it on a technicality
+/// would be pedantry.
+fn parse_addr(given: &str) -> Result<std::net::SocketAddr, String> {
+    use std::net::{SocketAddr, ToSocketAddrs};
+    if given.is_empty() {
+        return Ok(SocketAddr::from(([127, 0, 0, 1], 7333)));
+    }
+    if let Ok(port) = given.parse::<u16>() {
+        return Ok(SocketAddr::from(([127, 0, 0, 1], port)));
+    }
+    given
+        .to_socket_addrs()
+        .map_err(|e| format!("could not read {given:?} as an address: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{given:?} resolved to no address"))
+}
 
 fn main() {
     // Stamped before anything else, so the startup figure covers the whole
@@ -59,6 +91,10 @@ fn main() {
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
     let mut report_json = false;
+    let mut serve: Option<String> = None;
+    let mut workspace: Option<String> = None;
+    let mut token: Option<String> = None;
+    let mut allow_origins: Vec<String> = Vec::new();
     let mut drag: Option<(f32, f32, f32, f32)> = None;
     let mut demo_curves = false;
     let mut demo_tools = false;
@@ -91,6 +127,31 @@ fn main() {
                 script_inline = args.get(i).cloned();
             }
             "--json" => report_json = true,
+            "--serve" => {
+                // The address is optional, so only take the next argument if
+                // it is not itself a flag.
+                serve = Some(match args.get(i + 1) {
+                    Some(next) if !next.starts_with('-') => {
+                        i += 1;
+                        next.clone()
+                    }
+                    _ => String::new(),
+                });
+            }
+            "--workspace" => {
+                i += 1;
+                workspace = args.get(i).cloned();
+            }
+            "--token" => {
+                i += 1;
+                token = args.get(i).cloned();
+            }
+            "--allow-origin" => {
+                i += 1;
+                if let Some(origin) = args.get(i) {
+                    allow_origins.push(origin.clone());
+                }
+            }
             "--demo" => demo = true,
             "--demo-selection" => demo_selection = true,
             "--demo-quickmask" => demo_quick_mask = true,
@@ -154,6 +215,29 @@ fn main() {
     // The font scan takes a moment; start it now so picking the Type tool
     // does not stall on it.
     cshop_core::font::FontDb::warm_up();
+
+    // Serving keeps the process alive; nothing after this runs.
+    if let Some(addr) = serve {
+        let config = mcp::server::Config {
+            addr: match parse_addr(&addr) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            },
+            workspace: workspace
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+            token,
+            allow_origins,
+        };
+        if let Err(e) = mcp::server::serve(config) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // A script runs headlessly and exits: no window, no event loop.
     if script.is_some() || script_inline.is_some() {
