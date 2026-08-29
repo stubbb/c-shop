@@ -9,6 +9,7 @@ use crate::document::{Dirty, Document};
 use crate::geom::IRect;
 use crate::layer::{Layer, LayerId, LayerMask};
 use crate::mask::MaskBuffer;
+use crate::color::Rgba8;
 use crate::pixels::PixelBuffer;
 use crate::selection::{CompressedSelection, Selection};
 use crate::tree::LayerPos;
@@ -31,9 +32,95 @@ pub trait Command: std::fmt::Debug + std::any::Any + Send {
     fn merge(&mut self, _next: &dyn Command) -> bool {
         false
     }
+
+    /// Roughly how much this entry holds, so the history can bound itself by
+    /// memory rather than only by how many entries there are.
+    ///
+    /// Most commands are a handful of fields and can leave this at zero. The
+    /// ones that matter keep whole images: on a 6000x6000 document a single
+    /// full-canvas fill holds 275 MB of before and after, and a hundred of
+    /// those is more memory than any machine has.
+    fn memory_bytes(&self) -> u64 {
+        0
+    }
 }
 
 /// Undo stack with a bounded depth.
+/// Bytes a pixel buffer occupies.
+fn pixel_bytes(px: &PixelBuffer) -> u64 {
+    px.width() as u64 * px.height() as u64 * 4
+}
+
+fn mask_bytes(mask: &LayerMask) -> u64 {
+    mask.data.width() as u64 * mask.data.height() as u64
+}
+
+/// Bytes a whole layer occupies, counting its pixels and its mask.
+fn layer_bytes(layer: &Layer) -> u64 {
+    let pixels = layer.pixels().map_or(0, pixel_bytes);
+    let mask = layer.mask.as_ref().map_or(0, mask_bytes);
+    pixels + mask
+}
+
+/// A pixel buffer as the undo stack keeps it.
+///
+/// Filling, clearing, and flattening onto a flat background all leave a region
+/// of one colour behind, and keeping four bytes per pixel to say so is most of
+/// what a large document's history weighs. Photographic content does not
+/// compress cheaply and is kept as it is; the check that tells them apart
+/// stops at the first pixel that differs.
+#[derive(Debug)]
+enum Stored {
+    Uniform { width: u32, height: u32, color: Rgba8 },
+    Raw(PixelBuffer),
+}
+
+impl Stored {
+    fn of(px: PixelBuffer) -> Stored {
+        match uniform_colour(&px) {
+            Some(color) => {
+                Stored::Uniform { width: px.width(), height: px.height(), color }
+            }
+            None => Stored::Raw(px),
+        }
+    }
+
+    fn bytes(&self) -> u64 {
+        match self {
+            Stored::Uniform { .. } => 0,
+            Stored::Raw(px) => pixel_bytes(px),
+        }
+    }
+
+    /// Write this back into `dst` with its top-left at `(x, y)`.
+    ///
+    /// A uniform region is written as a fill rather than being expanded into a
+    /// buffer first, so undoing one costs nothing either.
+    fn paste_into(&self, dst: &mut PixelBuffer, x: i32, y: i32) {
+        match self {
+            Stored::Raw(px) => dst.paste(px, x, y),
+            Stored::Uniform { width, height, color } => {
+                dst.fill_rect(IRect::at(x, y, *width, *height), *color);
+            }
+        }
+    }
+}
+
+/// The single colour of a buffer, if it has one.
+fn uniform_colour(px: &PixelBuffer) -> Option<Rgba8> {
+    use rayon::prelude::*;
+    let first = *px.pixels().first()?;
+    // `all` short-circuits, so photographic content stops almost immediately.
+    px.pixels().par_iter().all(|p| *p == first).then_some(first)
+}
+
+/// How much the undo stack may hold before its oldest entries are dropped.
+///
+/// A count alone cannot bound it: an entry is a few bytes for a rename and
+/// hundreds of megabytes for a fill across a large canvas, so a limit of two
+/// hundred entries is either far too small or tens of gigabytes.
+pub const DEFAULT_MEMORY_BUDGET: u64 = 2 << 30;
+
 #[derive(Debug)]
 pub struct History {
     entries: Vec<Box<dyn Command>>,
@@ -41,18 +128,64 @@ pub struct History {
     /// is redoable.
     cursor: usize,
     limit: usize,
+    /// Ceiling on what the entries may hold between them.
+    budget: u64,
     /// Label for the implicit state at cursor 0, e.g. "Open" or "New".
     origin: String,
+    /// Entries dropped to stay inside the budget, so the panel can say so
+    /// rather than leaving the oldest step to vanish unexplained.
+    forgotten: usize,
 }
 
 impl History {
     pub fn new(origin: impl Into<String>) -> Self {
-        Self { entries: Vec::new(), cursor: 0, limit: 200, origin: origin.into() }
+        Self {
+            entries: Vec::new(),
+            cursor: 0,
+            limit: 200,
+            budget: DEFAULT_MEMORY_BUDGET,
+            origin: origin.into(),
+            forgotten: 0,
+        }
     }
 
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
         self
+    }
+
+    pub fn with_budget(mut self, bytes: u64) -> Self {
+        self.budget = bytes;
+        self
+    }
+
+    /// What the entries hold between them.
+    pub fn memory_bytes(&self) -> u64 {
+        self.entries.iter().map(|c| c.memory_bytes()).sum()
+    }
+
+    /// How many steps have been dropped to stay inside the budget.
+    pub fn forgotten(&self) -> usize {
+        self.forgotten
+    }
+
+    /// Drop the oldest entries until the stack fits.
+    ///
+    /// One entry is always kept, however large. A single undo that cannot be
+    /// afforded is still better than none, and refusing to record the edit at
+    /// all would leave the document changed with no way back.
+    fn trim(&mut self) {
+        let mut excess = self.entries.len().saturating_sub(self.limit);
+        let mut held: u64 = self.memory_bytes();
+        while self.entries.len() - excess > 1 && held > self.budget {
+            held -= self.entries[excess].memory_bytes();
+            excess += 1;
+        }
+        if excess > 0 {
+            self.entries.drain(0..excess);
+            self.cursor = self.cursor.saturating_sub(excess);
+            self.forgotten += excess;
+        }
     }
 
     pub fn origin(&self) -> &str {
@@ -102,11 +235,10 @@ impl History {
         }
 
         self.entries.push(cmd);
-        if self.entries.len() > self.limit {
-            let excess = self.entries.len() - self.limit;
-            self.entries.drain(0..excess);
-        }
         self.cursor = self.entries.len();
+        // Everything is applied, so trimming the oldest moves the cursor with
+        // it rather than leaving it pointing past the end.
+        self.trim();
         dirty
     }
 
@@ -175,6 +307,10 @@ impl AddLayer {
 }
 
 impl Command for AddLayer {
+    fn memory_bytes(&self) -> u64 {
+        self.layer.as_ref().map_or(0, layer_bytes)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }
@@ -261,6 +397,10 @@ impl DeleteLayer {
 }
 
 impl Command for DeleteLayer {
+    fn memory_bytes(&self) -> u64 {
+        self.removed.iter().map(layer_bytes).sum()
+    }
+
     fn name(&self) -> String {
         "Delete Layer".to_string()
     }
@@ -534,18 +674,18 @@ impl Command for SetLayerProperty {
 pub struct ReplacePixels {
     id: LayerId,
     rect: IRect,
-    after: PixelBuffer,
-    before: Option<PixelBuffer>,
+    after: Stored,
+    before: Option<Stored>,
     label: String,
 }
 
 impl ReplacePixels {
     /// `after` must be exactly `rect`-sized.
     pub fn new(id: LayerId, rect: IRect, after: PixelBuffer, label: impl Into<String>) -> Self {
-        Self { id, rect, after, before: None, label: label.into() }
+        Self { id, rect, after: Stored::of(after), before: None, label: label.into() }
     }
 
-    fn paste(&self, doc: &mut Document, src: &PixelBuffer) -> Dirty {
+    fn paste(&self, doc: &mut Document, src: &Stored) -> Dirty {
         let Some(layer) = doc.tree.get_mut(self.id) else {
             return Dirty::NONE;
         };
@@ -554,12 +694,16 @@ impl ReplacePixels {
             return Dirty::NONE;
         };
         // `rect` is document space; the buffer is layer-local.
-        pixels.paste(src, self.rect.x0 - offset.0, self.rect.y0 - offset.1);
+        src.paste_into(pixels, self.rect.x0 - offset.0, self.rect.y0 - offset.1);
         Dirty::pixels(self.id, self.rect)
     }
 }
 
 impl Command for ReplacePixels {
+    fn memory_bytes(&self) -> u64 {
+        self.after.bytes() + self.before.as_ref().map_or(0, Stored::bytes)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }
@@ -573,9 +717,10 @@ impl Command for ReplacePixels {
             let Some(pixels) = layer.pixels() else {
                 return Dirty::NONE;
             };
-            self.before = Some(pixels.copy_rect(self.rect.translate(-offset.0, -offset.1)));
+            self.before =
+                Some(Stored::of(pixels.copy_rect(self.rect.translate(-offset.0, -offset.1))));
         }
-        let after = std::mem::replace(&mut self.after, PixelBuffer::new(0, 0));
+        let after = std::mem::replace(&mut self.after, Stored::Raw(PixelBuffer::new(0, 0)));
         let dirty = self.paste(doc, &after);
         self.after = after;
         dirty
@@ -633,6 +778,16 @@ impl ReplaceLayerPixels {
 }
 
 impl Command for ReplaceLayerPixels {
+    fn memory_bytes(&self) -> u64 {
+        let px = |slot: &Option<(PixelBuffer, (i32, i32))>| {
+            slot.as_ref().map_or(0, |(p, _)| pixel_bytes(p))
+        };
+        let mk = |slot: &Option<Option<LayerMask>>| {
+            slot.as_ref().and_then(|m| m.as_ref()).map_or(0, mask_bytes)
+        };
+        px(&self.after) + px(&self.before) + mk(&self.after_mask) + mk(&self.before_mask)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }
@@ -754,6 +909,17 @@ impl ResizeImage {
 }
 
 impl Command for ResizeImage {
+    fn memory_bytes(&self) -> u64 {
+        self.before.as_ref().map_or(0, |(_, _, snaps)| {
+            snaps
+                .iter()
+                .map(|(_, px, _, mask)| {
+                    pixel_bytes(px) + mask.as_ref().map_or(0, mask_bytes)
+                })
+                .sum()
+        })
+    }
+
     fn name(&self) -> String {
         "Image Size".to_string()
     }
@@ -868,6 +1034,10 @@ impl RasterizeLayer {
 }
 
 impl Command for RasterizeLayer {
+    fn memory_bytes(&self) -> u64 {
+        self.pixels.as_ref().map_or(0, pixel_bytes)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }
@@ -1159,6 +1329,11 @@ impl SetSelection {
 }
 
 impl Command for SetSelection {
+    fn memory_bytes(&self) -> u64 {
+        let c = |s: &Option<CompressedSelection>| s.as_ref().map_or(0, |v| v.memory_bytes());
+        c(&self.to) + self.from.as_ref().map_or(0, c)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }
@@ -1317,6 +1492,11 @@ impl ReplaceMaskPixels {
 }
 
 impl Command for ReplaceMaskPixels {
+    fn memory_bytes(&self) -> u64 {
+        let m = |b: &MaskBuffer| b.width() as u64 * b.height() as u64;
+        m(&self.after) + self.before.as_ref().map_or(0, m)
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }

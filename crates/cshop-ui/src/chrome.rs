@@ -1715,6 +1715,28 @@ pub fn status_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
                     egui::RichText::new(format!("GPU {}", crate::format_bytes(view.vram_bytes())))
                         .color(p.text_dim),
                 );
+                // What undo is holding. On a large canvas this is the largest
+                // thing in the process after the layers themselves, and it is
+                // the only one the user can do anything about.
+                let undo = view.history.memory_bytes();
+                if undo > 0 {
+                    ui.separator();
+                    let forgotten = view.history.forgotten();
+                    let text = if forgotten > 0 {
+                        format!(
+                            "undo {} — {forgotten} older step{} dropped",
+                            crate::format_bytes(undo),
+                            if forgotten == 1 { "" } else { "s" }
+                        )
+                    } else {
+                        format!("undo {}", crate::format_bytes(undo))
+                    };
+                    ui.label(egui::RichText::new(text).color(p.text_dim))
+                        .on_hover_text(
+                            "History is bounded by memory as well as by depth: the oldest \
+                             steps are dropped once it would hold more than its budget.",
+                        );
+                }
                 // A document that does not fit in the GPU budget renders
                 // incompletely, so say so rather than let it look like a bug.
                 if let Some((needed, budget)) = view.cache().over_budget() {
