@@ -340,8 +340,129 @@ fn styles_compose() {
     assert!(deep.command.contains("levels=5"), "the value should pass through: {:?}", deep.command);
 }
 
-/// The two styles that ship with the editor have to keep working, since the
-/// documentation walks through them.
+#[test]
+fn a_hole_that_is_a_bare_name_is_replaced_verbatim() {
+    // So a parameter can carry a blend mode, not only a number.
+    let out = script::substitute("set blend=\"{mode}\"", &[("mode".into(), "Color Dodge".into())])
+        .expect("should substitute");
+    assert_eq!(out, "set blend=\"Color Dodge\"");
+}
+
+#[test]
+fn arithmetic_in_a_hole_is_evaluated() {
+    let v = |body: &str| {
+        script::substitute(
+            body,
+            &[("min".into(), "800".into()), ("n".into(), "3".into())],
+        )
+    };
+    assert_eq!(v("{min*0.01}").unwrap(), "8");
+    assert_eq!(v("{min/4}").unwrap(), "200");
+    // Multiplication binds tighter than addition, and parens override it.
+    assert_eq!(v("{n+n*2}").unwrap(), "9");
+    assert_eq!(v("{(n+n)*2}").unwrap(), "12");
+    assert_eq!(v("{0-n}").unwrap(), "-3");
+    assert_eq!(v("{-n}").unwrap(), "-3");
+    // Whitespace is stripped, so subtraction survives being written spaced out.
+    assert_eq!(v("{min - 800}").unwrap(), "0");
+}
+
+#[test]
+fn arithmetic_that_cannot_work_says_why() {
+    let v = |body: &str| script::substitute(body, &[("n".into(), "2".into())]);
+    assert!(v("{n/0}").unwrap_err().contains("divides by zero"));
+    assert!(v("{n*q}").unwrap_err().contains("not a parameter"));
+    assert!(v("{(n+1}").unwrap_err().contains("unclosed"));
+    // A bare unknown name is still the plain error, which names the parameters.
+    assert!(v("{wobble}").unwrap_err().contains("no parameter"));
+}
+
+#[test]
+fn a_style_can_scale_itself_to_the_document() {
+    let dir = styles_dir("sized", &[("half.style", "resize {width*0.5} {height*0.25}\n")]);
+    let Ok(report) = script::run("new 200 80\nstyle half", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let (_, w, h) = report.document.expect("a document");
+    assert_eq!((w, h), (100, 20), "half the width, a quarter the height");
+}
+
+#[test]
+fn a_style_parameter_beats_the_bound_document_size() {
+    let dir = styles_dir("shadow-width", &[("own.style", "param width = 12\nresize {width} {width}\n")]);
+    let Ok(report) = script::run("new 300 300\nstyle own", &dir) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let (_, w, h) = report.document.expect("a document");
+    assert_eq!((w, h), (12, 12), "the style's own name wins over the bound size");
+}
+
+#[test]
+fn resize_scales_and_keeps_the_proportions() {
+    let size = |source: &str| run(source).and_then(|r| r.document).map(|(_, w, h)| (w, h));
+    let Some(got) = size("new 400 100\nresize fit=200") else { return };
+    assert_eq!(got, (200, 50), "fit works off the long side");
+    assert_eq!(size("new 400 100\nresize 80").unwrap(), (80, 20), "one keeps the ratio");
+    assert_eq!(size("new 400 100\nresize 80 80").unwrap(), (80, 80), "two are taken as given");
+    assert_eq!(size("new 400 100\nresize scale=0.5").unwrap(), (200, 50));
+    // The canvas form pads or crops rather than scaling.
+    assert_eq!(size("new 400 100\nresize 500 200 canvas").unwrap(), (500, 200));
+}
+
+#[test]
+fn a_whole_number_option_accepts_the_decimal_arithmetic_produces() {
+    // `radius={min*0.0045}` arrives as "3.0465"; refusing it would mean no
+    // integer option could ever be scaled to the image.
+    let cmd = script::parse("filter median radius=3.0465")
+        .into_iter()
+        .next()
+        .unwrap()
+        .expect("should parse");
+    assert_eq!(cmd.u32("radius").unwrap(), Some(3));
+}
+
+/// Every style in the repository has to apply cleanly.
+///
+/// Discovered from the directory rather than listed, so a style added later is
+/// covered without anyone remembering to add it here. A `-lettering` style
+/// wants a type layer under it and the rest want a picture, which is the one
+/// distinction the loop has to make.
+#[test]
+fn every_shipped_style_applies() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = with_image("shipped", "#6b8f5a");
+    let src = dir.join("src.png");
+    let mut names: Vec<String> = std::fs::read_dir(repo.join("styles"))
+        .expect("the styles directory should exist")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            (path.extension()? == "style")
+                .then(|| path.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    names.sort();
+    assert!(names.len() >= 10, "expected a library of styles, found {names:?}");
+
+    for name in &names {
+        let script = if name.ends_with("-lettering") {
+            format!(
+                "open {}
+resize 240 160
+text 10 90 \"Ab\" size=48
+style {name}",
+                src.display()
+            )
+        } else {
+            // Small, or the heavier styles make the suite crawl.
+            format!("open {}
+resize 240 160
+style {name}", src.display())
+        };
+        let Ok(report) = script::run(&script, &repo) else { return };
+        assert!(report.ok, "style {name:?} failed: {}", report.summary());
+    }
+}
+
+/// The two styles the documentation walks through, in more detail.
 #[test]
 fn the_bundled_styles_apply() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -420,7 +541,7 @@ fn the_coloured_pencil_style_lays_colour_back_over_its_own_drawing() {
     // Run from the repo, so the bundled style is always found and a failure
     // here is a real one rather than a style that could not be located.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let script = format!("open {}\nstyle coloured-pencil blur=3", src.display());
+    let script = format!("open {}\nstyle coloured-pencil softness=0.06", src.display());
     let Ok(report) = script::run(&script, &repo) else { return };
     assert!(report.ok, "{}", report.summary());
     let colour = report

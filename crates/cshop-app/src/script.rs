@@ -317,13 +317,22 @@ impl Command {
         }
     }
 
+    /// A whole-number option.
+    ///
+    /// Accepts a decimal and rounds it. Style arithmetic works in floats, so
+    /// `radius={min*0.0045}` arrives here as `3.0465`; rejecting that would
+    /// mean every integer option had to be written as a literal, which is
+    /// exactly what makes a style stop scaling with the image.
     pub fn u32(&self, key: &str) -> Result<Option<u32>, String> {
         match self.opt(key) {
             None => Ok(None),
-            Some(v) => v
-                .parse()
-                .map(Some)
-                .map_err(|_| format!("{key}={v:?} is not a whole number")),
+            Some(v) => match v.parse::<u32>() {
+                Ok(n) => Ok(Some(n)),
+                Err(_) => match v.parse::<f64>() {
+                    Ok(n) if n.is_finite() && n >= 0.0 => Ok(Some(n.round() as u32)),
+                    _ => Err(format!("{key}={v:?} is not a whole number")),
+                },
+            },
         }
     }
 
@@ -511,6 +520,7 @@ impl Runner {
             "new" => self.cmd_new(cmd),
             "open" => self.cmd_open(cmd),
             "place" => self.cmd_place(cmd),
+            "resize" => self.cmd_resize(cmd),
             "text" => self.cmd_text(cmd),
             "measure" => self.cmd_measure(cmd),
             "shape" => self.cmd_shape(cmd),
@@ -838,6 +848,27 @@ impl Runner {
         // wins and a name the style does not declare is caught rather than
         // ignored.
         let mut values = style.params.clone();
+
+        // The size of what we are working on, so a style can scale itself
+        // rather than being written for one image. Bound underneath the
+        // style's own parameters, so a style that wants to declare its own
+        // `width` still can.
+        if let Some(doc) = self.app.doc() {
+            let (w, h) = (doc.doc.width as f32, doc.doc.height as f32);
+            for (name, value) in [
+                ("width", w),
+                ("height", h),
+                ("min", w.min(h)),
+                ("max", w.max(h)),
+                ("cx", w / 2.0),
+                ("cy", h / 2.0),
+            ] {
+                if !values.iter().any(|(k, _)| k == name) {
+                    values.push((name.to_string(), format!("{value}")));
+                }
+            }
+        }
+
         for (k, v) in &cmd.opts {
             match values.iter_mut().find(|(name, _)| name == k) {
                 Some(slot) => slot.1 = v.clone(),
@@ -873,6 +904,59 @@ impl Runner {
         } else {
             format!("applied style {name:?} ({})", settings.join(" "))
         })
+    }
+
+    /// Resample the image.
+    ///
+    /// `resize 800 600` is exact; `resize fit=800` scales the longest side to
+    /// 800 and keeps the proportions, which is what a script usually wants
+    /// when it is handed a photograph of unknown size. `canvas` changes the
+    /// frame instead of the picture, padding or cropping rather than scaling.
+    fn cmd_resize(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::resample::Resampling;
+        self.need_doc()?;
+        let doc = self.app.doc().ok_or("no document")?;
+        let (w0, h0) = (doc.doc.width, doc.doc.height);
+
+        let (width, height) = if let Some(fit) = cmd.f32("fit")? {
+            let scale = fit / w0.max(h0) as f32;
+            (((w0 as f32 * scale).round() as u32).max(1), ((h0 as f32 * scale).round() as u32).max(1))
+        } else if let Some(scale) = cmd.f32("scale")? {
+            (((w0 as f32 * scale).round() as u32).max(1), ((h0 as f32 * scale).round() as u32).max(1))
+        } else {
+            let width = match cmd.args.first() {
+                Some(_) => cmd.arg_f32(0, "width")? as u32,
+                None => cmd.u32("width")?.ok_or("resize needs a width, or fit=, or scale=")?,
+            };
+            // Only one dimension given: keep the proportions.
+            let height = match (cmd.args.get(1), cmd.u32("height")?) {
+                (Some(_), _) => cmd.arg_f32(1, "height")? as u32,
+                (None, Some(h)) => h,
+                (None, None) => {
+                    ((h0 as f32 * width as f32 / w0 as f32).round() as u32).max(1)
+                }
+            };
+            (width.max(1), height.max(1))
+        };
+
+        let filter = match cmd.opt("filter").unwrap_or("lanczos") {
+            "nearest" => Resampling::Nearest,
+            "bilinear" | "linear" => Resampling::Bilinear,
+            "bicubic" | "cubic" => Resampling::Bicubic,
+            "lanczos" => Resampling::Lanczos3,
+            other => return Err(format!("no resampling filter called {other:?}")),
+        };
+
+        if cmd.flag("canvas") {
+            self.app.dispatch(Action::ResizeCanvas {
+                width,
+                height,
+                anchor: cshop_ui::commands::Anchor::Center,
+            });
+        } else {
+            self.app.dispatch(Action::ResizeImage { width, height, filter });
+        }
+        Ok(format!("resized {w0}x{h0} to {width}x{height}"))
     }
 
     fn cmd_select(&mut self, cmd: &Command) -> Result<String, String> {
@@ -1137,10 +1221,30 @@ impl Runner {
             "find-edges" => Filter::FindEdges,
             "median" => Filter::Median { radius: cmd.u32("radius")?.unwrap_or(2) },
             "mosaic" => Filter::Mosaic { size: cmd.u32("size")?.unwrap_or(10) },
+            "crystallize" => Filter::Crystallize {
+                size: cmd.u32("size")?.unwrap_or(12),
+                seed: cmd.f32("seed")?.unwrap_or(1.0) as u64,
+            },
+            "emboss" => Filter::Emboss {
+                angle: cmd.f32("angle")?.unwrap_or(135.0),
+                height: cmd.f32("height")?.unwrap_or(3.0),
+                amount: cmd.f32("amount")?.unwrap_or(1.0),
+            },
+            "solarize" => Filter::Solarize,
+            "diffuse" => Filter::Diffuse {
+                amount: cmd.u32("amount")?.unwrap_or(4),
+                seed: cmd.f32("seed")?.unwrap_or(1.0) as u64,
+            },
+            "twirl" => Filter::Twirl { angle: cmd.f32("angle")?.unwrap_or(60.0) },
+            "surface-blur" => Filter::SurfaceBlur {
+                radius: r(8.0)?,
+                threshold: cmd.f32("threshold")?.unwrap_or(0.1),
+            },
             other => {
                 return Err(format!(
                     "unknown filter {other:?}. Available: gaussian-blur, box-blur, motion-blur, \
-                     sharpen, unsharp-mask, add-noise, high-pass, find-edges, median, mosaic"
+                     surface-blur, sharpen, unsharp-mask, add-noise, high-pass, find-edges, \
+                     median, mosaic, crystallize, emboss, solarize, diffuse, twirl"
                 ))
             }
         };
@@ -1179,11 +1283,54 @@ impl Runner {
                 weights: [0.4, 0.6, 0.4, 0.6, 0.2, 0.8],
                 tint: cmd.color("tint")?,
             },
+            // The tonal three. Between them they are what most photographic
+            // looks are actually made of.
+            "levels" => {
+                let channel = cshop_core::adjust::LevelsChannel {
+                    input_black: cmd.f32("black")?.unwrap_or(0.0),
+                    input_white: cmd.f32("white")?.unwrap_or(1.0),
+                    gamma: cmd.f32("gamma")?.unwrap_or(1.0),
+                    output_black: cmd.f32("out-black")?.unwrap_or(0.0),
+                    output_white: cmd.f32("out-white")?.unwrap_or(1.0),
+                };
+                Adjustment::Levels { rgb: channel, channels: [Default::default(); 3] }
+            }
+            "gradient-map" => Adjustment::GradientMap {
+                stops: vec![
+                    cshop_core::fill::GradientStop {
+                        position: 0.0,
+                        color: cmd.color("from")?.unwrap_or(Rgba8::BLACK),
+                    },
+                    cshop_core::fill::GradientStop {
+                        position: cmd.f32("midpoint")?.unwrap_or(0.5),
+                        color: cmd.color("mid")?.unwrap_or_else(|| {
+                            // No middle stop given: sit it halfway between the
+                            // ends so the ramp is a plain two-colour one.
+                            let a = cmd.color("from").ok().flatten().unwrap_or(Rgba8::BLACK);
+                            let b = cmd.color("to").ok().flatten().unwrap_or(Rgba8::WHITE);
+                            let mix = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+                            Rgba8::new(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), 255)
+                        }),
+                    },
+                    cshop_core::fill::GradientStop {
+                        position: 1.0,
+                        color: cmd.color("to")?.unwrap_or(Rgba8::WHITE),
+                    },
+                ],
+            },
+            "photo-filter" => Adjustment::PhotoFilter {
+                color: cmd.color("color")?.unwrap_or(Rgba8::opaque(236, 138, 0)),
+                density: cmd.f32("density")?.unwrap_or(0.25),
+                preserve_luminosity: !matches!(
+                    cmd.opt("preserve-luminosity"),
+                    Some("false" | "no" | "0" | "off")
+                ),
+            },
             other => {
                 return Err(format!(
-                    "unknown adjustment {other:?}. Available: brightness-contrast, \
-                     hue-saturation, vibrance, exposure, invert, posterize, threshold, \
-                     black-and-white"
+                    "unknown adjustment {other:?}. Available: brightness-contrast, levels, \
+                     gradient-map, photo-filter, hue-saturation, vibrance, exposure, invert, \
+                     posterize, threshold, black-and-white"
                 ))
             }
         };
@@ -1334,6 +1481,12 @@ pub fn parse_style(source: &str) -> Style {
 /// An unknown `{name}` is an error rather than being left in place: a script
 /// that silently drew `{blur}` pixels of blur would be worse than one that
 /// stopped and said which name it did not know.
+///
+/// A hole that is a bare name is replaced with its value verbatim, so
+/// `{blend}` can carry `Color Dodge` and not just a number. Anything else is
+/// read as arithmetic over the parameters — `{min*0.01}`, `{width/2}`. That
+/// is what lets a style be written once and applied to any size of image:
+/// `width`, `height`, `min`, `max`, `cx` and `cy` are bound for it.
 pub fn substitute(body: &str, values: &[(String, String)]) -> Result<String, String> {
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
@@ -1344,25 +1497,112 @@ pub fn substitute(body: &str, values: &[(String, String)]) -> Result<String, Str
             return Err("a { is never closed".into());
         };
         let key = &after[..close];
-        let value = values
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-            .ok_or_else(|| {
-                format!(
+        match values.iter().find(|(k, _)| k == key) {
+            // A bare name: verbatim, so a parameter can be a word.
+            Some((_, value)) => out.push_str(value),
+            None if key.chars().any(|c| "+-*/()".contains(c)) => {
+                let value = evaluate(key, values)?;
+                // Trim the float noise: 12 rather than 12.0000001.
+                out.push_str(&format!("{}", (value * 1e6).round() / 1e6));
+            }
+            None => {
+                return Err(format!(
                     "this style has no parameter {key:?}; it takes: {}",
                     if values.is_empty() {
                         "none".to_string()
                     } else {
                         values.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", ")
                     }
-                )
-            })?;
-        out.push_str(value);
+                ));
+            }
+        }
         rest = &after[close + 1..];
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// Arithmetic inside a `{...}` hole.
+///
+/// Deliberately tiny: numbers, parameters, `+ - * /`, and parentheses. It
+/// exists so a style can scale itself to the image it is given, not so that
+/// styles can become a programming language.
+fn evaluate(expression: &str, values: &[(String, String)]) -> Result<f32, String> {
+    let bytes: Vec<char> = expression.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut at = 0usize;
+    let value = expr(&bytes, &mut at, values, expression)?;
+    if at != bytes.len() {
+        return Err(format!("could not read all of {expression:?} as arithmetic"));
+    }
+    Ok(value)
+}
+
+fn expr(c: &[char], at: &mut usize, v: &[(String, String)], whole: &str) -> Result<f32, String> {
+    let mut left = term(c, at, v, whole)?;
+    while let Some(&op @ ('+' | '-')) = c.get(*at) {
+        *at += 1;
+        let right = term(c, at, v, whole)?;
+        left = if op == '+' { left + right } else { left - right };
+    }
+    Ok(left)
+}
+
+fn term(c: &[char], at: &mut usize, v: &[(String, String)], whole: &str) -> Result<f32, String> {
+    let mut left = factor(c, at, v, whole)?;
+    while let Some(&op @ ('*' | '/')) = c.get(*at) {
+        *at += 1;
+        let right = factor(c, at, v, whole)?;
+        if op == '/' && right == 0.0 {
+            return Err(format!("{whole:?} divides by zero"));
+        }
+        left = if op == '*' { left * right } else { left / right };
+    }
+    Ok(left)
+}
+
+fn factor(c: &[char], at: &mut usize, v: &[(String, String)], whole: &str) -> Result<f32, String> {
+    match c.get(*at) {
+        Some('-') => {
+            *at += 1;
+            Ok(-factor(c, at, v, whole)?)
+        }
+        Some('(') => {
+            *at += 1;
+            let inner = expr(c, at, v, whole)?;
+            if c.get(*at) != Some(&')') {
+                return Err(format!("{whole:?} has an unclosed ("));
+            }
+            *at += 1;
+            Ok(inner)
+        }
+        Some(ch) if ch.is_ascii_digit() || *ch == '.' => {
+            let start = *at;
+            while matches!(c.get(*at), Some(d) if d.is_ascii_digit() || *d == '.') {
+                *at += 1;
+            }
+            let text: String = c[start..*at].iter().collect();
+            text.parse().map_err(|_| format!("{text:?} is not a number"))
+        }
+        Some(ch) if ch.is_alphabetic() || *ch == '_' => {
+            let start = *at;
+            // No hyphens: whitespace is already gone by here, so `a - b` and
+            // `a-b` are the same text and subtraction has to win. A parameter
+            // whose name does have a hyphen still resolves as a bare `{name}`,
+            // which is the only place such a name is written anyway.
+            while matches!(c.get(*at), Some(d) if d.is_alphanumeric() || *d == '_') {
+                *at += 1;
+            }
+            let name: String = c[start..*at].iter().collect();
+            let text = v
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, value)| value.as_str())
+                .ok_or_else(|| format!("{whole:?} uses {name:?}, which is not a parameter"))?;
+            text.parse()
+                .map_err(|_| format!("{name:?} is {text:?}, which is not a number"))
+        }
+        _ => Err(format!("{whole:?} ends early")),
+    }
 }
 
 /// Where styles are looked for, nearest first.
