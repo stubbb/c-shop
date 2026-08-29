@@ -193,3 +193,17 @@ fn strings_with_quotes_and_newlines_do_not_break_the_json() {
     assert!(json.contains(r"line\nbreak\tand \\ slash"), "controls should be escaped");
     assert_eq!(json.matches('{').count(), json.matches('}').count());
 }
+
+/// `~` is how a path gets written by hand, so it has to mean the home
+/// directory rather than a folder of that name.
+#[test]
+fn a_leading_tilde_is_expanded() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return;
+    }
+    let base = Path::new("/tmp");
+    assert_eq!(script::resolve(base, "~/assets/x.jpg"), Path::new(&home).join("assets/x.jpg"));
+    assert_eq!(script::resolve(base, "/abs/x.jpg"), Path::new("/abs/x.jpg"));
+    assert_eq!(script::resolve(base, "rel/x.jpg"), Path::new("/tmp/rel/x.jpg"));
+}

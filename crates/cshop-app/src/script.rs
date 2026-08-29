@@ -377,8 +377,15 @@ pub fn parse_color(s: &str) -> Result<Rgba8, String> {
 }
 
 /// Resolve a path in the script against the directory it came from, so a
-/// script is portable and cannot be made to write just anywhere by accident.
+/// script is portable, expanding a leading `~` because that is how a path
+/// gets written by hand.
 pub fn resolve(base: &Path, given: &str) -> PathBuf {
+    if let Some(rest) = given.strip_prefix("~/").or_else(|| given.strip_prefix("~")) {
+        if let Some(home) = std::env::var_os("HOME") {
+            // `~` alone is the home directory; `~/x` is a path inside it.
+            return PathBuf::from(home).join(rest.trim_start_matches('/'));
+        }
+    }
     let p = Path::new(given);
     if p.is_absolute() {
         p.to_path_buf()
@@ -491,6 +498,7 @@ impl Runner {
             "measure" => self.cmd_measure(cmd),
             "shape" => self.cmd_shape(cmd),
             "fill" => self.cmd_fill(cmd),
+            "gradient" => self.cmd_gradient(cmd),
             "select" => self.cmd_select(cmd),
             "effect" => self.cmd_effect(cmd),
             "filter" => self.cmd_filter(cmd),
@@ -503,7 +511,8 @@ impl Runner {
             "export" | "save" => self.cmd_write(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
-                 select, effect, filter, adjust, layer, set, move, order, info, export, save"
+                 select, gradient, effect, filter, adjust, layer, set, move, order, info, \
+                 export, save"
             )),
         }
     }
@@ -695,6 +704,52 @@ impl Runner {
         self.app.foreground = c;
         self.app.dispatch(Action::fill_foreground(cmd.flag("preserve-transparency")));
         Ok(format!("filled with #{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+    }
+
+    /// Lay a gradient across the layer, from one point to another.
+    ///
+    /// Colours carry their alpha, so `from=#00000000 to=#000000cc` is a wash
+    /// that fades out — which is what decorative shading usually wants, and
+    /// what a solid ramp cannot give.
+    fn cmd_gradient(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::fill::{Gradient, GradientKind, GradientStop};
+        self.need_doc()?;
+        let x1 = cmd.arg_f32(0, "start x")?;
+        let y1 = cmd.arg_f32(1, "start y")?;
+        let x2 = cmd.arg_f32(2, "end x")?;
+        let y2 = cmd.arg_f32(3, "end y")?;
+
+        let from = cmd.color("from")?.unwrap_or(Rgba8::BLACK);
+        let to = cmd.color("to")?.unwrap_or(Rgba8::TRANSPARENT);
+        let kind = match cmd.opt("style").unwrap_or("linear") {
+            "linear" => GradientKind::Linear,
+            "radial" => GradientKind::Radial,
+            "angle" => GradientKind::Angle,
+            "reflected" => GradientKind::Reflected,
+            "diamond" => GradientKind::Diamond,
+            other => return Err(format!("gradient style {other:?}")),
+        };
+        let mode = match cmd.opt("blend") {
+            Some(want) => cshop_core::blend::BlendMode::all()
+                .find(|m| m.name().eq_ignore_ascii_case(want))
+                .ok_or_else(|| format!("no blend mode called {want:?}"))?,
+            None => cshop_core::blend::BlendMode::Normal,
+        };
+
+        self.app.gradient = Gradient {
+            stops: vec![
+                GradientStop { position: 0.0, color: from },
+                GradientStop { position: 1.0, color: to },
+            ],
+            kind,
+            reverse: cmd.flag("reverse"),
+            opacity: cmd.f32("opacity")?.unwrap_or(1.0),
+            mode,
+            dither: !matches!(cmd.opt("dither"), Some("false" | "no" | "0" | "off")),
+        };
+        self.app.gradient_drag = Some((Vec2::new(x1, y1), Vec2::new(x2, y2)));
+        self.app.commit_gradient();
+        Ok(format!("laid a {} gradient from ({x1}, {y1}) to ({x2}, {y2})", cmd.opt("style").unwrap_or("linear")))
     }
 
     fn cmd_select(&mut self, cmd: &Command) -> Result<String, String> {

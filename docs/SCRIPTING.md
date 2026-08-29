@@ -62,7 +62,7 @@ escapes. A bare word like `bold` means `bold=true` — nothing tells the parser
 it is not a positional argument, so **bare flags go last**.
 
 Colours are `#rgb`, `#rrggbb`, `#rrggbbaa`, or one of `black white red green
-blue yellow orange purple grey transparent`.
+blue yellow orange purple grey transparent`. Paths may start with `~`.
 
 ## Commands
 
@@ -74,6 +74,7 @@ blue yellow orange purple grey transparent`.
 | `measure text "..."` | Report the size the same options would draw, without drawing it. |
 | `shape KIND X Y W H` | `rect ellipse polygon star line`. `fill= stroke= stroke-width= stroke-align= radius= sides= inner= thickness=` |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
+| `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
 | `select X Y W H` \| `select all` \| `select none` | `feather=` softens the edge. |
 | `effect NAME` | See below. Applies to the active layer; repeat to stack. |
 | `filter NAME` | `gaussian-blur box-blur motion-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic` |
