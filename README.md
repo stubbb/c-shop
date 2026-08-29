@@ -7,7 +7,8 @@ in about 400 ms.
 It also has an **agentic harness**: the same editor drives from a script with
 no window at all, so something that cannot see a canvas or click a button can
 still edit images with it — placing type from measurements and reading back a
-report of what it drew.
+report of what it drew. It runs as an **MCP server** too, so that harness can
+be reached over a network, with each result carrying a picture of what it did.
 
 ![C-Shop](docs/screenshot.png)
 
@@ -155,6 +156,28 @@ ends included.
 |---|---|---|---|
 | ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) | ![Pencil sketch](docs/example-sketch-after.jpg) | ![Coloured pencil](docs/example-coloured-after.jpg) |
 
+### Over a network
+
+The same harness serves over [MCP](https://modelcontextprotocol.io), so a
+caller elsewhere can drive the editor and — the point of it — **see what it
+drew**, since a tool result can carry an image:
+
+```sh
+cshop --serve --workspace ~/pictures
+```
+
+A document stays open between calls, so a picture is built up in steps with a
+look in between rather than composed blind. Six tools: `run_script` is the
+whole editor, and the other five are how a caller arriving cold finds out what
+styles exist, what the commands are, and which files it may open.
+
+Because a script can read and write files, a served editor is confined: every
+path resolves inside one workspace and cannot leave it, the socket is loopback
+unless a token is set — it refuses to start otherwise — and browser origins are
+checked. [docs/SERVING.md](docs/SERVING.md) has the details, the worked session
+and the reasoning. No HTTP or JSON dependency was added for any of it; both are
+in the tree, like the project format and the PSD codec.
+
 ## Interface
 
 | | |
@@ -192,7 +215,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-605 tests, and the interesting ones are not unit tests:
+634 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -211,6 +234,11 @@ avoid special-casing everything downstream.
 - **Every style, discovered rather than listed.** The style library is read off
   disk and each one applied, so a style added later is covered without anyone
   remembering to add a test for it.
+- **The server, over a real socket.** The MCP tests bind a port and speak HTTP
+  to it, because most of what could go wrong there is in the transport and in
+  the guards around it — neither of which a test that calls the handler
+  directly can see. The sandbox tests plant a symlink out of the workspace and
+  confirm it is refused.
 
 ```sh
 cargo test --workspace

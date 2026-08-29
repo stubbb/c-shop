@@ -520,6 +520,20 @@ before it could be honoured. The finished style is nine lines. Most of the work
 was deciding what those nine lines should say, and the record of *why* they say
 it is in the style file itself, where the next person to read it will need it.
 
+## Over a network
+
+The same harness serves over the Model Context Protocol, so the caller need not
+be on this machine — and a tool result can carry a picture, which is what lets
+the loop above close remotely rather than only in a terminal.
+
+```sh
+cshop --serve --workspace ~/pictures
+```
+
+Because a script can read and write files, a served editor is confined to one
+workspace, bound to loopback unless a token is set, and checked for browser
+origins. [SERVING.md](SERVING.md) covers the tools, sessions and the guards.
+
 ## What it does not do
 
 No loops, variables or arithmetic — a caller that needs those has a real
