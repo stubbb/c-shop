@@ -41,6 +41,10 @@ Pressing a letter again cycles through the tools sharing that slot.
 | `Ctrl+Q` | Quit |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | `Ctrl+Alt+Z` | Step backward |
+| `Ctrl+C` / `Ctrl+X` | Copy / Cut |
+| `Ctrl+Shift+C` | Copy Merged — every visible layer, not just the active one |
+| `Ctrl+V` | Paste onto a new layer, centred |
+| `Ctrl+Shift+V` | Paste in Place — back where it was copied from |
 | `Ctrl+T` | Free Transform |
 | `Ctrl+F` | Repeat last filter |
 
@@ -132,7 +136,6 @@ the centre.
 
 ## Deliberately unbound
 
-`Ctrl+C` / `Ctrl+X` / `Ctrl+V` and Copy Merged / Paste in Place, because there
-is no clipboard yet. `Ctrl+Shift+E` (Merge Visible), `Ctrl+G` / `Ctrl+Shift+G`
+`Ctrl+Shift+E` (Merge Visible), `Ctrl+G` / `Ctrl+Shift+G`
 (group and ungroup — the New Group command here creates an *empty* group, which
 is a different action), `Ctrl+H` (Hide Extras), rulers and guides.

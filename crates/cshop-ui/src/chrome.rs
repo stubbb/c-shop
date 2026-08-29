@@ -368,6 +368,28 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
+            if item_enabled(ui, "Cut", &k::CUT.label(), has_doc).clicked() {
+                app.push(Action::Cut);
+                ui.close();
+            }
+            if item_enabled(ui, "Copy", &k::COPY.label(), has_doc).clicked() {
+                app.push(Action::Copy);
+                ui.close();
+            }
+            if item_enabled(ui, "Copy Merged", &k::COPY_MERGED.label(), has_doc).clicked() {
+                app.push(Action::CopyMerged);
+                ui.close();
+            }
+            let can_paste = app.clipboard.has_content();
+            if item_enabled(ui, "Paste", &k::PASTE.label(), can_paste).clicked() {
+                app.push(Action::Paste);
+                ui.close();
+            }
+            if item_enabled(ui, "Paste in Place", &k::PASTE_IN_PLACE.label(), can_paste).clicked() {
+                app.push(Action::PasteInPlace);
+                ui.close();
+            }
+            ui.separator();
             if item_enabled(ui, "Fill…", &k::FILL.label(), has_doc).clicked() {
                 app.push(Action::ShowFillDialog);
                 ui.close();

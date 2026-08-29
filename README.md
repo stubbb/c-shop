@@ -85,6 +85,10 @@ constrains, Alt works from the centre and Ctrl pulls a corner into a true
 perspective distort. Fixed rotations and flips, Crop with aspect presets, Image
 Size with four resampling filters, Canvas Size with a nine-way anchor.
 
+**Clipboard.** Copy, Cut, Copy Merged, Paste and Paste in Place, carrying a
+feathered selection's soft edge with it. Images go to and come from the system
+clipboard, so a copy here pastes into other programs and theirs paste in here.
+
 **Files.** A native layered project format, `.cshop`, that keeps the whole
 document — the layer tree, groups, masks, adjustment settings, live type and
 shape descriptions, effects and saved channels — still editable when reopened.
@@ -155,7 +159,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-560 tests, and the interesting ones are not unit tests:
+570 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -179,9 +183,9 @@ cargo clippy --workspace --all-targets
 
 ## Not there yet
 
-Clipboard commands, custom pattern tiles loaded from an image (the pattern
-overlay draws six generated figures), boolean shape combining, and selecting a
-range within a text layer. PSD carries layers as raster: type and shapes are
+Custom pattern tiles loaded from an image (the pattern overlay draws six
+generated figures), boolean shape combining, and selecting a range within a
+text layer. PSD carries layers as raster: type and shapes are
 flattened on the way out and 16-bit and CMYK files are refused rather than
 misread.
 The toolbar is complete: every tool it shows is implemented.

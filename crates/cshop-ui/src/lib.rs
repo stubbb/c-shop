@@ -11,6 +11,7 @@ pub mod app;
 pub mod canvas;
 pub mod chrome;
 pub mod color_picker;
+pub mod clipboard;
 pub mod commands;
 pub mod context_menus;
 pub mod dialogs;

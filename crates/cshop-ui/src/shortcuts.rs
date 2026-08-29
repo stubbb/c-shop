@@ -8,9 +8,8 @@
 //!
 //! The chords follow the bindings this class of editor has used for decades,
 //! because that is what hands already know. Where a conventional shortcut has
-//! no counterpart here — the clipboard commands, Merge Visible, Hide Extras —
-//! it is left unbound rather than pointed at something that merely resembles
-//! it.
+//! no counterpart here — Merge Visible, Hide Extras — it is left unbound
+//! rather than pointed at something that merely resembles it.
 
 use crate::commands::Action;
 use egui::Key;
@@ -97,6 +96,11 @@ pub mod keys {
     pub const REDO_LEGACY: Chord = Chord::ctrl(Key::Y);
     /// Step Backward. A linear history makes this the same as Undo.
     pub const STEP_BACKWARD: Chord = Chord::ctrl_alt(Key::Z);
+    pub const COPY: Chord = Chord::ctrl(Key::C);
+    pub const COPY_MERGED: Chord = Chord::ctrl_shift(Key::C);
+    pub const CUT: Chord = Chord::ctrl(Key::X);
+    pub const PASTE: Chord = Chord::ctrl(Key::V);
+    pub const PASTE_IN_PLACE: Chord = Chord::ctrl_shift(Key::V);
     pub const FILL: Chord = Chord::shift(Key::Backspace);
     pub const FILL_F5: Chord = Chord::shift(Key::F5);
     pub const FILL_FOREGROUND: Chord = Chord::alt(Key::Backspace);
@@ -186,6 +190,11 @@ pub fn bindings() -> Vec<Binding> {
         bind(k::REDO, || Action::Redo),
         bind(k::REDO_LEGACY, || Action::Redo),
         bind(k::STEP_BACKWARD, || Action::Undo),
+        bind(k::COPY, || Action::Copy),
+        bind(k::COPY_MERGED, || Action::CopyMerged),
+        bind(k::CUT, || Action::Cut),
+        bind(k::PASTE, || Action::Paste),
+        bind(k::PASTE_IN_PLACE, || Action::PasteInPlace),
         bind(k::FILL, || Action::ShowFillDialog),
         bind(k::FILL_F5, || Action::ShowFillDialog),
         bind(k::FILL_FOREGROUND, || Action::fill_foreground(false)),
@@ -278,6 +287,11 @@ mod tests {
             ("REDO", k::REDO),
             ("REDO_LEGACY", k::REDO_LEGACY),
             ("STEP_BACKWARD", k::STEP_BACKWARD),
+            ("COPY", k::COPY),
+            ("COPY_MERGED", k::COPY_MERGED),
+            ("CUT", k::CUT),
+            ("PASTE", k::PASTE),
+            ("PASTE_IN_PLACE", k::PASTE_IN_PLACE),
             ("FILL", k::FILL),
             ("FILL_F5", k::FILL_F5),
             ("FILL_FOREGROUND", k::FILL_FOREGROUND),

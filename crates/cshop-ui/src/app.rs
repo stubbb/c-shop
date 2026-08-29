@@ -85,6 +85,8 @@ pub struct CShopApp {
     pub text_style: cshop_core::text::TextStyle,
     /// The type layer currently being edited, if any.
     pub text_edit: Option<crate::text_tool::TextEdit>,
+    /// Copy, cut and paste, inside the editor and with the rest of the desktop.
+    pub clipboard: crate::clipboard::Clipboard,
     /// Geometry and style the Shape tool draws with, and applies to the shape
     /// layer being edited.
     pub shape_kind: cshop_core::shape::ShapeKind,
@@ -175,6 +177,7 @@ impl CShopApp {
             brush: Brush::default(),
             text_style: cshop_core::text::TextStyle::default(),
             text_edit: None,
+            clipboard: Default::default(),
             shape_kind: cshop_core::shape::ShapeKind::Rectangle { radius: 0.0 },
             shape_style: cshop_core::shape::ShapeStyle::default(),
             shape_synced: None,
@@ -1052,6 +1055,12 @@ impl CShopApp {
                 self.draw_shape(from, to, from_centre, constrain)
             }
 
+            Action::Copy => self.copy(false, false),
+            Action::CopyMerged => self.copy(true, false),
+            Action::Cut => self.copy(false, true),
+            Action::Paste => self.paste(false),
+            Action::PasteInPlace => self.paste(true),
+
             Action::ShowFillDialog => {
                 self.dialog = Dialog::Fill(crate::dialogs::FillDialog::new(
                     self.foreground,
@@ -1642,6 +1651,108 @@ impl CShopApp {
         }
         view.doc.select(Some(bottom));
         view.invalidate();
+    }
+
+    // -----------------------------------------------------------------------
+    // Clipboard
+    // -----------------------------------------------------------------------
+
+    /// The region a copy would take: the selection where there is one, and
+    /// otherwise everything the source covers.
+    fn copy_region(&self, source: IRect) -> IRect {
+        match self.doc().and_then(|v| v.doc.selection.as_ref()) {
+            Some(s) => source.intersect(&s.bounds()),
+            None => source,
+        }
+    }
+
+    /// Copy to the clipboard, optionally from the whole composite, and
+    /// optionally clearing what was taken.
+    fn copy(&mut self, merged: bool, cut: bool) {
+        let Some(i) = self.active else { return };
+
+        let (pixels, origin, rect) = if merged {
+            // The composite lives on the GPU; read it back rather than
+            // recomputing the stack here.
+            let gpu = self.gpu.clone();
+            let view = &mut self.docs[i];
+            view.sync_composite_only(&gpu, &mut self.compositor);
+            let flat = view.read_composite(&gpu);
+            let rect = self.copy_region(flat.bounds());
+            (flat, (0, 0), rect)
+        } else {
+            let Some(view) = self.doc() else { return };
+            let Some(id) = view.doc.active else { return };
+            let Some(layer) = view.doc.tree.get(id) else { return };
+            let Some(px) = layer.pixels() else {
+                self.notify("That layer has no pixels to copy");
+                return;
+            };
+            let rect = self.copy_region(layer.bounds());
+            (px.clone(), layer.offset, rect)
+        };
+
+        if rect.is_empty() {
+            self.notify("The selection does not overlap anything to copy");
+            return;
+        }
+
+        let doc_ref = &self.docs[i].doc;
+        let taken = crate::clipboard::extract(&pixels, origin, rect, |x, y| {
+            doc_ref.selection_coverage(x, y)
+        });
+        self.clipboard.set(taken, (rect.x0, rect.y0));
+
+        if cut {
+            // Clearing is exactly what Delete does, selection coverage and
+            // locks included, so it goes through the same path.
+            self.fill_active(Rgba8::TRANSPARENT, cshop_core::blend::BlendMode::Normal, 1.0, false);
+            self.notify("Cut");
+        } else {
+            self.notify(if merged { "Copied merged" } else { "Copied" });
+        }
+    }
+
+    /// Paste onto a new layer above the active one.
+    fn paste(&mut self, in_place: bool) {
+        let Some(clip) = self.clipboard.get() else {
+            self.notify("There is nothing to paste");
+            return;
+        };
+        if self.doc().is_none() {
+            // Nothing open: the pasted image becomes a document of its own.
+            let (w, h) = (clip.pixels.width(), clip.pixels.height());
+            let mut doc = Document::new("Untitled", w, h, cshop_core::document::Background::Transparent);
+            doc.tree = Default::default();
+            let id = doc.tree.alloc_id();
+            doc.tree.push(Layer::raster(id, "Layer 1", clip.pixels), None);
+            doc.active = doc.tree.root().last().copied();
+            self.add_document(doc, "Paste");
+            return;
+        }
+
+        let Some(view) = self.doc_mut() else { return };
+        let (pw, ph) = (clip.pixels.width() as i32, clip.pixels.height() as i32);
+        let offset = if in_place {
+            clip.origin
+        } else {
+            // Centred on the canvas, which is where the eye is looking when
+            // nothing says otherwise.
+            (
+                (view.doc.width as i32 - pw) / 2,
+                (view.doc.height as i32 - ph) / 2,
+            )
+        };
+
+        let id = view.doc.tree.alloc_id();
+        let name = view.doc.next_layer_name();
+        let mut layer = Layer::raster(id, name, clip.pixels);
+        layer.offset = offset;
+        let pos = new_layer_pos(view);
+        let dirty = view.history.apply(&mut view.doc, Box::new(AddLayer::new(layer, pos, "Paste")));
+        view.mark_dirty(dirty);
+        view.invalidate();
+        self.notify(if in_place { "Pasted in place" } else { "Pasted" });
     }
 
     /// Fill or clear, restricted to the selection when there is one.

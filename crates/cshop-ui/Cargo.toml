@@ -14,6 +14,8 @@ egui-wgpu = { workspace = true }
 wgpu = { workspace = true }
 log = { workspace = true }
 ahash = { workspace = true }
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
 
 [dev-dependencies]
 cshop-io = { workspace = true }
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }

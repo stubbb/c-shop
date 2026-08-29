@@ -215,6 +215,16 @@ pub enum Action {
     /// alpha, which is what the Shift variants add.
     FillSwatch { background: bool, preserve_transparency: bool },
     /// Open Edit > Fill.
+    /// Copy the selection from the active layer.
+    Copy,
+    /// Copy the selection from everything visible, not just the active layer.
+    CopyMerged,
+    /// Copy, then clear what was copied.
+    Cut,
+    /// Paste onto a new layer, centred on the view.
+    Paste,
+    /// Paste onto a new layer at the coordinates it was copied from.
+    PasteInPlace,
     ShowFillDialog,
     /// Start a new type layer at a document point. `wrap` gives the paragraph
     /// box width when the tool was dragged rather than clicked.
