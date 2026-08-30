@@ -425,6 +425,11 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
+            if item_enabled(ui, "Upscale…", "", has_doc).clicked() {
+                app.push(Action::ShowUpscale);
+                ui.close();
+            }
+            ui.separator();
             if item_enabled(ui, "Colour Profile…", "", has_doc).clicked() {
                 app.push(Action::ShowColorProfile);
                 ui.close();

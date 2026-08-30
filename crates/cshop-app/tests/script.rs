@@ -1115,3 +1115,29 @@ fn denoise_refuses_a_selection_that_misses() {
         "{note}"
     );
 }
+
+// --- upscaling -------------------------------------------------------------
+
+#[test]
+fn upscale_reports_the_new_size_or_says_the_pack_is_missing() {
+    let Some(report) = run("new 64 48 background=#806040\nupscale scale=2\ninfo") else { return };
+    let note = report.steps[1].note.clone();
+    if !cshop_ui::vision::is_available() {
+        assert!(note.contains("setup.sh") || note.contains("not installed"), "{note}");
+        return;
+    }
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(note.contains("64x48 to 128x96"), "{note}");
+    assert!(report.steps[2].note.starts_with("128x96"), "{:?}", notes(&report));
+}
+
+#[test]
+fn upscale_refuses_a_scale_it_cannot_do() {
+    for bad in ["0.5", "8"] {
+        let Some(report) = run(&format!("new 32 32 background=white\nupscale scale={bad}")) else {
+            return;
+        };
+        assert!(!report.ok, "scale {bad} should be refused");
+        assert!(report.steps[1].note.contains("between 1 and 4"), "{:?}", notes(&report));
+    }
+}

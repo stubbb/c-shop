@@ -265,38 +265,29 @@ impl DenoiseProgress {
     }
 }
 
-/// Remove noise, reporting progress as the sidecar works through the tiles.
+/// Run a subcommand that takes a while, reading its progress as it arrives.
 ///
-/// Unlike [`run`], this reads the child's stderr as it arrives rather than
-/// waiting for it. A denoiser is slow enough — seconds for a small picture,
-/// minutes for a large one — that a caller with no idea how far it has got
-/// cannot tell it apart from one that has hung.
-pub fn denoise(
-    image: &Path,
-    out: &Path,
-    strength: f32,
-    progress: &DenoiseProgress,
-) -> Result<Denoised, String> {
+/// Unlike [`run`], this reads the child's stderr line by line rather than
+/// waiting for it to finish. The slow models — denoising, enlarging — are slow
+/// enough that a caller with no idea how far they have got cannot tell them
+/// apart from ones that have hung.
+fn run_streaming(args: &[&str], progress: &DenoiseProgress) -> Result<Json, String> {
     use std::io::BufRead;
     use std::sync::atomic::Ordering::Relaxed;
 
     let (Some(python), Some(script)) = (python(), script()) else {
         return Err(NOT_INSTALLED.to_string());
     };
-    let image = image_arg(image)?;
-    let out_s = out.to_str().ok_or("that output path is not text")?;
-    let strength = strength.clamp(0.0, 1.0).to_string();
-
     let mut child = Command::new(&python)
         .arg(&script)
-        .args(["denoise", image, "--out", out_s, "--strength", &strength])
+        .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not run the vision pack: {e}"))?;
 
-    // Read stderr on this thread as it comes, keeping the last few lines in
-    // case the run fails and they turn out to be the explanation.
+    // Anything that is not a progress line is kept, in case the run fails and
+    // those lines turn out to be the explanation.
     let mut tail: Vec<String> = Vec::new();
     if let Some(err) = child.stderr.take() {
         for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
@@ -332,10 +323,59 @@ pub fn denoise(
         let hint = parsed.str_field("hint").map(|h| format!(" ({h})")).unwrap_or_default();
         return Err(format!("{why}{hint}"));
     }
+    Ok(parsed)
+}
 
+/// Remove noise, reporting progress as the sidecar works through the tiles.
+pub fn denoise(
+    image: &Path,
+    out: &Path,
+    strength: f32,
+    progress: &DenoiseProgress,
+) -> Result<Denoised, String> {
+    let image = image_arg(image)?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let strength = strength.clamp(0.0, 1.0).to_string();
+    let parsed = run_streaming(
+        &["denoise", image, "--out", out_s, "--strength", &strength],
+        progress,
+    )?;
     Ok(Denoised {
         path: PathBuf::from(parsed.str_field("path").unwrap_or(out_s)),
         tiles: parsed.get("tiles").and_then(Json::as_f64).unwrap_or(0.0) as u32,
         moved: parsed.get("moved").and_then(Json::as_f64).unwrap_or(0.0) as f32,
+    })
+}
+
+/// What an enlargement came back with.
+#[derive(Debug, Clone)]
+pub struct Upscaled {
+    pub path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub tiles: u32,
+}
+
+/// Enlarge, reporting progress as it goes.
+///
+/// The model only knows four times; anything else is reached by reducing its
+/// answer afterwards, which the sidecar does. See its `upscale` for why that
+/// is better than it sounds.
+pub fn upscale(
+    image: &Path,
+    out: &Path,
+    scale: f32,
+    progress: &DenoiseProgress,
+) -> Result<Upscaled, String> {
+    let image = image_arg(image)?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let scale = scale.clamp(0.1, 8.0).to_string();
+    let parsed =
+        run_streaming(&["upscale", image, "--out", out_s, "--scale", &scale], progress)?;
+    Ok(Upscaled {
+        path: PathBuf::from(parsed.str_field("path").unwrap_or(out_s)),
+        width: parsed.get("width").and_then(Json::as_f64).unwrap_or(0.0) as u32,
+        height: parsed.get("height").and_then(Json::as_f64).unwrap_or(0.0) as u32,
+        tiles: parsed.get("tiles").and_then(Json::as_f64).unwrap_or(0.0) as u32,
     })
 }

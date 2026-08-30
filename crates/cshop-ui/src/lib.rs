@@ -32,6 +32,7 @@ pub mod profile_ui;
 pub mod segment_ui;
 pub mod vision;
 pub mod transform_tool;
+pub mod upscale_ui;
 
 pub use app::CShopApp;
 pub use commands::Action;

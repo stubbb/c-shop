@@ -78,6 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
 | `denoise [strength=]` | Remove noise from the active layer, or from the selection. Needs the [vision pack](VISION.md). |
 | `segment [class=\|box=\|point=] [expand= feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
@@ -165,6 +166,25 @@ this can run it on a small selection first and read that number.
 It is worth reaching for: the model is very good on sensor noise and grain, and
 will also quietly remove fine texture that resembles them — skin pores, distant
 foliage, fabric weave.
+
+### Enlarging
+
+`upscale` grows the whole document — canvas, every layer, offsets and masks —
+replacing raster pixels with a model's guess at what a bigger sensor would have
+recorded. It is quick: a 300×400 picture to four times that is under two
+seconds, and the cost follows the *output*, so doubling the scale quadruples
+the time.
+
+```
+upscale scale=2   # → enlarged 300x400 to 600x800, 1 layer through the model
+                  #    in 6 tiles
+```
+
+One thing to be deliberate about: **it invents detail.** It scores worse than
+Lanczos on any error measure and looks better, because what it adds is
+plausible rather than correct — the detail is not in the file to recover. For a
+picture to look at, reach for it. For anything where the pixels are evidence,
+use `resize` instead, which only ever moves what is already there.
 
 ### Colour spaces, and files made of ink
 

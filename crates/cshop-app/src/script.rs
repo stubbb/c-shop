@@ -753,10 +753,11 @@ impl Runner {
             "profile" => self.cmd_profile(cmd),
             "lens" => self.cmd_lens(cmd),
             "denoise" => self.cmd_denoise(cmd),
+            "upscale" => self.cmd_upscale(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, lens, denoise, export, save"
+                 order, info, profile, lens, denoise, upscale, export, save"
             )),
         }
     }
@@ -1297,6 +1298,118 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Enlarge the whole image, inventing the detail rather than smearing it.
+    ///
+    /// Done in two halves that undo as one. First an ordinary resize, which
+    /// knows how to move a canvas, a layer's offset, its mask and the vector
+    /// layers that have to be redrawn rather than stretched. Then the raster
+    /// layers' pixels are replaced with the model's, which the resize has
+    /// already made room for at exactly the right size.
+    ///
+    /// Doing it that way means none of the geometry is written twice, and a
+    /// document with type or shapes in it comes out right without this having
+    /// to know anything about them.
+    fn cmd_upscale(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let scale = cmd.f32("scale")?.unwrap_or(2.0);
+        if !(1.0..=4.0).contains(&scale) {
+            return Err(format!(
+                "scale is between 1 and 4; {scale} is outside what the model can do"
+            ));
+        }
+        let (w, h) = {
+            let doc = &self.app.doc().ok_or("no document")?.doc;
+            (doc.width, doc.height)
+        };
+        let (nw, nh) = (
+            ((w as f32 * scale).round() as u32).max(1),
+            ((h as f32 * scale).round() as u32).max(1),
+        );
+        if (nw, nh) == (w, h) {
+            return Err("that scale would leave the image exactly as it is".to_string());
+        }
+
+        // Every raster layer through the model, at the size the resize will
+        // give it. Vector layers are left to the resize.
+        let rasters: Vec<(cshop_core::layer::LayerId, cshop_core::pixels::PixelBuffer)> = {
+            let doc = &self.app.doc().ok_or("no document")?.doc;
+            doc.tree
+                .iter_all()
+                .into_iter()
+                .filter_map(|id| {
+                    let layer = doc.tree.get(id)?;
+                    if !matches!(layer.kind, cshop_core::layer::LayerKind::Raster(_)) {
+                        return None;
+                    }
+                    Some((id, layer.pixels()?.clone()))
+                })
+                .collect()
+        };
+        if rasters.is_empty() {
+            return Err("there are no pixels here to enlarge".to_string());
+        }
+
+        let dir = self.vision_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let progress = cshop_ui::vision::DenoiseProgress::default();
+        let mut enlarged = Vec::new();
+        let mut tiles = 0u32;
+        for (i, (id, pixels)) in rasters.iter().enumerate() {
+            let input = dir.join(format!("in{i}.png"));
+            let output = dir.join(format!("out{i}.png"));
+            if let Err(e) = cshop_io::save(&input, pixels, 100) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("could not write the image for the model: {e}"));
+            }
+            match cshop_ui::vision::upscale(&input, &output, scale, &progress) {
+                Ok(answer) => {
+                    tiles += answer.tiles;
+                    match cshop_io::load(&answer.path) {
+                        Ok(big) => enlarged.push((*id, big)),
+                        Err(e) => {
+                            let _ = std::fs::remove_dir_all(&dir);
+                            return Err(format!("could not read the enlargement back: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(e);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> =
+            vec![Box::new(cshop_core::history::ResizeImage::new(
+                nw,
+                nh,
+                cshop_core::resample::Resampling::Lanczos3,
+            ))];
+        for (id, big) in enlarged {
+            steps.push(Box::new(cshop_core::history::UpscaleLayer::new(id, big)));
+        }
+
+        let gpu = self.gpu.clone();
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Upscale", steps)),
+        );
+        view.mark_dirty(dirty);
+        // The canvas is a different size now, so the textures it composites
+        // into have to be too. Without this the export comes back the old
+        // size, clipped to a target nobody resized.
+        view.resize_targets(&gpu);
+        view.zoom_initialised = false;
+        view.invalidate();
+        Ok(format!(
+            "enlarged {w}x{h} to {nw}x{nh}, {} layer{} through the model in {tiles} tiles",
+            rasters.len(),
+            if rasters.len() == 1 { "" } else { "s" }
+        ))
     }
 
     /// Take the noise out of the active layer.

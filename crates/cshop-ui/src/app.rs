@@ -116,6 +116,10 @@ pub struct CShopApp {
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
+    /// The enlargement, and the size and scale it was started for.
+    #[allow(clippy::type_complexity)]
+    upscale_job:
+        Option<std::sync::mpsc::Receiver<Result<((u32, u32), f32, Vec<(LayerId, PixelBuffer)>), String>>>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -209,6 +213,7 @@ impl CShopApp {
             segment_job: None,
             lens_job: None,
             denoise_job: None,
+            upscale_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -335,6 +340,7 @@ impl CShopApp {
         self.poll_segment(&ctx);
         self.poll_lens(&ctx);
         self.poll_denoise(&ctx);
+        self.poll_upscale(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -405,6 +411,7 @@ impl CShopApp {
             Dialog::ColorProfile(d) => d.title(),
             Dialog::Lens(d) => d.title(),
             Dialog::Denoise(d) => d.title(),
+            Dialog::Upscale(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -457,6 +464,7 @@ impl CShopApp {
                 Dialog::ColorProfile(d) => close = d.ui(ui, &mut actions),
                 Dialog::Lens(d) => close = d.ui(ui, &mut actions),
                 Dialog::Denoise(d) => close = d.ui(ui, &mut actions),
+                Dialog::Upscale(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1346,6 +1354,33 @@ impl CShopApp {
                     ));
                 }
             }
+            Action::ShowUpscale => {
+                let counted = self.doc().map(|v| {
+                    let n = v
+                        .doc
+                        .tree
+                        .iter_all()
+                        .into_iter()
+                        .filter(|id| {
+                            v.doc.tree.get(*id).is_some_and(|l| {
+                                matches!(l.kind, cshop_core::layer::LayerKind::Raster(_))
+                            })
+                        })
+                        .count();
+                    ((v.doc.width, v.doc.height), n)
+                });
+                match counted {
+                    Some((_, 0)) => self.fail("There are no pixels here to enlarge"),
+                    Some((size, n)) => {
+                        self.dialog = Dialog::Upscale(Box::new(
+                            crate::upscale_ui::UpscaleDialog::new(size, n),
+                        ));
+                    }
+                    None => self.fail("Open a picture first"),
+                }
+            }
+            Action::RunUpscale => self.start_upscale(),
+
             Action::ShowDenoise => {
                 let picked = self.doc().and_then(|v| {
                     let id = v.doc.active?;
@@ -2859,6 +2894,130 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Hand every raster layer to the enlarger, on a thread.
+    fn start_upscale(&mut self) {
+        let Dialog::Upscale(d) = &self.dialog else { return };
+        if d.progress.is_some() {
+            return;
+        }
+        let scale = d.scale;
+        let rasters: Vec<(LayerId, PixelBuffer)> = match self.doc() {
+            Some(v) => v
+                .doc
+                .tree
+                .iter_all()
+                .into_iter()
+                .filter_map(|id| {
+                    let layer = v.doc.tree.get(id)?;
+                    if !matches!(layer.kind, cshop_core::layer::LayerKind::Raster(_)) {
+                        return None;
+                    }
+                    Some((id, layer.pixels()?.clone()))
+                })
+                .collect(),
+            None => return,
+        };
+        if rasters.is_empty() {
+            self.fail("There are no pixels here to enlarge");
+            return;
+        }
+        let size = self.doc().map(|v| (v.doc.width, v.doc.height)).unwrap_or((1, 1));
+
+        let progress = std::sync::Arc::new(crate::vision::DenoiseProgress::default());
+        if let Dialog::Upscale(d) = &mut self.dialog {
+            d.progress = Some(progress.clone());
+            d.status.clear();
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let mut out = Vec::new();
+                for (i, (id, pixels)) in rasters.iter().enumerate() {
+                    let input = dir.join(format!("in{i}.png"));
+                    let output = dir.join(format!("out{i}.png"));
+                    cshop_io::save(&input, pixels, 100)
+                        .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                    let answer = crate::vision::upscale(&input, &output, scale, &progress)?;
+                    let big = cshop_io::load(&answer.path)
+                        .map_err(|e| format!("could not read the enlargement back: {e}"))?;
+                    out.push((*id, big));
+                }
+                Ok(out)
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = tx.send(result.map(|layers| (size, scale, layers)));
+        });
+        self.upscale_job = Some(rx);
+    }
+
+    /// Collect the enlargement and put the document at its new size.
+    pub fn poll_upscale(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.upscale_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(_) => {
+                self.upscale_job = None;
+                if let Dialog::Upscale(d) = &mut self.dialog {
+                    d.progress = None;
+                    d.status = "The model stopped without answering.".into();
+                }
+            }
+            Ok(Err(why)) => {
+                self.upscale_job = None;
+                if let Dialog::Upscale(d) = &mut self.dialog {
+                    d.progress = None;
+                    d.status = why;
+                }
+            }
+            Ok(Ok(((w, h), scale, layers))) => {
+                self.upscale_job = None;
+                self.finish_upscale(w, h, scale, layers);
+                self.dialog = Dialog::None;
+            }
+        }
+    }
+
+    /// The resize first, then the model's pixels into the room it made.
+    fn finish_upscale(
+        &mut self,
+        w: u32,
+        h: u32,
+        scale: f32,
+        layers: Vec<(LayerId, PixelBuffer)>,
+    ) {
+        let (nw, nh) = (
+            ((w as f32 * scale).round() as u32).max(1),
+            ((h as f32 * scale).round() as u32).max(1),
+        );
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> =
+            vec![Box::new(cshop_core::history::ResizeImage::new(
+                nw,
+                nh,
+                cshop_core::resample::Resampling::Lanczos3,
+            ))];
+        for (id, big) in layers {
+            steps.push(Box::new(cshop_core::history::UpscaleLayer::new(id, big)));
+        }
+
+        let gpu = self.gpu.clone();
+        let Some(view) = self.doc_mut() else { return };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Upscale", steps)),
+        );
+        view.mark_dirty(dirty);
+        view.resize_targets(&gpu);
+        view.zoom_initialised = false;
+        view.invalidate();
+        self.notify(format!("Enlarged to {nw}×{nh}"));
+    }
+
     /// Put a patch straight into the layer, without going through the history.
     ///
     /// The same trick the Segment window uses: this is a preview that happens

@@ -9,8 +9,9 @@ vision/setup.sh
 That is the whole installation: a Python environment and about 130 MB of model
 weights, under `~/.cache/cshop/vision` — half a gigabyte all told, most of it
 the runtime rather than the models. Nothing in the editor needs it: open, edit
-and save behave exactly as before whether it is there or not, and only three
-commands — `detect`, `segment` and `denoise` — and two windows ask for it.
+and save behave exactly as before whether it is there or not, and only four
+commands — `detect`, `segment`, `denoise` and `upscale` — and three windows ask
+for it.
 
 ## Why it is a separate process
 
@@ -39,6 +40,10 @@ where to look.
 
 Which is why they are better together than either alone: YOLO finds the dog
 and says where, SAM cuts it out.
+
+**Real-ESRGAN** enlarges, four times up, inventing the detail a bigger sensor
+would have recorded. Five megabytes for the compact "general" variant, which is
+a hundredth of what the denoiser weighs and about as quick.
 
 **SCUNet** removes noise. A Swin-Conv-UNet: Swin transformer blocks inside a
 UNet, which is what makes it quick enough to be worth waiting for — the UNet's
@@ -172,6 +177,54 @@ sensor noise and grain, and it will also quietly remove fine texture that
 happens to resemble them — skin pores, distant foliage, fabric weave. That is
 what `strength` is for, and why the window lets you move it *after* seeing the
 result rather than guessing beforehand.
+
+## Enlarging
+
+```
+open small.jpg
+upscale scale=2   # → enlarged 300x400 to 600x800, 1 layer through the model
+                  #    in 6 tiles
+```
+
+Or **Image ▸ Upscale…**, which offers 1.5×, 2×, 3× and 4× and says how long it
+will take.
+
+The model only knows *four* times. Anything less is reached by asking it for
+four and reducing afterwards, which is not the waste it sounds: the reduction
+happens after the detail has been invented, so a request for two comes back
+sharper than a model trained for two would have made it. The same reason
+photographers oversample.
+
+### Why it is not measured in decibels
+
+Against a known original this scores **worse** than plain Lanczos:
+
+```
+lanczos 4x   29.39 dB
+model   4x   24.62 dB
+```
+
+And it looks plainly better — sharper edges, legible fur, a hand with fingers
+rather than a pink smudge. Both things are true at once, and the reason is that
+PSNR rewards a blurred average everywhere over sharp detail in almost the right
+place. A GAN upscaler invents detail that is *plausible* rather than *correct*,
+which is the only thing it can do, since the detail is not in the file to
+recover. Measured as high-frequency energy rather than error, the model's
+output carries 84% more than Lanczos's.
+
+That is worth stating plainly: **it makes up what it cannot know.** For a
+photograph to look at, that is what anyone wants. For anything where the pixels
+are evidence, it is not.
+
+### What it does to the document
+
+Enlarging changes the size of the picture, so it changes the document. It is
+done in two halves that undo as one: an ordinary resize first, which knows how
+to move a canvas, layer offsets, masks and the vector layers that have to be
+redrawn rather than stretched — and then every raster layer's pixels replaced
+with the model's, into the room the resize has already made. Nothing about the
+geometry is written twice, and a document with type or shapes in it comes out
+right without the enlarger knowing anything about them.
 
 ## What it does well, and what it does not
 

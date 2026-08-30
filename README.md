@@ -10,11 +10,11 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
-An optional **deep-learning pack** adds three neural networks to that: one that
-finds objects and names them, one that turns a point or a box into a mask, and
-one that takes the noise out of a photograph. So "cut the dog out of this
-picture" and "clean up this sky" become things the editor can be asked for
-rather than things someone has to do by hand. They run in a process of their
+An optional **deep-learning pack** adds four neural networks to that: one that
+finds objects and names them, one that turns a point or a box into a mask, one
+that takes the noise out of a photograph and one that enlarges it. So "cut the
+dog out of this picture" and "clean up this sky" become things the editor can
+be asked for rather than things someone has to do by hand. They run in a process of their
 own, so the editor keeps its single-binary, no-dependency build whether they
 are installed or not.
 
@@ -235,9 +235,9 @@ and sizing, with the measurements behind that claim.
 
 ### Recognising, cutting out and cleaning up
 
-An optional pack adds three neural networks — one that finds objects and says
-where they are, one that turns a point or a box into a mask, and one that
-removes noise:
+An optional pack adds four neural networks — one that finds objects and says
+where they are, one that turns a point or a box into a mask, one that removes
+noise and one that enlarges:
 
 ```sh
 vision/setup.sh
@@ -309,6 +309,20 @@ The trade is real and worth knowing: what removes sensor noise also softens
 fine texture that resembles it. Deep foliage goes slightly painterly here. That
 is what `strength` is for.
 
+### Enlarging
+
+**Image ▸ Upscale…**, or `upscale scale=2`, grows the whole document — canvas,
+layers, offsets and masks — with Real-ESRGAN putting in the detail a bigger
+sensor would have recorded. Five megabytes of model, and a 300×400 picture goes
+to four times that in under two seconds.
+
+It is worth knowing what it is doing. Against a known original it scores
+**worse** than plain Lanczos — 24.6 dB against 29.4 — and looks plainly better,
+because an error measure rewards a blurred average everywhere over sharp detail
+in almost the right place. It invents what it cannot know. For a picture to
+look at, that is exactly what is wanted; where the pixels are evidence, `resize`
+only ever moves what is already there.
+
 The models run in a separate process, so the editor keeps its single-binary,
 no-dependency, offline build whether they are installed or not.
 [docs/VISION.md](docs/VISION.md) covers what they do well and where they miss.
@@ -354,7 +368,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-767 tests, and the interesting ones are not unit tests:
+772 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

@@ -330,6 +330,10 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Open the upscale window.
+    ShowUpscale,
+    /// Run the enlarger over every raster layer, on a worker thread.
+    RunUpscale,
     /// Open the noise-removal window on the active layer.
     ShowDenoise,
     /// Start the model on the selected region, on a worker thread.

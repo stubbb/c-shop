@@ -22,10 +22,10 @@ fi
 echo "  installing onnxruntime, numpy, pillow"
 "$venv/bin/pip" install --quiet --upgrade --no-input onnxruntime numpy pillow
 
-# Three models. YOLOv8n finds things and says where they are; MobileSAM turns a
-# point or a box into a mask; SCUNet takes the noise out of a photograph. All
-# ONNX so that the runtime is the only dependency — no PyTorch, no CUDA, no
-# compiler.
+# Four models. YOLOv8n finds things and says where they are; MobileSAM turns a
+# point or a box into a mask; SCUNet takes the noise out of a photograph;
+# Real-ESRGAN enlarges one. All ONNX so that the runtime is the only
+# dependency — no PyTorch, no CUDA, no compiler.
 fetch() {
     local name="$1" url="$2"
     if [ -s "$models/$name" ]; then
@@ -50,6 +50,11 @@ fetch yolov8n.onnx \
 # name*, so both must land with the names they were published under.
 fetch scunet_color_real_psnr.onnx \
     "https://huggingface.co/Heliosoph/scunet-onnx/resolve/main/scunet_color_real_psnr.onnx"
+# The compact "general" Real-ESRGAN: five megabytes for a four-times enlarger,
+# which is a hundredth of what the denoiser costs and about as quick.
+fetch realesr-general-x4v3.onnx \
+    "https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx"
+
 fetch scunet_color_real_psnr.onnx.data \
     "https://huggingface.co/Heliosoph/scunet-onnx/resolve/main/scunet_color_real_psnr.onnx.data"
 

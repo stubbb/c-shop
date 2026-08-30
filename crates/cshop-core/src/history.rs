@@ -990,6 +990,66 @@ impl Command for ResizeImage {
     }
 }
 
+/// Swap one layer's pixels for a better version of the same picture.
+///
+/// Written for enlarging, where an ordinary resize runs first to move the
+/// canvas, the offsets, the masks and the vector layers, and this then puts
+/// the model's pixels in where the resize left stretched ones. It reads the
+/// layer as it finds it rather than being told, precisely so that it can run
+/// *after* something else has changed the geometry.
+#[derive(Debug)]
+pub struct UpscaleLayer {
+    id: LayerId,
+    after: PixelBuffer,
+    before: Option<PixelBuffer>,
+}
+
+impl UpscaleLayer {
+    pub fn new(id: LayerId, after: PixelBuffer) -> Self {
+        Self { id, after, before: None }
+    }
+}
+
+impl Command for UpscaleLayer {
+    fn name(&self) -> String {
+        "Upscale".to_string()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        pixel_bytes(&self.after) + self.before.as_ref().map_or(0, pixel_bytes)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        let Some(pixels) = layer.pixels_mut() else { return Dirty::NONE };
+        // A model asked for one size can come back a pixel out on a rounding
+        // boundary. The resize has already decided what this layer is, so
+        // that decision wins.
+        let (w, h) = (pixels.width(), pixels.height());
+        if self.after.width() != w || self.after.height() != h {
+            self.after = crate::resample::resize(
+                &self.after,
+                w,
+                h,
+                crate::resample::Resampling::Lanczos3,
+            );
+        }
+        if self.before.is_none() {
+            self.before = Some(pixels.clone());
+        }
+        *pixels = self.after.clone();
+        Dirty::pixels(self.id, layer.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(before) = self.before.clone() else { return Dirty::NONE };
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        let Some(pixels) = layer.pixels_mut() else { return Dirty::NONE };
+        *pixels = before;
+        Dirty::pixels(self.id, layer.bounds())
+    }
+}
+
 /// Change what a document's numbers mean, and optionally the numbers.
 ///
 /// The two things this can do are worth keeping apart, because they are
