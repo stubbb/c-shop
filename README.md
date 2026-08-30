@@ -10,6 +10,13 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
+An optional **deep-learning pack** adds two neural networks to that: one that
+finds objects and names them, one that turns a point or a box into a mask. So
+"cut the dog out of this photograph" becomes something the editor can be asked
+for rather than something someone has to trace, by hand or by script. They run
+in a process of their own, so the editor keeps its single-binary, no-dependency
+build whether they are installed or not.
+
 ![C-Shop](docs/screenshot.png)
 
 ## Status
@@ -277,22 +284,26 @@ cshop-app  →  cshop-ui  →  cshop-gpu  →  cshop-core
 
 - **`cshop-core`** — the document model and every pixel operation, with no GPU
   and no interface. Blend modes, adjustments, filters, selections, masks,
-  paint, resampling, text layout, shape rasterisation, undo history.
+  paint, resampling, text layout, shape rasterisation, colour profiles, undo
+  history.
 - **`cshop-gpu`** — the Vulkan compositor: layer textures, the ping-pong
   render passes that evaluate blend modes, and readback.
-- **`cshop-io`** — image decoding and encoding.
+- **`cshop-io`** — image decoding and encoding, the two layered formats, and
+  the colour profiles files carry.
 - **`cshop-ui`** — panels, tools, dialogs, the theme, and the whole
   interaction layer.
 - **`cshop-app`** — the window, the swapchain, and the offscreen capture path.
 
-Around 38,000 lines of Rust and 500 of WGSL. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+About 55,000 lines of Rust and 500 of WGSL, with a further 400 of Python in the
+optional vision sidecar — the only part that is not Rust, and the only part
+that runs outside the binary. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 explains the decisions that are not obvious from the code — the colour space,
 why the compositor cannot use fixed-function blending, and how vector layers
 avoid special-casing everything downstream.
 
 ## Testing
 
-634 tests, and the interesting ones are not unit tests:
+736 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -315,6 +326,13 @@ avoid special-casing everything downstream.
   should cost what editing a small one does, so those are timed against each
   other rather than against a stopwatch — the shape of the cost is the thing
   being tested, not the speed of the machine.
+- **Colour, measured rather than asserted.** The claims in
+  [docs/COLOUR.md](docs/COLOUR.md) are tests: that black through a press
+  profile comes back as `#292828` and not as black, that a wide-gamut round
+  trip survives at sixteen bits — and, alongside it, that the same trip *fails*
+  at eight, by twenty-three levels. A test that pins down where the program is
+  weak is worth as much as one that pins down where it is strong, and it is the
+  one that stops the weakness being forgotten.
 - **The server, over a real socket.** The MCP tests bind a port and speak HTTP
   to it, because most of what could go wrong there is in the transport and in
   the guards around it — neither of which a test that calls the handler
@@ -329,10 +347,20 @@ cargo clippy --workspace --all-targets
 ## Not there yet
 
 Custom pattern tiles loaded from an image (the pattern overlay draws six
-generated figures), boolean shape combining, and selecting a range within a
-text layer. PSD carries layers as raster: type and shapes are
-flattened on the way out and 16-bit and CMYK files are refused rather than
-misread.
+generated figures), and selecting a range within a text layer — type editing
+has a caret but no selection. Raster layers store eight bits a channel, so
+`depth=16` preserves what the compositor worked out rather than what was
+painted, and a sixteen-bit file still narrows on the way in.
+
+No display transform and no soft proofing: the canvas shows the working space's
+numbers directly, which is right for the sRGB every document starts in and
+means a wider space is accurate in the file while looking oversaturated on
+screen.
+
+PSD carries layers as raster: type and shapes are flattened on the way out, and
+a 16-bit or CMYK PSD is refused rather than misread. That last one is about the
+PSD reader alone — CMYK and sixteen bits are read and written happily as TIFF.
+
 The toolbar is complete: every tool it shows is implemented.
 
 ## Licence

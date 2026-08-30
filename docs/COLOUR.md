@@ -20,6 +20,14 @@ New documents work in sRGB. `Image ▸ Colour Profile…` shows what a document 
 in and offers everything else the machine has, found by name rather than by
 filename.
 
+One thing to know before working in something other than sRGB: **the canvas
+shows the working space's numbers directly.** There is no display transform, so
+a document converted to Adobe RGB or a wider space is accurate in the file and
+oversaturated on screen until it is exported back. That makes the wider spaces
+useful for taking a picture through a conversion and out again, and not yet
+useful for judging colour by eye. Which is where soft proofing would come in,
+and it is not here either.
+
 ## Assign, or convert
 
 The two things anyone wants to do here are opposites, and both are sometimes
