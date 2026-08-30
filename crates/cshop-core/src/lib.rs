@@ -33,6 +33,7 @@ pub mod mask;
 pub mod paint;
 pub mod path;
 pub mod pixels;
+pub mod profile;
 pub mod resample;
 pub mod selection;
 pub mod snapshot;

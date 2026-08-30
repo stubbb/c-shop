@@ -34,6 +34,7 @@ SCREENSHOT OPTIONS:
     --size WxH                      output size (default 1600x980)
     --demo                          build a sample layered document first
     --demo-selection                build a document with an active selection
+    --demo-profile                  open the colour-profile window
     --right-click X,Y               right-click there, to capture a context menu
 ";
 
@@ -88,6 +89,7 @@ fn main() {
     let mut demo_fx = false;
     let mut demo_fx_dialog = false;
     let mut demo_segment = false;
+    let mut demo_profile = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
@@ -155,6 +157,7 @@ fn main() {
             }
             "--demo" => demo = true,
             "--demo-segment" => demo_segment = true,
+            "--demo-profile" => demo_profile = true,
             "--demo-selection" => demo_selection = true,
             "--demo-quickmask" => demo_quick_mask = true,
             "--demo-adjust" => demo_adjust = true,
@@ -347,6 +350,9 @@ fn main() {
                     if demo_fx_dialog {
                         app.dispatch(cshop_ui::commands::Action::ShowLayerStyle);
                     }
+                }
+                if demo_profile {
+                    app.dispatch(cshop_ui::commands::Action::ShowColorProfile);
                 }
                 if demo_segment {
                     // Opened and shown mid-run, so the screenshot catches the

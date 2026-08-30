@@ -9,6 +9,7 @@ use crate::color::Rgba8;
 use crate::geom::IRect;
 use crate::layer::{Layer, LayerId, LayerKind};
 use crate::pixels::PixelBuffer;
+use crate::profile::Profile;
 use crate::mask::MaskBuffer;
 use crate::selection::Selection;
 use crate::tree::LayerTree;
@@ -113,6 +114,12 @@ pub struct Document {
     pub height: u32,
     /// Pixels per inch; carried through I/O and used by print-oriented sizing.
     pub dpi: f32,
+    /// The working space: what the numbers in this document's pixels mean.
+    ///
+    /// Everything arriving is converted into it and everything leaving is
+    /// converted out of it, so within the document there is only ever one
+    /// answer to what a colour is. See [`crate::profile`].
+    pub profile: Profile,
     pub tree: LayerTree,
     /// The layer that tools act on.
     pub active: Option<LayerId>,
@@ -149,6 +156,7 @@ impl Clone for Document {
             width: self.width,
             height: self.height,
             dpi: self.dpi,
+            profile: self.profile.clone(),
             tree: self.tree.clone(),
             active: self.active,
             selected_layers: self.selected_layers.clone(),
@@ -198,6 +206,7 @@ impl Document {
             width,
             height,
             dpi: 72.0,
+            profile: Profile::srgb(),
             tree,
             active: Some(id),
             selected_layers: vec![id],
@@ -226,6 +235,7 @@ impl Document {
             width,
             height,
             dpi: 72.0,
+            profile: Profile::srgb(),
             tree,
             active: Some(id),
             selected_layers: vec![id],

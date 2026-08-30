@@ -26,6 +26,8 @@ pub enum Dialog {
     LayerStyle(Box<crate::layer_style::LayerStyleDialog>),
     Fill(FillDialog),
     ColorPicker(ColorPickerDialog),
+    /// Boxed: it holds every profile it found on the machine.
+    ColorProfile(Box<crate::profile_ui::ProfileDialog>),
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),

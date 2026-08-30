@@ -95,6 +95,14 @@ Size with four resampling filters, Canvas Size with a nine-way anchor.
 feathered selection's soft edge with it. Images go to and come from the system
 clipboard, so a copy here pastes into other programs and theirs paste in here.
 
+**Colour.** ICC profiles, read out of the containers directly rather than
+trusted to a decoder, so a file that carries one keeps it. A document works in
+one space and everything arriving is converted into it; assign and convert are
+offered as the separate things they are. **CMYK** files open as what they are —
+four inks read through the press's own profile, rather than four numbers
+mistaken for a colour — and `export profile=` sends a picture back out as ink
+with the profile embedded. See [docs/COLOUR.md](docs/COLOUR.md).
+
 **Files.** A native layered project format, `.cshop`, that keeps the whole
 document — the layer tree, groups, masks, adjustment settings, live type and
 shape descriptions, effects and saved channels — still editable when reopened.

@@ -744,10 +744,11 @@ impl Runner {
             "order" => self.cmd_order(cmd),
             "info" => self.cmd_info(cmd),
             "export" | "save" => self.cmd_write(cmd),
+            "profile" => self.cmd_profile(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, export, save"
+                 order, info, profile, export, save"
             )),
         }
     }
@@ -770,12 +771,19 @@ impl Runner {
     fn cmd_open(&mut self, cmd: &Command) -> Result<String, String> {
         let given = cmd.args.first().ok_or("open needs a path")?;
         let path = self.path(given)?;
-        let doc = cshop_io::load_document(&path)
+        let (doc, colors) = cshop_io::load_document_reporting(&path)
             .map_err(|e| format!("could not open {}: {e}", self.shown(&path)))?;
         let (w, h, n) = (doc.width, doc.height, doc.tree.len());
         let shown = self.shown(&path);
         self.app.open_document(doc);
-        Ok(format!("opened {shown} ({w}x{h}, {n} layer{})", if n == 1 { "" } else { "s" }))
+        // Anything done to the colours on the way in is said out loud: it is
+        // the right thing to do and the thing most likely to surprise someone
+        // comparing this against another program's idea of the same file.
+        let colour = colors.note().map(|n| format!(", {n}")).unwrap_or_default();
+        Ok(format!(
+            "opened {shown} ({w}x{h}, {n} layer{}{colour})",
+            if n == 1 { "" } else { "s" }
+        ))
     }
 
     /// Bring an image in as a new layer above the active one.
@@ -1520,6 +1528,23 @@ impl Runner {
         }
         let composite = self.composite()?;
         let doc = self.app.doc().ok_or("no document")?.doc.clone();
+
+        // `profile=` sends the picture somewhere other than the space it was
+        // worked in — a press, most usefully, which lands as four inks.
+        if let Some(want) = cmd.opt("profile") {
+            let out = self.profile_named(want)?;
+            let ink = out.space() == cshop_core::profile::Space::Cmyk;
+            cshop_io::save_managed(&path, &composite, 92, &doc.profile, &out)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            self.report.outputs.push(path.display().to_string());
+            return Ok(format!(
+                "wrote {} {} {}",
+                path.display(),
+                if ink { "as four inks for" } else { "in" },
+                out.name()
+            ));
+        }
+
         cshop_io::save_document(&path, &doc, &composite)
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         self.report.outputs.push(path.display().to_string());
@@ -1530,9 +1555,70 @@ impl Runner {
         self.need_doc()?;
         let view = self.app.doc().ok_or("no document")?;
         let n = view.doc.tree.len();
-        let fact = format!("{}x{}, {n} layers", view.doc.width, view.doc.height);
+        let fact = format!(
+            "{}x{}, {n} layers, {}",
+            view.doc.width,
+            view.doc.height,
+            view.doc.profile.name()
+        );
         self.report.facts.push(("document".into(), fact.clone()));
         Ok(fact)
+    }
+
+    /// Look up a profile by name or by path. `srgb` is spelled out rather than
+    /// requiring a file, because it is the answer most of the time.
+    fn profile_named(&self, want: &str) -> Result<cshop_core::profile::Profile, String> {
+        if want.eq_ignore_ascii_case("srgb") {
+            return Ok(cshop_core::profile::Profile::srgb());
+        }
+        let path = self.path(want)?;
+        cshop_core::profile::Profile::load(&path)
+            .map_err(|e| format!("could not read the profile {want:?}: {e}"))
+    }
+
+    /// `profile` on its own reports; `assign` and `convert` are the two ways
+    /// to change it, and they are opposites. See [`cshop_core::profile`].
+    fn cmd_profile(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let what = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
+        if what.is_empty() {
+            let doc = &self.app.doc().ok_or("no document")?.doc;
+            let fact = format!("{} ({})", doc.profile.name(), doc.profile.space().name());
+            self.report.facts.push(("profile".into(), fact.clone()));
+            return Ok(fact);
+        }
+
+        let named = cmd.args.get(1).ok_or_else(|| {
+            format!("`profile {what}` needs a profile: a path to an .icc file, or `srgb`")
+        })?;
+        let to = self.profile_named(named)?;
+        if to.space() != cshop_core::profile::Space::Rgb {
+            return Err(format!(
+                "a document works in RGB, and {} is {}. A CMYK profile belongs on \
+                 `export profile=` instead, which is where ink is made.",
+                to.name(),
+                to.space().name()
+            ));
+        }
+        let name = to.name().to_string();
+        let edit: Box<dyn cshop_core::history::Command> = match what {
+            "assign" => Box::new(cshop_core::history::SetProfile::assign(to)),
+            "convert" => Box::new(cshop_core::history::SetProfile::convert(to)),
+            other => {
+                return Err(format!(
+                    "no such thing as `profile {other}`; it is `assign` or `convert`"
+                ))
+            }
+        };
+
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(&mut view.doc, edit);
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(match what {
+            "assign" => format!("assigned {name}; the pixels are untouched"),
+            _ => format!("converted to {name}"),
+        })
     }
 }
 

@@ -823,3 +823,101 @@ fn segment_will_not_expand_past_its_range() {
         "it should name the limit rather than try: {note}"
     );
 }
+
+// --- colour profiles -------------------------------------------------------
+
+/// What each step said, for an assertion that fails usefully.
+fn notes(report: &script::Report) -> Vec<String> {
+    report.steps.iter().map(|s| s.note.clone()).collect()
+}
+
+const CMYK_ICC: &str = "/usr/share/color/icc/ghostscript/default_cmyk.icc";
+const WIDE_ICC: &str = "/usr/share/color/icc/colord/WideGamutRGB.icc";
+const INK_JPG: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../cshop-io/tests/assets/ink.jpg");
+
+#[test]
+fn a_document_reports_the_space_it_works_in() {
+    let Some(report) = run("new 8 8\nprofile\ninfo") else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    let notes: Vec<&str> = report.steps.iter().map(|s| s.note.as_str()).collect();
+    assert!(notes[1].contains("sRGB"), "{notes:?}");
+    assert!(notes[2].contains("sRGB"), "info should say it too: {notes:?}");
+}
+
+#[test]
+fn assign_and_convert_are_told_apart() {
+    if !std::path::Path::new(WIDE_ICC).exists() {
+        return;
+    }
+    let Some(report) = run(&format!("new 8 8 background=white\nprofile assign {WIDE_ICC}")) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    let note = &report.steps[1].note;
+    assert!(note.contains("untouched"), "assign must say it changed nothing: {note}");
+
+    let Some(report) = run(&format!("new 8 8 background=white\nprofile convert {WIDE_ICC}")) else {
+        return;
+    };
+    assert!(report.ok);
+    assert!(report.steps[1].note.contains("converted"), "{:?}", report.steps[1].note);
+}
+
+/// A press profile is not somewhere a document can work, and the refusal
+/// should point at where it does belong rather than just saying no.
+#[test]
+fn a_press_profile_is_refused_as_a_working_space() {
+    if !std::path::Path::new(CMYK_ICC).exists() {
+        return;
+    }
+    let Some(report) = run(&format!("new 8 8\nprofile convert {CMYK_ICC}")) else { return };
+    let note = &report.steps[1].note;
+    assert!(note.contains("CMYK"), "{note}");
+    assert!(note.contains("export profile="), "it should say where ink is made: {note}");
+}
+
+#[test]
+fn a_missing_profile_is_named_rather_than_ignored() {
+    let Some(report) = run("new 8 8\nprofile convert /nowhere/at/all.icc") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("could not read the profile"), "{:?}", notes(&report));
+}
+
+/// Opening a file made of ink says so, because it is the sort of thing
+/// someone comparing two programs' output needs to know happened.
+#[test]
+fn opening_ink_says_that_is_what_it_was() {
+    let Some(report) = run(&format!("open {INK_JPG}\ninfo")) else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[0].note.contains("four inks"), "{:?}", report.steps[0].note);
+}
+
+/// The whole trip: a picture out to a press and back again.
+#[test]
+fn a_picture_can_go_to_a_press_and_come_home() {
+    if !std::path::Path::new(CMYK_ICC).exists() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cshop-press-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join("press.tif");
+    let Some(report) = run(&format!(
+        "new 16 16 background=white\nfill #c8503c\nexport {} profile={CMYK_ICC}",
+        out.display()
+    )) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[2].note.contains("four inks"), "{:?}", report.steps[2].note);
+
+    let written = std::fs::read(&out).expect("the press file");
+    assert!(cshop_io::cmyk::is_separated(&written), "it should be ink");
+    assert!(cshop_io::icc::embedded(&written).is_some(), "and say which press");
+
+    // And back: reopening converts it to colour, near enough to where it began.
+    let Some(report) = run(&format!("open {}\ninfo", out.display())) else { return };
+    assert!(report.ok);
+    assert!(report.steps[0].note.contains("converted from"), "{:?}", report.steps[0].note);
+    let _ = std::fs::remove_dir_all(&dir);
+}

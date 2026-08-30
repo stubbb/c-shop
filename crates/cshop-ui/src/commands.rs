@@ -327,6 +327,12 @@ pub enum Action {
     CommitCrop,
     CancelCrop,
     ShowImageSize,
+    /// Open the colour-profile window.
+    ShowColorProfile,
+    /// Change the document's working space. `None` means the built-in sRGB.
+    /// `convert` chooses between rewriting the pixels and relabelling them —
+    /// see [`cshop_core::profile`].
+    SetColorProfile { path: Option<std::path::PathBuf>, convert: bool },
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
     ResizeCanvas { width: u32, height: u32, anchor: Anchor },

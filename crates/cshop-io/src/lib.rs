@@ -9,10 +9,13 @@
 
 pub mod bytes;
 pub mod format;
+pub mod cmyk;
+pub mod icc;
 pub mod project;
 pub mod psd;
 
 use cshop_core::color::Rgba8;
+use cshop_core::profile::{Profile, RenderingIntent, Space};
 use cshop_core::pixels::PixelBuffer;
 use std::path::Path;
 
@@ -49,14 +52,22 @@ pub const MAX_DIMENSION: u32 = 65_536;
 /// Which one it is comes from the file's own bytes where they say so, and from
 /// the extension otherwise — a project renamed to `.png` still opens.
 pub fn load_document(path: &std::path::Path) -> Result<cshop_core::document::Document, IoError> {
+    Ok(load_document_reporting(path)?.0)
+}
+
+/// As [`load_document`], and also what had to be done to the colours on the
+/// way in — which is worth telling someone about rather than doing quietly.
+pub fn load_document_reporting(
+    path: &std::path::Path,
+) -> Result<(cshop_core::document::Document, Colors), IoError> {
     let bytes = std::fs::read(path)?;
-    let mut doc = decode_document(&bytes, Some(path))?;
+    let (mut doc, colors) = decode_document_reporting(&bytes, Some(path))?;
     doc.name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| doc.name.clone());
     doc.path = Some(path.to_path_buf());
-    Ok(doc)
+    Ok((doc, colors))
 }
 
 /// Decode a layered document from memory.
@@ -64,14 +75,24 @@ pub fn decode_document(
     bytes: &[u8],
     hint: Option<&std::path::Path>,
 ) -> Result<cshop_core::document::Document, IoError> {
+    Ok(decode_document_reporting(bytes, hint)?.0)
+}
+
+/// As [`decode_document`], reporting what happened to the colours.
+pub fn decode_document_reporting(
+    bytes: &[u8],
+    hint: Option<&std::path::Path>,
+) -> Result<(cshop_core::document::Document, Colors), IoError> {
     if bytes.starts_with(b"CSHOP\0") {
-        return project::read(bytes);
+        return project::read(bytes).map(|d| (d, Colors::default()));
     }
     if bytes.starts_with(b"8BPS") {
-        return psd::read(bytes);
+        return psd::read(bytes).map(|d| (d, Colors::default()));
     }
-    // Not layered: one image becomes one background layer.
-    let pixels = decode(bytes, hint)?;
+    // Not layered: one image becomes one background layer, in the working
+    // space every new document starts in.
+    let working = cshop_core::profile::Profile::srgb();
+    let (pixels, colors) = decode_managed(bytes, hint, &working)?;
     let (w, h) = (pixels.width(), pixels.height());
     let mut doc = cshop_core::document::Document::new(
         "Untitled",
@@ -87,7 +108,7 @@ pub fn decode_document(
     doc.active = doc.tree.root().last().copied();
     doc.selected_layers = doc.active.into_iter().collect();
     doc.modified = false;
-    Ok(doc)
+    Ok((doc, colors))
 }
 
 /// Write a layered document. `composite` is the flattened image, which PSD
@@ -123,7 +144,89 @@ pub fn load(path: &Path) -> Result<PixelBuffer, IoError> {
 
 /// Decode from memory. `hint` supplies a filename, used both for error
 /// messages and to identify formats that carry no magic bytes.
+///
+/// Colours are read as sRGB, which is the right assumption for a file that
+/// does not say otherwise and the wrong one for a file that does. Prefer
+/// [`decode_managed`] anywhere the answer matters.
 pub fn decode(bytes: &[u8], hint: Option<&Path>) -> Result<PixelBuffer, IoError> {
+    Ok(decode_managed(bytes, hint, &Profile::srgb())?.0)
+}
+
+/// What a file said about its own colours, and what was done about it.
+///
+/// Worth reporting rather than swallowing: converting a picture on the way in
+/// is the correct thing to do and also the thing most likely to surprise
+/// someone comparing the result against another program.
+#[derive(Debug, Default, Clone)]
+pub struct Colors {
+    /// The profile the file carried, if it carried one.
+    pub embedded: Option<Profile>,
+    /// Set when the pixels were re-encoded into the working space.
+    pub converted: bool,
+    /// Set when the file was four inks rather than three colours.
+    pub separated: bool,
+    /// Set when ink had to be read without a profile to say what it meant.
+    pub guessed: bool,
+}
+
+impl Colors {
+    /// One line for a report, or nothing when there is nothing to say.
+    pub fn note(&self) -> Option<String> {
+        let name = self.embedded.as_ref().map(|p| p.name().to_string());
+        match (self.separated, self.converted, name) {
+            (true, _, Some(n)) => Some(format!("four inks, converted from {n}")),
+            (true, _, None) => Some("four inks, converted without a profile to go by".into()),
+            (false, true, Some(n)) => Some(format!("converted from {n}")),
+            _ => None,
+        }
+    }
+}
+
+/// Decode from memory into `working`, honouring whatever the file says about
+/// its own colours.
+///
+/// Three things can happen. A file with no profile is taken at its word as
+/// sRGB and left alone. A file with an RGB profile is re-encoded into the
+/// working space, so its colours look the same here as they did wherever it
+/// came from. A file made of ink is read as ink and asked what it prints as —
+/// see [`crate::cmyk`].
+pub fn decode_managed(
+    bytes: &[u8],
+    hint: Option<&Path>,
+    working: &Profile,
+) -> Result<(PixelBuffer, Colors), IoError> {
+    let mut colors = Colors {
+        embedded: icc::embedded(bytes).and_then(|b| Profile::parse(&b).ok()),
+        ..Default::default()
+    };
+
+    if cmyk::is_separated(bytes) {
+        colors.separated = true;
+        let inks = cmyk::read(bytes)?;
+        if inks.width > MAX_DIMENSION || inks.height > MAX_DIMENSION {
+            return Err(IoError::TooLarge(inks.width, inks.height, MAX_DIMENSION));
+        }
+        let press = colors.embedded.clone().filter(|p| p.space() == Space::Cmyk);
+        let pixels = match press {
+            Some(press) => {
+                colors.converted = true;
+                press
+                    .inks_to_rgba8(working, &inks.data, RenderingIntent::RelativeColorimetric)
+                    .map_err(|e| IoError::Decode(e.to_string()))?
+            }
+            None => {
+                // No profile, so no way to know which press. The old formula
+                // is the only thing left, and it is a guess rather than a
+                // conversion — which is exactly what gets reported.
+                colors.guessed = true;
+                naive_inks(&inks.data)
+            }
+        };
+        return PixelBuffer::from_pixels(inks.width, inks.height, pixels)
+            .map(|p| (p, colors))
+            .ok_or_else(|| IoError::Decode("ink and size disagreed".into()));
+    }
+
     // Check the declared size before decoding, so a hostile header cannot make
     // us allocate first and fail second.
     if let Ok((w, h)) = reader_for(bytes, hint)?.into_dimensions() {
@@ -136,8 +239,35 @@ pub fn decode(bytes: &[u8], hint: Option<&Path>) -> Result<PixelBuffer, IoError>
 
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
-    PixelBuffer::from_rgba_bytes(w, h, rgba.as_raw())
-        .ok_or_else(|| IoError::Decode("decoder returned a malformed buffer".into()))
+    let mut pixels = PixelBuffer::from_rgba_bytes(w, h, rgba.as_raw())
+        .ok_or_else(|| IoError::Decode("decoder returned a malformed buffer".into()))?;
+
+    if let Some(from) = colors.embedded.as_ref() {
+        if from.space() == Space::Rgb && from != working {
+            from.convert_rgba8(
+                working,
+                pixels.pixels_mut(),
+                RenderingIntent::RelativeColorimetric,
+            )
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+            colors.converted = true;
+        }
+    }
+    Ok((pixels, colors))
+}
+
+/// The conversion every program used before profiles: subtract the ink from
+/// the light and hope the press agrees. It rarely does — the result is flat
+/// and dark against a managed conversion — but it beats refusing to open a
+/// file that never said which press it was for.
+fn naive_inks(inks: &[u8]) -> Vec<Rgba8> {
+    inks.chunks_exact(4)
+        .map(|c| {
+            let k = 255 - c[3] as u32;
+            let mix = |v: u8| (((255 - v as u32) * k) / 255) as u8;
+            Rgba8::opaque(mix(c[0]), mix(c[1]), mix(c[2]))
+        })
+        .collect()
 }
 
 /// Build a reader with the format resolved.
@@ -170,9 +300,21 @@ fn reader_for<'a>(
 
 /// Encode and write, choosing the format from the file extension.
 pub fn save(path: &Path, pixels: &PixelBuffer, quality: u8) -> Result<(), IoError> {
+    let srgb = Profile::srgb();
+    save_managed(path, pixels, quality, &srgb, &srgb)
+}
+
+/// Encode and write, converting out of `working` into `out`.
+pub fn save_managed(
+    path: &Path,
+    pixels: &PixelBuffer,
+    quality: u8,
+    working: &Profile,
+    out: &Profile,
+) -> Result<(), IoError> {
     let format = ImageFormat::from_path(path)
         .ok_or_else(|| IoError::Unsupported(path.display().to_string()))?;
-    let bytes = encode(pixels, format, quality)?;
+    let bytes = encode_managed(pixels, format, quality, working, out)?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -182,16 +324,67 @@ pub fn save(path: &Path, pixels: &PixelBuffer, quality: u8) -> Result<(), IoErro
 /// `quality` is only meaningful for JPEG. Formats without an alpha channel get
 /// the image composited onto white first, because dropping alpha outright
 /// turns transparent regions black.
-pub fn encode(
+///
+/// Colours go out as sRGB and say so. [`encode_managed`] is the way to send
+/// them somewhere else.
+pub fn encode(pixels: &PixelBuffer, format: ImageFormat, quality: u8) -> Result<Vec<u8>, IoError> {
+    let srgb = Profile::srgb();
+    encode_managed(pixels, format, quality, &srgb, &srgb)
+}
+
+/// Encode, converting from the `working` space into `out` and saying in the
+/// file which one that was.
+///
+/// An exported file that does not name its space is one that the next program
+/// has to guess about, so the profile is embedded wherever the format has
+/// somewhere to put it: PNG, JPEG, TIFF and WebP do, and BMP, TGA, GIF and ICO
+/// do not, which is worth knowing before choosing one for a picture whose
+/// colours matter.
+///
+/// If `out` is a CMYK profile the result is a TIFF of four inks, whatever
+/// `format` said, because that is the only thing here that can hold them.
+pub fn encode_managed(
     pixels: &PixelBuffer,
     format: ImageFormat,
     quality: u8,
+    working: &Profile,
+    out: &Profile,
 ) -> Result<Vec<u8>, IoError> {
-    let flattened;
-    let source = if format.supports_alpha() {
+    if out.space() == Space::Cmyk {
+        let data = working
+            .rgba8_to_inks(out, pixels.pixels(), RenderingIntent::RelativeColorimetric)
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+        let inks = cmyk::Inks {
+            width: pixels.width(),
+            height: pixels.height(),
+            data,
+            deep: None,
+        };
+        return cmyk::write_tiff(&inks, out.bytes());
+    }
+    if out.space() != Space::Rgb {
+        return Err(IoError::Unsupported(format!("exporting to {}", out.space().name())));
+    }
+
+    // Convert first, then flatten: compositing onto white has to happen in the
+    // space the white belongs to, and that is the one being written.
+    let converted;
+    let source = if working == out {
         pixels
     } else {
-        flattened = flatten_onto_white(pixels);
+        let mut copy = pixels.clone();
+        working
+            .convert_rgba8(out, copy.pixels_mut(), RenderingIntent::RelativeColorimetric)
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+        converted = copy;
+        &converted
+    };
+
+    let flattened;
+    let source = if format.supports_alpha() {
+        source
+    } else {
+        flattened = flatten_onto_white(source);
         &flattened
     };
 
@@ -199,26 +392,44 @@ pub fn encode(
         image::ImageBuffer::from_raw(source.width(), source.height(), source.as_bytes().to_vec())
             .ok_or_else(|| IoError::Decode("pixel buffer had the wrong length".into()))?;
 
-    let mut out = std::io::Cursor::new(Vec::new());
+    let icc = out.bytes().to_vec();
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let (w, h) = (source.width(), source.height());
+    let fail = |e: image::ImageError| IoError::Decode(e.to_string());
+
     match format {
         ImageFormat::Jpeg => {
+            use image::ImageEncoder;
             let rgb = image::DynamicImage::ImageRgba8(buf).to_rgb8();
             let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                &mut out,
+                &mut cursor,
                 quality.clamp(1, 100),
             );
-            enc.encode_image(&rgb).map_err(|e| IoError::Decode(e.to_string()))?;
+            let _ = enc.set_icc_profile(icc);
+            enc.write_image(&rgb, w, h, image::ExtendedColorType::Rgb8).map_err(fail)?;
+        }
+        ImageFormat::Png => {
+            use image::ImageEncoder;
+            let mut enc = image::codecs::png::PngEncoder::new(&mut cursor);
+            let _ = enc.set_icc_profile(icc);
+            enc.write_image(&buf, w, h, image::ExtendedColorType::Rgba8).map_err(fail)?;
+        }
+        ImageFormat::Tiff => {
+            use image::ImageEncoder;
+            let mut enc = image::codecs::tiff::TiffEncoder::new(&mut cursor);
+            let _ = enc.set_icc_profile(icc);
+            enc.write_image(&buf, w, h, image::ExtendedColorType::Rgba8).map_err(fail)?;
         }
         other => {
+            // The rest have nowhere to put a profile, so the pixels are simply
+            // written in the space they were converted to.
             let f = other.to_image_crate().ok_or_else(|| {
                 IoError::Unsupported(format!("{} encoding", other.display_name()))
             })?;
-            image::DynamicImage::ImageRgba8(buf)
-                .write_to(&mut out, f)
-                .map_err(|e| IoError::Decode(e.to_string()))?;
+            image::DynamicImage::ImageRgba8(buf).write_to(&mut cursor, f).map_err(fail)?;
         }
     }
-    Ok(out.into_inner())
+    Ok(cursor.into_inner())
 }
 
 /// Composite over white, for formats that cannot carry alpha.

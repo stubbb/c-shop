@@ -394,6 +394,7 @@ impl CShopApp {
             Dialog::Segment(d) => d.title(),
             Dialog::Fill(_) => "Fill",
             Dialog::ColorPicker(d) => d.title(),
+            Dialog::ColorProfile(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -443,6 +444,7 @@ impl CShopApp {
                 Dialog::Rename(d) => close = d.ui(ui, &mut actions),
                 Dialog::Fill(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
+                Dialog::ColorProfile(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1328,6 +1330,40 @@ impl CShopApp {
                         view.doc.width,
                         view.doc.height,
                     ));
+                }
+            }
+            Action::ShowColorProfile => {
+                if let Some(view) = self.doc() {
+                    self.dialog = Dialog::ColorProfile(Box::new(
+                        crate::profile_ui::ProfileDialog::new(&view.doc.profile),
+                    ));
+                }
+            }
+            Action::SetColorProfile { path, convert } => {
+                let to = match path {
+                    None => Ok(cshop_core::profile::Profile::srgb()),
+                    Some(p) => cshop_core::profile::Profile::load(&p)
+                        .map_err(|e| format!("could not read that profile: {e}")),
+                };
+                match to {
+                    Err(why) => self.fail(why),
+                    Ok(to) => {
+                        let name = to.name().to_string();
+                        let edit: Box<dyn cshop_core::history::Command> = if convert {
+                            Box::new(cshop_core::history::SetProfile::convert(to))
+                        } else {
+                            Box::new(cshop_core::history::SetProfile::assign(to))
+                        };
+                        let Some(view) = self.doc_mut() else { return };
+                        let dirty = view.history.apply(&mut view.doc, edit);
+                        view.mark_dirty(dirty);
+                        view.invalidate();
+                        self.notify(if convert {
+                            format!("Converted to {name}")
+                        } else {
+                            format!("Assigned {name}; the pixels are unchanged")
+                        });
+                    }
                 }
             }
             Action::ResizeImage { width, height, filter } => {

@@ -505,6 +505,7 @@ dependencies = [
  "bytemuck",
  "image",
  "log",
+ "moxcms",
  "rayon",
  "thiserror 2.0.20",
  "ttf-parser",
@@ -533,7 +534,11 @@ dependencies = [
  "image",
  "log",
  "miniz_oxide",
+ "moxcms",
  "thiserror 2.0.20",
+ "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

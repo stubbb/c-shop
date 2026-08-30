@@ -990,6 +990,182 @@ impl Command for ResizeImage {
     }
 }
 
+/// Change what a document's numbers mean, and optionally the numbers.
+///
+/// The two things this can do are worth keeping apart, because they are
+/// opposites and both are sometimes right:
+///
+/// * **Assign** leaves every pixel alone and changes the profile. Nothing is
+///   recomputed; the picture looks different, because the same numbers are now
+///   being read as a different set of colours. This is the repair for a file
+///   that arrived labelled wrongly, or labelled not at all.
+/// * **Convert** rewrites every pixel so that it looks the same in the new
+///   space as it did in the old one. The numbers change so that the colours
+///   need not.
+///
+/// Converting is not free and not lossless: a colour the new space cannot
+/// reach is clipped to its nearest neighbour, and at eight bits a channel the
+/// journey costs precision even where nothing is clipped. Undo keeps the whole
+/// document, which is why this reports its size honestly.
+/// What one layer held before a conversion.
+///
+/// Not simply "its pixels": a type layer's pixels are a rendering of its text,
+/// and putting them back as pixels would undo a conversion by turning the
+/// type into a picture of itself.
+#[derive(Debug, Clone)]
+enum Unconverted {
+    Raster(PixelBuffer),
+    Fill(crate::color::Rgba8),
+    Text(Box<crate::text::TextContent>),
+    Shape(Box<crate::shape::ShapeContent>),
+}
+
+#[derive(Debug)]
+pub struct SetProfile {
+    to: crate::profile::Profile,
+    convert: bool,
+    before: Option<(crate::profile::Profile, Vec<(LayerId, Unconverted)>)>,
+}
+
+impl SetProfile {
+    /// Change the meaning, leave the pixels.
+    pub fn assign(to: crate::profile::Profile) -> Self {
+        Self { to, convert: false, before: None }
+    }
+
+    /// Change the pixels, keep the appearance.
+    pub fn convert(to: crate::profile::Profile) -> Self {
+        Self { to, convert: true, before: None }
+    }
+}
+
+impl Command for SetProfile {
+    fn name(&self) -> String {
+        if self.convert { "Convert to Profile".into() } else { "Assign Profile".into() }
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.before.as_ref().map_or(0, |(_, snaps)| {
+            snaps
+                .iter()
+                .map(|(_, held)| match held {
+                    Unconverted::Raster(px) => pixel_bytes(px),
+                    _ => 0,
+                })
+                .sum()
+        })
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.before.is_none() {
+            // Assigning touches nothing, so it has nothing to remember.
+            let snapshot = if self.convert {
+                doc.tree
+                    .iter_all()
+                    .into_iter()
+                    .filter_map(|id| {
+                        let layer = doc.tree.get(id)?;
+                        let held = match &layer.kind {
+                            crate::layer::LayerKind::Raster(px) => {
+                                Unconverted::Raster(px.clone())
+                            }
+                            crate::layer::LayerKind::Fill(
+                                crate::layer::FillStyle::Solid(c),
+                            ) => Unconverted::Fill(*c),
+                            crate::layer::LayerKind::Text(t) => {
+                                Unconverted::Text(Box::new(t.content().clone()))
+                            }
+                            crate::layer::LayerKind::Shape(sh) => {
+                                Unconverted::Shape(Box::new(sh.content().clone()))
+                            }
+                            _ => return None,
+                        };
+                        Some((id, held))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            self.before = Some((doc.profile.clone(), snapshot));
+        }
+
+        if self.convert && doc.profile != self.to {
+            let from = doc.profile.clone();
+            let intent = crate::profile::RenderingIntent::RelativeColorimetric;
+            let recolour = |c: &mut crate::color::Rgba8| {
+                let mut one = [*c];
+                if from.convert_rgba8(&self.to, &mut one, intent).is_ok() {
+                    *c = one[0];
+                }
+            };
+            for id in doc.tree.iter_all() {
+                let Some(layer) = doc.tree.get_mut(id) else { continue };
+                if let Some(px) = layer.pixels_mut() {
+                    if let Err(e) = from.convert_rgba8(&self.to, px.pixels_mut(), intent) {
+                        // Leave the pixels alone rather than half-converted.
+                        log::warn!("colour conversion failed on one layer: {e}");
+                    }
+                }
+                // A vector layer keeps the colour it was drawn from, and the
+                // next re-render would put the old one back. So those are
+                // converted at the source and redrawn, which also spares them
+                // the converted-raster-of-a-converted-colour they would get
+                // otherwise. These are the only four places in a document
+                // where a colour lives outside a raster.
+                match &mut layer.kind {
+                    crate::layer::LayerKind::Fill(crate::layer::FillStyle::Solid(c)) => {
+                        recolour(c)
+                    }
+                    crate::layer::LayerKind::Text(t) => {
+                        let mut content = t.content().clone();
+                        recolour(&mut content.style.color);
+                        t.set_content(content);
+                    }
+                    crate::layer::LayerKind::Shape(sh) => {
+                        let mut content = sh.content().clone();
+                        if let Some(c) = content.style.fill.as_mut() {
+                            recolour(c);
+                        }
+                        if let Some(c) = content.style.stroke.as_mut() {
+                            recolour(c);
+                        }
+                        sh.set_content(content);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        doc.profile = self.to.clone();
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some((profile, snapshot)) = self.before.clone() else { return Dirty::NONE };
+        doc.profile = profile;
+        for (id, held) in snapshot {
+            let Some(layer) = doc.tree.get_mut(id) else { continue };
+            match held {
+                Unconverted::Raster(px) => layer.kind = crate::layer::LayerKind::Raster(px),
+                Unconverted::Fill(c) => {
+                    layer.kind =
+                        crate::layer::LayerKind::Fill(crate::layer::FillStyle::Solid(c))
+                }
+                Unconverted::Text(content) => {
+                    if let Some(t) = layer.text_mut() {
+                        t.set_content(*content);
+                    }
+                }
+                Unconverted::Shape(content) => {
+                    if let Some(sh) = layer.shape_mut() {
+                        sh.set_content(*content);
+                    }
+                }
+            }
+        }
+        Dirty::structural(doc.bounds())
+    }
+}
+
 /// Resize a coverage mask by resampling it as a greyscale image.
 fn resize_mask(mask: &MaskBuffer, width: u32, height: u32) -> MaskBuffer {
     let mut as_pixels = PixelBuffer::new(mask.width(), mask.height());

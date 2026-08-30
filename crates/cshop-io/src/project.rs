@@ -46,6 +46,11 @@ const VERSION: u16 = 1;
 const CHUNK_DOC: &[u8; 4] = b"DOCU";
 const CHUNK_LAYER: &[u8; 4] = b"LAYR";
 const CHUNK_CHANNEL: &[u8; 4] = b"CHAN";
+/// The working space, when it is not the sRGB every project is assumed to be
+/// in. Its own chunk rather than a field in `DOCU`, so a project written
+/// before profiles existed still opens, and one written after still opens in
+/// a build from before.
+const CHUNK_PROFILE: &[u8; 4] = b"ICCP";
 const CHUNK_END: &[u8; 4] = b"END ";
 
 /// Deflate level. Pixel data dominates the file and is highly compressible;
@@ -74,6 +79,13 @@ pub fn write(doc: &Document) -> Vec<u8> {
         write_mask(w, &s.to_mask());
     });
     chunk(&mut w, CHUNK_DOC, &doc_chunk.bytes);
+
+    // Only when there is something to say. sRGB is the assumption everywhere
+    // else, and writing a few kilobytes of it into every project to repeat
+    // what is already the default would be waste.
+    if !doc.profile.is_srgb() {
+        chunk(&mut w, CHUNK_PROFILE, doc.profile.bytes());
+    }
 
     // Depth-first, parents first, so the reader can attach children as it goes.
     for id in doc.tree.iter_all() {
@@ -541,6 +553,16 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
                 let visible = r.bool()?;
                 let data = read_mask(&mut r)?;
                 doc.channels.push(cshop_core::document::AlphaChannel { name, data, visible });
+            }
+            CHUNK_PROFILE => {
+                let bytes = r.take(len)?;
+                match cshop_core::profile::Profile::parse(bytes) {
+                    Ok(p) => doc.profile = p,
+                    // A project whose profile will not parse is still a
+                    // project. Opening it in sRGB shows the pixels as they
+                    // were stored, which is the least wrong thing available.
+                    Err(e) => log::warn!("project profile unreadable, using sRGB: {e}"),
+                }
             }
             CHUNK_END => break,
             // Written by a newer build: skipped rather than refused, which is

@@ -26,6 +26,7 @@ pub mod theme;
 pub mod shortcuts;
 pub mod text_tool;
 pub mod tools;
+pub mod profile_ui;
 pub mod segment_ui;
 pub mod vision;
 pub mod transform_tool;

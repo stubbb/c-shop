@@ -27,6 +27,17 @@ egui        = "0.36.1"
 egui-wgpu   = "0.36.1"
 egui-winit  = { version = "0.36.1", default-features = false, features = ["links", "x11", "wayland"] }
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga", "gif", "webp", "tiff", "ico"] }
+# Colour management. Already in the tree underneath `image`, so this costs
+# nothing new to build; taking it directly is what lets profiles be read,
+# applied and written rather than silently ignored.
+moxcms      = "0.8"
+# The four inks of a CMYK JPEG. `image` converts them to RGB on the way past
+# without consulting a profile, which is the one thing a print file cannot
+# afford, so those are decoded here instead.
+zune-jpeg   = "0.5"
+zune-core   = "0.5"
+# CMYK and sixteen-bit TIFF, read and written. Also already in the tree.
+tiff        = "0.11"
 bytemuck    = { version = "1.25", features = ["derive"] }
 rayon       = "1.12"
 pollster    = "1.0"

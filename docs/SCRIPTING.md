@@ -90,8 +90,52 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
-| `info` | Report the document's size and layer count. |
-| `export PATH` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. |
+| `info` | Report the document's size, layer count and working colour space. |
+| `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
+| `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks. |
+
+### Colour spaces, and files made of ink
+
+A document works in one colour space, sRGB unless it is told otherwise, and
+everything arriving is converted into it. That means a script never has to ask
+what a pixel means: within a document there is one answer.
+
+Three things are worth knowing before pointing an agent at this.
+
+**`open` reports what it did to the colours,** because converting a picture on
+the way in is both the correct thing to do and the thing most likely to
+surprise someone comparing the result against another program:
+
+```
+opened photo.jpg (4032x3024, 1 layer, converted from Adobe RGB (1998))
+opened press.tif (32x32, 1 layer, four inks, converted from Artifex CMYK SWOP Profile)
+```
+
+A file that says nothing about its colours is read as sRGB and the note is
+absent. A CMYK file that carries no profile says "converted without a profile
+to go by" — that is a guess rather than a conversion, and worth passing on.
+
+**`assign` and `convert` are opposites.** `assign` changes what the numbers
+mean and leaves them alone, which repairs a mislabelled file; `convert`
+rewrites the numbers so the appearance survives, which is what moving between
+spaces means. Reaching for the wrong one produces a picture that is wrong in a
+way no later step can fix, so it is worth being sure which problem is being
+solved.
+
+**Ink is made on the way out.** A document cannot work in CMYK — `profile
+convert` refuses a press profile and says so — but `export profile=` will
+convert to one, and the result is a TIFF of four inks with the press's profile
+embedded, whatever extension was asked for. Two consequences to plan for:
+transparency is composited onto white, because paper is not black, and colours
+outside the press's reach are clipped to its nearest neighbour, so a round trip
+out to ink and back does not return the same numbers. It is not meant to.
+
+```
+open photo.jpg
+profile                  # → sRGB (RGB)
+export plate.tif profile=/usr/share/color/icc/ISOcoated_v2.icc
+                         # → wrote plate.tif as four inks for ISO Coated v2
+```
 
 ### Finding and cutting out an object
 
