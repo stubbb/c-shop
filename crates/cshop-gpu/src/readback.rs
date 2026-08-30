@@ -144,6 +144,26 @@ pub fn read_srgb8(ctx: &GpuContext, tex: &GpuTexture) -> PixelBuffer {
     PixelBuffer::from_rgba_bytes(w, h, &out).expect("readback returned the wrong byte count")
 }
 
+/// Read a working-format texture back at sixteen bits a channel.
+///
+/// Worth having because the compositing above it is already deeper than eight
+/// bits: the work texture is `Rgba16Float`, so every blend, adjustment layer
+/// and effect has been evaluated with room to spare. Narrowing to eight is the
+/// *last* thing that happens, and doing it here throws away precision the GPU
+/// has already paid for. A picture built from a stack of adjustments is where
+/// that shows.
+pub fn read_as_deep(
+    ctx: &GpuContext,
+    tex: &GpuTexture,
+    rect: IRect,
+) -> cshop_core::pixels::DeepBuffer {
+    let rect = rect.intersect(&IRect::from_size(tex.width, tex.height));
+    let floats = read_work_texture(ctx, tex, rect);
+    let pixels = floats.into_iter().map(cshop_core::color::Rgba16::from_f32).collect();
+    cshop_core::pixels::DeepBuffer::from_pixels(rect.width(), rect.height(), pixels)
+        .unwrap_or_else(|| cshop_core::pixels::DeepBuffer::new(rect.width(), rect.height()))
+}
+
 /// Read a working-format texture back as an 8-bit image, ready to encode.
 pub fn read_as_pixels(ctx: &GpuContext, tex: &GpuTexture, rect: IRect) -> PixelBuffer {
     let rect = rect.intersect(&IRect::from_size(tex.width, tex.height));

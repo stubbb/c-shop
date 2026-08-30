@@ -12,6 +12,7 @@ log = { workspace = true }
 thiserror = { workspace = true }
 miniz_oxide = { workspace = true }
 moxcms = { workspace = true }
+bytemuck = { workspace = true }
 zune-jpeg = { workspace = true }
 zune-core = { workspace = true }
 tiff = { workspace = true }

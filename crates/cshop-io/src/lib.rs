@@ -14,9 +14,9 @@ pub mod icc;
 pub mod project;
 pub mod psd;
 
-use cshop_core::color::Rgba8;
+use cshop_core::color::{Rgba8, Rgba16};
 use cshop_core::profile::{Profile, RenderingIntent, Space};
-use cshop_core::pixels::PixelBuffer;
+use cshop_core::pixels::{DeepBuffer, PixelBuffer};
 use std::path::Path;
 
 pub use format::ImageFormat;
@@ -254,6 +254,163 @@ pub fn decode_managed(
         }
     }
     Ok((pixels, colors))
+}
+
+/// Does this file hold more than eight bits a channel?
+///
+/// Worth asking before decoding, because the answer decides whether opening it
+/// at eight bits would throw anything away.
+pub fn is_deep(bytes: &[u8], hint: Option<&Path>) -> bool {
+    let Ok(reader) = reader_for(bytes, hint) else { return false };
+    let Ok(decoder) = reader.into_decoder() else { return false };
+    use image::ImageDecoder;
+    matches!(
+        decoder.original_color_type(),
+        image::ExtendedColorType::L16
+            | image::ExtendedColorType::La16
+            | image::ExtendedColorType::Rgb16
+            | image::ExtendedColorType::Rgba16
+    )
+}
+
+/// Decode at sixteen bits a channel, honouring the file's own profile.
+///
+/// A file that only has eight is widened exactly rather than refused: the
+/// caller asked for a deep buffer and gets one, holding precisely what the
+/// file held. What it buys is everything that happens next — see
+/// [`cshop_core::color::Rgba16`].
+pub fn decode_deep(
+    bytes: &[u8],
+    hint: Option<&Path>,
+    working: &Profile,
+) -> Result<(DeepBuffer, Colors), IoError> {
+    let mut colors = Colors {
+        embedded: icc::embedded(bytes).and_then(|b| Profile::parse(&b).ok()),
+        ..Default::default()
+    };
+
+    if cmyk::is_separated(bytes) {
+        colors.separated = true;
+        let inks = cmyk::read(bytes)?;
+        if inks.width > MAX_DIMENSION || inks.height > MAX_DIMENSION {
+            return Err(IoError::TooLarge(inks.width, inks.height, MAX_DIMENSION));
+        }
+        // Deep ink where the file had it, widened where it did not.
+        let deep: Vec<u16> = match &inks.deep {
+            Some(d) => d.clone(),
+            None => inks.data.iter().map(|&v| v as u16 * 257).collect(),
+        };
+        let press = colors.embedded.clone().filter(|p| p.space() == Space::Cmyk);
+        let pixels = match press {
+            Some(press) => {
+                colors.converted = true;
+                press
+                    .inks16_to_rgba16(working, &deep, RenderingIntent::RelativeColorimetric)
+                    .map_err(|e| IoError::Decode(e.to_string()))?
+            }
+            None => {
+                colors.guessed = true;
+                naive_inks(&inks.data).into_iter().map(Rgba16::from_rgba8).collect()
+            }
+        };
+        return DeepBuffer::from_pixels(inks.width, inks.height, pixels)
+            .map(|p| (p, colors))
+            .ok_or_else(|| IoError::Decode("ink and size disagreed".into()));
+    }
+
+    if let Ok((w, h)) = reader_for(bytes, hint)?.into_dimensions() {
+        if w > MAX_DIMENSION || h > MAX_DIMENSION {
+            return Err(IoError::TooLarge(w, h, MAX_DIMENSION));
+        }
+    }
+    let img = reader_for(bytes, hint)?.decode().map_err(|e| IoError::Decode(e.to_string()))?;
+    let rgba = img.to_rgba16();
+    let (w, h) = rgba.dimensions();
+    let data: Vec<Rgba16> =
+        rgba.pixels().map(|p| Rgba16::new(p.0[0], p.0[1], p.0[2], p.0[3])).collect();
+    let mut pixels = DeepBuffer::from_pixels(w, h, data)
+        .ok_or_else(|| IoError::Decode("decoder returned a malformed buffer".into()))?;
+
+    if let Some(from) = colors.embedded.as_ref() {
+        if from.space() == Space::Rgb && from != working {
+            from.convert_rgba16(
+                working,
+                pixels.pixels_mut(),
+                RenderingIntent::RelativeColorimetric,
+            )
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+            colors.converted = true;
+        }
+    }
+    Ok((pixels, colors))
+}
+
+/// Encode a deep buffer at sixteen bits a channel.
+///
+/// Only three formats can hold it: PNG, TIFF, and TIFF again for ink. Anything
+/// else is refused rather than quietly narrowed, because a caller that asked
+/// for depth and silently got eight bits is worse off than one that was told.
+pub fn encode_deep(
+    pixels: &DeepBuffer,
+    format: ImageFormat,
+    working: &Profile,
+    out: &Profile,
+) -> Result<Vec<u8>, IoError> {
+    use image::ImageEncoder;
+
+    if out.space() == Space::Cmyk {
+        let deep = working
+            .rgba16_to_inks16(out, pixels.pixels(), RenderingIntent::RelativeColorimetric)
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+        let inks = cmyk::Inks {
+            width: pixels.width(),
+            height: pixels.height(),
+            data: deep.iter().map(|&v| (v >> 8) as u8).collect(),
+            deep: Some(deep),
+        };
+        return cmyk::write_tiff(&inks, out.bytes());
+    }
+    if out.space() != Space::Rgb {
+        return Err(IoError::Unsupported(format!("exporting to {}", out.space().name())));
+    }
+
+    let converted;
+    let source = if working == out {
+        pixels
+    } else {
+        let mut copy = pixels.clone();
+        working
+            .convert_rgba16(out, copy.pixels_mut(), RenderingIntent::RelativeColorimetric)
+            .map_err(|e| IoError::Decode(e.to_string()))?;
+        converted = copy;
+        &converted
+    };
+
+    let (w, h) = (source.width(), source.height());
+    let raw: &[u8] = bytemuck::cast_slice(source.pixels());
+    let icc = out.bytes().to_vec();
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let fail = |e: image::ImageError| IoError::Decode(e.to_string());
+
+    match format {
+        ImageFormat::Png => {
+            let mut enc = image::codecs::png::PngEncoder::new(&mut cursor);
+            let _ = enc.set_icc_profile(icc);
+            enc.write_image(raw, w, h, image::ExtendedColorType::Rgba16).map_err(fail)?;
+        }
+        ImageFormat::Tiff => {
+            let mut enc = image::codecs::tiff::TiffEncoder::new(&mut cursor);
+            let _ = enc.set_icc_profile(icc);
+            enc.write_image(raw, w, h, image::ExtendedColorType::Rgba16).map_err(fail)?;
+        }
+        other => {
+            return Err(IoError::Unsupported(format!(
+                "{} cannot hold sixteen bits a channel; PNG and TIFF can",
+                other.display_name()
+            )))
+        }
+    }
+    Ok(cursor.into_inner())
 }
 
 /// The conversion every program used before profiles: subtract the ink from

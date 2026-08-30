@@ -131,6 +131,49 @@ back. Eight bits a channel is simply not enough to hold the journey.
 This is measured rather than asserted — it is a test, so it stays true — and it
 is the argument for working at sixteen bits where the journey matters.
 
+## Sixty-four bits to a pixel
+
+Sixteen bits a channel is not about seeing more colours. Nobody can tell one
+sixteen-bit step from the next; eight bits is already finer than the eye at any
+single boundary. It is about what happens *between* the file and the screen.
+
+Take a gradient laid at thirty percent opacity — 256 tones squeezed into a
+narrow band:
+
+```
+export band.png            # 78 distinct levels survive
+export band.png depth=16   # 256 distinct levels survive
+```
+
+At eight bits the band has nowhere to put those 256 values and they collapse
+into each other. That is what banding is, and no later step can undo it. The
+same thing happens to a curve pulled hard, to a conversion out to a wider space
+and back, and to half a dozen adjustments in a row: each one is fine, and the
+sixth is visibly stepped.
+
+**The compositor has always worked deeper than eight bits.** Layers are
+composited in `Rgba16Float`, so every blend, opacity, adjustment layer and
+effect is already evaluated with room to spare. Narrowing to eight bits was
+simply the last thing that happened on the way out. `depth=16` asks it not to,
+and the numbers above are what that is worth.
+
+Only PNG and TIFF can hold it, and a request to write sixteen bits into a
+format that cannot is refused rather than quietly narrowed. Ink can be deep
+too: `depth=16 profile=<a CMYK profile>` writes a sixteen-bit CMYK TIFF.
+
+### What is still eight bits
+
+Layer *storage*. A raster layer holds eight bits a channel, so opening a
+sixteen-bit file still narrows it on the way in, and painting is eight-bit
+work. What `depth=16` preserves is everything the compositor computes on top of
+that — which is where the banding in the example above came from, and is most
+of what a stack of edits amounts to.
+
+A document that stores its layers deep is the next step, and the machinery is
+in place for it: the pixel buffer is generic over its sample type, `Rgba16`
+exists alongside `Rgba8`, and files, profiles and ink all read and write at
+either depth.
+
 ## From a script
 
 | Command | |
@@ -139,6 +182,7 @@ is the argument for working at sixteen bits where the journey matters.
 | `profile assign PATH\|srgb` | Change what the numbers mean. |
 | `profile convert PATH\|srgb` | Change the numbers, keep the appearance. |
 | `export FILE profile=PATH` | Convert on the way out. A CMYK profile makes ink. |
+| `export FILE depth=16` | Sixteen bits a channel. PNG and TIFF only; combines with `profile=`. |
 
 `info` names the working space as well, so a script that reports on a document
 does not need a second command to find out what its colours mean.

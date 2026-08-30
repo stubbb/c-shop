@@ -101,7 +101,10 @@ one space and everything arriving is converted into it; assign and convert are
 offered as the separate things they are. **CMYK** files open as what they are —
 four inks read through the press's own profile, rather than four numbers
 mistaken for a colour — and `export profile=` sends a picture back out as ink
-with the profile embedded. See [docs/COLOUR.md](docs/COLOUR.md).
+with the profile embedded. `export depth=16` writes sixty-four bits to a pixel,
+keeping precision the compositor already computes and eight bits throws away: a
+gradient at thirty percent opacity keeps 256 distinct levels against 78. See
+[docs/COLOUR.md](docs/COLOUR.md).
 
 **Files.** A native layered project format, `.cshop`, that keeps the whole
 document — the layer tree, groups, masks, adjustment settings, live type and

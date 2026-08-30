@@ -22,7 +22,7 @@
 //! for someone reading a menu, and the handful of conversions the rest of the
 //! program actually asks for.
 
-use crate::color::Rgba8;
+use crate::color::{Rgba8, Rgba16};
 use std::sync::{Arc, OnceLock};
 
 pub use moxcms::RenderingIntent;
@@ -348,6 +348,107 @@ impl Profile {
         let mut rgb = vec![0u8; grey.len() * 3];
         t.transform(grey, &mut rgb).map_err(|e| ProfileError::Transform(e.to_string()))?;
         Ok(rgb.chunks_exact(3).map(|c| Rgba8::new(c[0], c[1], c[2], 255)).collect())
+    }
+}
+
+// --- the same four, sixteen bits deep -------------------------------------
+//
+// Separate methods rather than a depth argument, because the sample type is
+// the difference and Rust would rather be told than asked. Everything else is
+// the same transform; moxcms builds a deeper table for it.
+
+impl Profile {
+    /// Re-encode deep pixels from this profile into `dst`.
+    pub fn convert_rgba16(
+        &self,
+        dst: &Profile,
+        pixels: &mut [Rgba16],
+        intent: RenderingIntent,
+    ) -> Result<(), ProfileError> {
+        if self.space() != Space::Rgb || dst.space() != Space::Rgb {
+            return Err(ProfileError::Unsupported(if self.space() == Space::Rgb {
+                dst.space()
+            } else {
+                self.space()
+            }));
+        }
+        if self == dst {
+            return Ok(());
+        }
+        let t = self
+            .parsed
+            .create_transform_16bit(
+                moxcms::Layout::Rgba,
+                &dst.parsed,
+                moxcms::Layout::Rgba,
+                Self::options(intent),
+            )
+            .map_err(|e| ProfileError::Transform(e.to_string()))?;
+        let flat: &mut [u16] = bytemuck::cast_slice_mut(pixels);
+        let src = flat.to_vec();
+        t.transform(&src, flat).map_err(|e| ProfileError::Transform(e.to_string()))
+    }
+
+    /// Deep ink to deep colour.
+    pub fn inks16_to_rgba16(
+        &self,
+        dst: &Profile,
+        inks: &[u16],
+        intent: RenderingIntent,
+    ) -> Result<Vec<Rgba16>, ProfileError> {
+        if self.space() != Space::Cmyk || dst.space() != Space::Rgb {
+            return Err(ProfileError::Unsupported(self.space()));
+        }
+        if inks.len() % 4 != 0 {
+            return Err(ProfileError::Transform(format!(
+                "{} ink samples is not a whole number of four-ink pixels",
+                inks.len()
+            )));
+        }
+        let t = self
+            .parsed
+            .create_transform_16bit(
+                moxcms::Layout::Rgba,
+                &dst.parsed,
+                moxcms::Layout::Rgb,
+                Self::options(intent),
+            )
+            .map_err(|e| ProfileError::Transform(e.to_string()))?;
+        let mut rgb = vec![0u16; inks.len() / 4 * 3];
+        t.transform(inks, &mut rgb).map_err(|e| ProfileError::Transform(e.to_string()))?;
+        Ok(rgb.chunks_exact(3).map(|c| Rgba16::new(c[0], c[1], c[2], 65535)).collect())
+    }
+
+    /// Deep colour to deep ink, on white paper as ever.
+    pub fn rgba16_to_inks16(
+        &self,
+        dst: &Profile,
+        pixels: &[Rgba16],
+        intent: RenderingIntent,
+    ) -> Result<Vec<u16>, ProfileError> {
+        if self.space() != Space::Rgb || dst.space() != Space::Cmyk {
+            return Err(ProfileError::Unsupported(dst.space()));
+        }
+        let mut rgb = Vec::with_capacity(pixels.len() * 3);
+        for p in pixels {
+            let over = |c: u16| -> u16 {
+                let a = p.a as u32;
+                ((c as u32 * a + 65535 * (65535 - a) + 32767) / 65535).min(65535) as u16
+            };
+            rgb.extend_from_slice(&[over(p.r), over(p.g), over(p.b)]);
+        }
+        let t = self
+            .parsed
+            .create_transform_16bit(
+                moxcms::Layout::Rgb,
+                &dst.parsed,
+                moxcms::Layout::Rgba,
+                Self::options(intent),
+            )
+            .map_err(|e| ProfileError::Transform(e.to_string()))?;
+        let mut inks = vec![0u16; pixels.len() * 4];
+        t.transform(&rgb, &mut inks).map_err(|e| ProfileError::Transform(e.to_string()))?;
+        Ok(inks)
     }
 }
 

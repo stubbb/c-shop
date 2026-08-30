@@ -24,6 +24,86 @@
 
 use bytemuck::{Pod, Zeroable};
 
+/// 16-bit sRGB colour with straight alpha — sixty-four bits to a pixel.
+///
+/// The same encoding as [`Rgba8`] and the same meaning, counted more finely.
+/// Two hundred and fifty-six times more finely, which sounds like more than
+/// anyone could see and is: nobody can tell one sixteen-bit step from the next.
+/// That is not what the depth is for. It is for what happens *between* the
+/// file and the screen — a curve pulled hard, a conversion into a wider space
+/// and back, half a dozen adjustments in a row — where eight bits runs out of
+/// room to hold the intermediate answers and the result comes back banded.
+/// See [`crate::profile`] for a measurement of exactly that.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable)]
+pub struct Rgba16 {
+    pub r: u16,
+    pub g: u16,
+    pub b: u16,
+    pub a: u16,
+}
+
+impl Rgba16 {
+    pub const TRANSPARENT: Rgba16 = Rgba16::new(0, 0, 0, 0);
+    pub const BLACK: Rgba16 = Rgba16::new(0, 0, 0, 65535);
+    pub const WHITE: Rgba16 = Rgba16::new(65535, 65535, 65535, 65535);
+
+    #[inline]
+    pub const fn new(r: u16, g: u16, b: u16, a: u16) -> Self {
+        Self { r, g, b, a }
+    }
+
+    #[inline]
+    pub const fn opaque(r: u16, g: u16, b: u16) -> Self {
+        Self { r, g, b, a: 65535 }
+    }
+
+    /// Widen from eight bits, exactly.
+    ///
+    /// Multiplying by 257 rather than shifting by eight is what makes it
+    /// exact: 255 has to land on 65535, and `255 << 8` is 65280 — a white that
+    /// is not quite white, which compounds into a visible cast the moment
+    /// anything is composited over it.
+    #[inline]
+    pub const fn from_rgba8(c: Rgba8) -> Self {
+        Self {
+            r: c.r as u16 * 257,
+            g: c.g as u16 * 257,
+            b: c.b as u16 * 257,
+            a: c.a as u16 * 257,
+        }
+    }
+
+    /// Narrow to eight bits, rounding to nearest rather than truncating.
+    #[inline]
+    pub const fn to_rgba8(self) -> Rgba8 {
+        #[inline]
+        const fn n(v: u16) -> u8 {
+            ((v as u32 + 128) / 257) as u8
+        }
+        Rgba8 { r: n(self.r), g: n(self.g), b: n(self.b), a: n(self.a) }
+    }
+
+    #[inline]
+    pub fn to_f32(self) -> Rgba {
+        Rgba {
+            r: self.r as f32 / 65535.0,
+            g: self.g as f32 / 65535.0,
+            b: self.b as f32 / 65535.0,
+            a: self.a as f32 / 65535.0,
+        }
+    }
+
+    #[inline]
+    pub fn from_f32(c: Rgba) -> Self {
+        #[inline]
+        fn q(v: f32) -> u16 {
+            (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16
+        }
+        Self { r: q(c.r), g: q(c.g), b: q(c.b), a: q(c.a) }
+    }
+}
+
 /// 8-bit sRGB colour with straight alpha.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable)]

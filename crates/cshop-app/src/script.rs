@@ -718,6 +718,12 @@ impl Runner {
         Ok(self.app.render_composite(&gpu, i))
     }
 
+    fn composite_deep(&mut self) -> Result<cshop_core::pixels::DeepBuffer, String> {
+        let i = self.app.active.ok_or("there is no document")?;
+        let gpu = self.gpu.clone();
+        Ok(self.app.render_composite_deep(&gpu, i))
+    }
+
     fn step(&mut self, cmd: &Command) -> Result<String, String> {
         match cmd.name.as_str() {
             "new" => self.cmd_new(cmd),
@@ -1528,6 +1534,35 @@ impl Runner {
         }
         let composite = self.composite()?;
         let doc = self.app.doc().ok_or("no document")?.doc.clone();
+
+        // `depth=16` keeps what the compositor already worked out. Every
+        // blend, adjustment and effect is evaluated at sixteen bits a channel
+        // on the way through, and narrowing to eight is the last thing that
+        // happens; this asks it not to.
+        let depth = cmd.u32("depth")?.unwrap_or(8);
+        if depth != 8 && depth != 16 {
+            return Err(format!("depth is 8 or 16, not {depth}"));
+        }
+        if depth == 16 {
+            let out = match cmd.opt("profile") {
+                Some(want) => self.profile_named(want)?,
+                None => doc.profile.clone(),
+            };
+            let format = cshop_io::ImageFormat::from_path(&path)
+                .ok_or_else(|| format!("no format for {}", path.display()))?;
+            let deep = self.composite_deep()?;
+            let bytes = cshop_io::encode_deep(&deep, format, &doc.profile, &out)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            std::fs::write(&path, bytes)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            self.report.outputs.push(path.display().to_string());
+            let ink = out.space() == cshop_core::profile::Space::Cmyk;
+            return Ok(format!(
+                "wrote {} at 16 bits a channel{}",
+                path.display(),
+                if ink { format!(", as four inks for {}", out.name()) } else { String::new() }
+            ));
+        }
 
         // `profile=` sends the picture somewhere other than the space it was
         // worked in — a press, most usefully, which lands as four inks.

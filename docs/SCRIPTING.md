@@ -92,7 +92,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `order WHERE` | `top bottom up down` |
 | `info` | Report the document's size, layer count and working colour space. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
-| `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks. |
+| `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks; `depth=16` writes sixteen bits a channel, which PNG and TIFF can hold and the rest cannot. |
 
 ### Colour spaces, and files made of ink
 
@@ -136,6 +136,16 @@ profile                  # → sRGB (RGB)
 export plate.tif profile=/usr/share/color/icc/ISOcoated_v2.icc
                          # → wrote plate.tif as four inks for ISO Coated v2
 ```
+
+**`depth=16` keeps precision the compositor already has.** Layers are
+composited in `Rgba16Float`, so blends, opacity, adjustment layers and effects
+are all evaluated deeper than eight bits; narrowing is the last step out, and
+this asks it not to. It is worth reaching for whenever the result will be
+edited again, or wherever tones are compressed — a gradient at thirty percent
+opacity keeps 256 distinct levels at `depth=16` against 78 at eight. Layer
+storage is still eight bits, so this preserves what was computed rather than
+what was painted. PNG and TIFF only; anything else refuses rather than
+narrowing in silence.
 
 ### Finding and cutting out an object
 

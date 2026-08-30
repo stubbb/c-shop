@@ -921,3 +921,74 @@ fn a_picture_can_go_to_a_press_and_come_home() {
     assert!(report.steps[0].note.contains("converted from"), "{:?}", report.steps[0].note);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Sixteen bits a channel, and the measurement that says it is not decoration.
+///
+/// A gradient laid at thirty percent opacity is 256 tones squeezed into a
+/// narrow band. At eight bits the band has nowhere to put them and they
+/// collapse into each other — that is what banding is. The compositor has
+/// already done the arithmetic with room to spare, in `Rgba16Float`, so the
+/// only question is whether the way out keeps it.
+#[test]
+fn a_deep_export_keeps_tones_that_eight_bits_collapses() {
+    let dir = std::env::temp_dir().join(format!("cshop-deep-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let (shallow, deep) = (dir.join("eight.png"), dir.join("sixteen.png"));
+
+    let Some(report) = run(&format!(
+        "new 512 8 background=white\nlayer new\n\
+         gradient 0 0 512 0 from=#000000 to=#ffffff\nset opacity=0.3\n\
+         export {}\nexport {} depth=16",
+        shallow.display(),
+        deep.display()
+    )) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps.last().unwrap().note.contains("16 bits"), "{:?}", notes(&report));
+
+    let levels = |path: &std::path::Path| -> usize {
+        // Counted at sixteen bits either way, so the two are comparable: an
+        // eight-bit file simply has fewer distinct values to widen.
+        let bytes = std::fs::read(path).expect("an exported file");
+        let (deep, _) =
+            cshop_io::decode_deep(&bytes, None, &cshop_core::profile::Profile::srgb()).unwrap();
+        deep.pixels().iter().map(|p| p.r).collect::<std::collections::HashSet<_>>().len()
+    };
+    let (eight, sixteen) = (levels(&shallow), levels(&deep));
+    assert!(
+        sixteen > eight * 2,
+        "the deep export should hold far more tone: {sixteen} against {eight}"
+    );
+    assert!(sixteen > 200, "and nearly all of the 256 that went in: {sixteen}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_depth_that_is_neither_eight_nor_sixteen_is_refused() {
+    let dir = std::env::temp_dir().join(format!("cshop-depth-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let Some(report) =
+        run(&format!("new 8 8\nexport {} depth=12", dir.join("x.png").display()))
+    else {
+        return;
+    };
+    assert!(report.steps[1].note.contains("depth is 8 or 16"), "{:?}", notes(&report));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// JPEG cannot hold the depth, and should say so rather than write eight bits
+/// while being told sixteen.
+#[test]
+fn a_deep_export_to_a_shallow_format_is_refused() {
+    let dir = std::env::temp_dir().join(format!("cshop-shallow-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let Some(report) =
+        run(&format!("new 8 8\nexport {} depth=16", dir.join("x.jpg").display()))
+    else {
+        return;
+    };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("sixteen bits"), "{:?}", notes(&report));
+    let _ = std::fs::remove_dir_all(&dir);
+}

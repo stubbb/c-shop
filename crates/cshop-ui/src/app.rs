@@ -1479,6 +1479,18 @@ impl CShopApp {
         view.read_composite(gpu)
     }
 
+    /// The same, at sixteen bits a channel — see
+    /// [`crate::doc_view::DocView::read_composite_deep`].
+    pub fn render_composite_deep(
+        &mut self,
+        gpu: &cshop_gpu::context::GpuContext,
+        index: usize,
+    ) -> cshop_core::pixels::DeepBuffer {
+        let view = &mut self.docs[index];
+        view.sync_composite_only(gpu, &mut self.compositor);
+        view.read_composite_deep(gpu)
+    }
+
     pub fn dispatch(&mut self, action: Action) {
         self.run(action);
         self.run_actions();

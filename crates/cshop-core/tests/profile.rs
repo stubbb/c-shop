@@ -250,3 +250,72 @@ fn converting_reaches_the_colour_behind_a_type_layer() {
     assert!(layer.text().is_some(), "and undo must leave it as type, not as a picture of type");
     assert_eq!(layer.text().unwrap().content().style.color, Rgba8::new(200, 60, 60, 255));
 }
+
+// --- and the same journey, deeper ------------------------------------------
+
+use cshop_core::color::Rgba16;
+
+/// The measurement that justifies the depth.
+///
+/// The pair of colours that came home twenty-three counts apart at eight bits
+/// should come home together at sixteen. Same transform, same profiles, same
+/// rendering intent; only the room to hold the intermediate answer changes.
+#[test]
+fn sixteen_bits_holds_the_round_trip_that_eight_could_not() {
+    let Some(wide) = wide() else { return };
+    let srgb = Profile::srgb();
+    let original = [
+        Rgba16::from_rgba8(Rgba8::new(16, 243, 8, 255)),
+        Rgba16::from_rgba8(Rgba8::new(20, 240, 10, 255)),
+    ];
+
+    let mut there = original;
+    srgb.convert_rgba16(&wide, &mut there, RenderingIntent::RelativeColorimetric).unwrap();
+    let mut back = there;
+    wide.convert_rgba16(&srgb, &mut back, RenderingIntent::RelativeColorimetric).unwrap();
+
+    // Measured in eight-bit counts, so it can be read against the other test.
+    for (a, b) in original.iter().zip(&back) {
+        let (a, b) = (a.to_rgba8(), b.to_rgba8());
+        let worst = (a.r as i32 - b.r as i32)
+            .abs()
+            .max((a.g as i32 - b.g as i32).abs())
+            .max((a.b as i32 - b.b as i32).abs());
+        assert!(worst <= 1, "{a:?} came home as {b:?}, off by {worst}");
+    }
+}
+
+/// Widening and narrowing must be exact in the direction that can be.
+#[test]
+fn eight_bits_widened_and_narrowed_again_is_the_same_picture() {
+    for v in 0..=255u8 {
+        let c = Rgba8::new(v, 255 - v, v.wrapping_mul(3), v);
+        assert_eq!(Rgba16::from_rgba8(c).to_rgba8(), c, "{v} did not survive the trip");
+    }
+    // And the two ends land exactly where they should.
+    assert_eq!(Rgba16::from_rgba8(Rgba8::WHITE), Rgba16::WHITE);
+    assert_eq!(Rgba16::from_rgba8(Rgba8::TRANSPARENT), Rgba16::TRANSPARENT);
+}
+
+#[test]
+fn deep_ink_goes_to_deep_colour_and_back() {
+    let Some(cmyk) = maybe(&format!("{GS}/default_cmyk.icc")) else { return };
+    let srgb = Profile::srgb();
+    let original: Vec<Rgba16> = [
+        Rgba8::new(128, 128, 128, 255),
+        Rgba8::new(200, 60, 60, 255),
+        Rgba8::new(60, 140, 90, 255),
+    ]
+    .iter()
+    .map(|&c| Rgba16::from_rgba8(c))
+    .collect();
+
+    let inks = srgb.rgba16_to_inks16(&cmyk, &original, RenderingIntent::RelativeColorimetric).unwrap();
+    assert_eq!(inks.len(), original.len() * 4);
+    let back = cmyk.inks16_to_rgba16(&srgb, &inks, RenderingIntent::RelativeColorimetric).unwrap();
+    for (a, b) in original.iter().zip(&back) {
+        let (a, b) = (a.to_rgba8(), b.to_rgba8());
+        let d = (a.r as i32 - b.r as i32).abs().max((a.g as i32 - b.g as i32).abs());
+        assert!(d <= 12, "{a:?} came back as {b:?}");
+    }
+}

@@ -4,20 +4,104 @@
 //! that gets composited; this is the authoritative version that undo snapshots,
 //! file I/O and thumbnails read from.
 
-use crate::color::Rgba8;
+use crate::color::{Rgba, Rgba8, Rgba16};
 use crate::geom::IRect;
 use bytemuck::cast_slice;
 
-/// A tightly packed RGBA8 image. Rows are contiguous, stride is always
-/// `width * 4` bytes.
-#[derive(Clone, PartialEq, Eq)]
-pub struct PixelBuffer {
-    width: u32,
-    height: u32,
-    data: Vec<Rgba8>,
+/// What one pixel can be made of.
+///
+/// Two implementations: [`Rgba8`], which is what a document holds unless it is
+/// asked to hold more, and [`Rgba16`], which is what it holds when precision
+/// through a chain of edits matters more than memory. Everything a buffer does
+/// that does not depend on the depth — copying, pasting, bounds, downscaling —
+/// is written once here and works for both.
+pub trait Sample:
+    Copy + bytemuck::Pod + PartialEq + Send + Sync + std::fmt::Debug + 'static
+{
+    /// Nothing there. Out-of-bounds reads return it, and new buffers are it.
+    const CLEAR: Self;
+    /// Fully opaque white, the other end most callers need by name.
+    const WHITE: Self;
+
+    fn to_f32(self) -> Rgba;
+    fn from_f32(c: Rgba) -> Self;
+    fn to_rgba8(self) -> Rgba8;
+    fn from_rgba8(c: Rgba8) -> Self;
+
+    /// Coverage, 0 to 1. Enough for the questions a buffer asks about alpha
+    /// without unpacking the whole colour.
+    fn alpha(self) -> f32;
 }
 
-impl std::fmt::Debug for PixelBuffer {
+impl Sample for Rgba8 {
+    const CLEAR: Rgba8 = Rgba8::TRANSPARENT;
+    const WHITE: Rgba8 = Rgba8::WHITE;
+
+    #[inline]
+    fn to_f32(self) -> Rgba {
+        Rgba8::to_f32(self)
+    }
+    #[inline]
+    fn from_f32(c: Rgba) -> Self {
+        c.to_u8()
+    }
+    #[inline]
+    fn to_rgba8(self) -> Rgba8 {
+        self
+    }
+    #[inline]
+    fn from_rgba8(c: Rgba8) -> Self {
+        c
+    }
+    #[inline]
+    fn alpha(self) -> f32 {
+        self.a as f32 / 255.0
+    }
+}
+
+impl Sample for Rgba16 {
+    const CLEAR: Rgba16 = Rgba16::TRANSPARENT;
+    const WHITE: Rgba16 = Rgba16::WHITE;
+
+    #[inline]
+    fn to_f32(self) -> Rgba {
+        Rgba16::to_f32(self)
+    }
+    #[inline]
+    fn from_f32(c: Rgba) -> Self {
+        Rgba16::from_f32(c)
+    }
+    #[inline]
+    fn to_rgba8(self) -> Rgba8 {
+        Rgba16::to_rgba8(self)
+    }
+    #[inline]
+    fn from_rgba8(c: Rgba8) -> Self {
+        Rgba16::from_rgba8(c)
+    }
+    #[inline]
+    fn alpha(self) -> f32 {
+        self.a as f32 / 65535.0
+    }
+}
+
+/// Sixteen bits a channel: sixty-four to a pixel.
+pub type DeepBuffer = PixelBuffer<Rgba16>;
+
+/// A tightly packed RGBA image. Rows are contiguous, stride is always
+/// `width * 4` samples.
+///
+/// The sample type defaults to [`Rgba8`], so `PixelBuffer` unqualified means
+/// what it has always meant and the depth is something only the code that
+/// cares has to name.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PixelBuffer<S: Sample = Rgba8> {
+    width: u32,
+    height: u32,
+    data: Vec<S>,
+}
+
+impl<S: Sample> std::fmt::Debug for PixelBuffer<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PixelBuffer")
             .field("width", &self.width)
@@ -45,23 +129,7 @@ pub fn sample_step(span: u32) -> u32 {
     (span / SAMPLES_PER_CELL).max(1)
 }
 
-impl PixelBuffer {
-    /// Fully transparent buffer.
-    pub fn new(width: u32, height: u32) -> Self {
-        Self::filled(width, height, Rgba8::TRANSPARENT)
-    }
-
-    pub fn filled(width: u32, height: u32, color: Rgba8) -> Self {
-        let n = width as usize * height as usize;
-        Self { width, height, data: vec![color; n] }
-    }
-
-    /// Wrap existing pixels. Returns `None` if `data` is not exactly
-    /// `width * height` long.
-    pub fn from_pixels(width: u32, height: u32, data: Vec<Rgba8>) -> Option<Self> {
-        (data.len() == width as usize * height as usize).then_some(Self { width, height, data })
-    }
-
+impl PixelBuffer<Rgba8> {
     /// Wrap interleaved RGBA bytes.
     pub fn from_rgba_bytes(width: u32, height: u32, bytes: &[u8]) -> Option<Self> {
         let n = width as usize * height as usize;
@@ -70,6 +138,49 @@ impl PixelBuffer {
         }
         let data = bytes.chunks_exact(4).map(|c| Rgba8::new(c[0], c[1], c[2], c[3])).collect();
         Some(Self { width, height, data })
+    }
+
+    /// The same picture at sixteen bits a channel. Exact: nothing is lost and
+    /// nothing is invented, every value simply counted more finely.
+    pub fn to_deep(&self) -> DeepBuffer {
+        DeepBuffer {
+            width: self.width,
+            height: self.height,
+            data: self.data.iter().map(|&c| Rgba16::from_rgba8(c)).collect(),
+        }
+    }
+}
+
+impl PixelBuffer<Rgba16> {
+    /// Back to eight bits, rounding to nearest.
+    ///
+    /// This is where a deep document's precision is spent, so it belongs at
+    /// the edges — writing an eight-bit file, uploading to the screen — and
+    /// not in the middle of a chain of edits.
+    pub fn to_eight(&self) -> PixelBuffer<Rgba8> {
+        PixelBuffer {
+            width: self.width,
+            height: self.height,
+            data: self.data.iter().map(|&c| c.to_rgba8()).collect(),
+        }
+    }
+}
+
+impl<S: Sample> PixelBuffer<S> {
+    /// Fully transparent buffer.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self::filled(width, height, S::CLEAR)
+    }
+
+    pub fn filled(width: u32, height: u32, color: S) -> Self {
+        let n = width as usize * height as usize;
+        Self { width, height, data: vec![color; n] }
+    }
+
+    /// Wrap existing pixels. Returns `None` if `data` is not exactly
+    /// `width * height` long.
+    pub fn from_pixels(width: u32, height: u32, data: Vec<S>) -> Option<Self> {
+        (data.len() == width as usize * height as usize).then_some(Self { width, height, data })
     }
 
     #[inline]
@@ -88,12 +199,12 @@ impl PixelBuffer {
     }
 
     #[inline]
-    pub fn pixels(&self) -> &[Rgba8] {
+    pub fn pixels(&self) -> &[S] {
         &self.data
     }
 
     #[inline]
-    pub fn pixels_mut(&mut self) -> &mut [Rgba8] {
+    pub fn pixels_mut(&mut self) -> &mut [S] {
         &mut self.data
     }
 
@@ -104,13 +215,13 @@ impl PixelBuffer {
     }
 
     #[inline]
-    pub fn row(&self, y: u32) -> &[Rgba8] {
+    pub fn row(&self, y: u32) -> &[S] {
         let start = y as usize * self.width as usize;
         &self.data[start..start + self.width as usize]
     }
 
     #[inline]
-    pub fn row_mut(&mut self, y: u32) -> &mut [Rgba8] {
+    pub fn row_mut(&mut self, y: u32) -> &mut [S] {
         let start = y as usize * self.width as usize;
         let w = self.width as usize;
         &mut self.data[start..start + w]
@@ -119,16 +230,16 @@ impl PixelBuffer {
     /// Out-of-bounds reads return transparent, which keeps sampling loops
     /// branch-light at the edges.
     #[inline]
-    pub fn get(&self, x: i32, y: i32) -> Rgba8 {
+    pub fn get(&self, x: i32, y: i32) -> S {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-            return Rgba8::TRANSPARENT;
+            return S::CLEAR;
         }
         self.data[y as usize * self.width as usize + x as usize]
     }
 
     /// Out-of-bounds writes are dropped.
     #[inline]
-    pub fn set(&mut self, x: i32, y: i32, c: Rgba8) {
+    pub fn set(&mut self, x: i32, y: i32, c: S) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
         }
@@ -136,11 +247,11 @@ impl PixelBuffer {
         self.data[y as usize * w + x as usize] = c;
     }
 
-    pub fn fill(&mut self, color: Rgba8) {
+    pub fn fill(&mut self, color: S) {
         self.data.fill(color);
     }
 
-    pub fn fill_rect(&mut self, rect: IRect, color: Rgba8) {
+    pub fn fill_rect(&mut self, rect: IRect, color: S) {
         let r = rect.intersect(&self.bounds());
         for y in r.y0..r.y1 {
             let row = self.row_mut(y as u32);
@@ -151,8 +262,8 @@ impl PixelBuffer {
     /// Copy out a region, clipped to the buffer. Pixels outside are transparent
     /// so the result is always exactly `rect`-sized — undo snapshots depend on
     /// that to restore without re-clipping.
-    pub fn copy_rect(&self, rect: IRect) -> PixelBuffer {
-        let mut out = PixelBuffer::new(rect.width(), rect.height());
+    pub fn copy_rect(&self, rect: IRect) -> PixelBuffer<S> {
+        let mut out = PixelBuffer::<S>::new(rect.width(), rect.height());
         let clipped = rect.intersect(&self.bounds());
         if clipped.is_empty() {
             return out;
@@ -167,7 +278,7 @@ impl PixelBuffer {
     }
 
     /// Paste `src` with its top-left at `(x, y)`, replacing pixels outright.
-    pub fn paste(&mut self, src: &PixelBuffer, x: i32, y: i32) {
+    pub fn paste(&mut self, src: &PixelBuffer<S>, x: i32, y: i32) {
         let dst_rect = IRect::at(x, y, src.width(), src.height()).intersect(&self.bounds());
         if dst_rect.is_empty() {
             return;
@@ -189,7 +300,7 @@ impl PixelBuffer {
         let (mut x1, mut y1) = (i32::MIN, i32::MIN);
         for y in 0..self.height {
             for (x, px) in self.row(y).iter().enumerate() {
-                if px.a != 0 {
+                if px.alpha() != 0.0 {
                     let x = x as i32;
                     x0 = x0.min(x);
                     x1 = x1.max(x + 1);
@@ -214,9 +325,9 @@ impl PixelBuffer {
     /// cost proportional to the canvas, so a 10000x10000 document spent 150 ms
     /// per stroke step building a 48-pixel picture nobody was looking at that
     /// closely. See [`SAMPLES_PER_CELL`].
-    pub fn downscale(&self, dst_w: u32, dst_h: u32) -> PixelBuffer {
+    pub fn downscale(&self, dst_w: u32, dst_h: u32) -> PixelBuffer<S> {
         let (dst_w, dst_h) = (dst_w.max(1), dst_h.max(1));
-        let mut out = PixelBuffer::new(dst_w, dst_h);
+        let mut out = PixelBuffer::<S>::new(dst_w, dst_h);
         if self.width == 0 || self.height == 0 {
             return out;
         }
@@ -236,11 +347,11 @@ impl PixelBuffer {
                 for sy in (sy0..sy1.min(self.height)).step_by(step_y as usize) {
                     let row = self.row(sy);
                     for sx in (sx0..sx1.min(self.width)).step_by(step_x as usize) {
-                        let px = row[sx as usize];
-                        let af = px.a as f32;
-                        r += px.r as f32 * af;
-                        g += px.g as f32 * af;
-                        b += px.b as f32 * af;
+                        let px = row[sx as usize].to_f32();
+                        let af = px.a;
+                        r += px.r * af;
+                        g += px.g * af;
+                        b += px.b * af;
                         a += af;
                         n += 1.0;
                     }
@@ -249,14 +360,9 @@ impl PixelBuffer {
                     continue;
                 }
                 let c = if a > 0.0 {
-                    Rgba8::new(
-                        (r / a).round() as u8,
-                        (g / a).round() as u8,
-                        (b / a).round() as u8,
-                        (a / n).round() as u8,
-                    )
+                    S::from_f32(Rgba::new(r / a, g / a, b / a, a / n))
                 } else {
-                    Rgba8::TRANSPARENT
+                    S::CLEAR
                 };
                 out.set(dx as i32, dy as i32, c);
             }

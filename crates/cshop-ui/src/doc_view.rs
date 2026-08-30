@@ -237,6 +237,15 @@ impl DocView {
         cshop_gpu::readback::read_as_pixels(gpu, &self.composite, self.doc.bounds())
     }
 
+    /// The same, at sixteen bits a channel.
+    ///
+    /// The compositor works in `Rgba16Float`, so this is not a widened
+    /// eight-bit picture — it is the precision that was there all along and
+    /// was being thrown away on the last step out.
+    pub fn read_composite_deep(&self, gpu: &GpuContext) -> cshop_core::pixels::DeepBuffer {
+        cshop_gpu::readback::read_as_deep(gpu, &self.composite, self.doc.bounds())
+    }
+
     /// Composited colour at a document pixel, for the eyedropper.
     pub fn sample_composite(
         &mut self,

@@ -530,6 +530,7 @@ dependencies = [
 name = "cshop-io"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "cshop-core",
  "image",
  "log",
