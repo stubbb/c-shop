@@ -217,6 +217,7 @@ anything is. This is the whole of it:
 
 ```
 open dog.jpg
+resize fit=1000               # the models see plenty at this size, and it is quicker
 detect                        # → dog 90% at 4,303 632x501; bench 56%
 segment class=dog feather=1   # the dog becomes the selection
 layer via-copy                # lift it onto its own layer

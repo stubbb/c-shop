@@ -30,6 +30,8 @@ pub struct SegmentDialog {
     /// Which of those is being segmented, if the choice came from the list.
     pub chosen: Option<usize>,
     pub feather: f32,
+    /// Grow the mask outward by this many pixels before softening it.
+    pub expand: u32,
     /// The last thing that happened, in words.
     pub status: String,
     /// Whether anything has been applied to the document yet, so Cancel knows
@@ -137,14 +139,27 @@ impl SegmentDialog {
         ui.add_space(8.0);
 
         // --- the edge -------------------------------------------------------
-        let before = self.feather;
-        ui.horizontal(|ui| {
+        //
+        // Both are applied to the mask after the model has spoken, so moving
+        // either costs nothing but the redraw and needs no second look at the
+        // picture. Expand runs first: growing a softened edge would harden it
+        // again, which is not what either control is for.
+        let before = (self.feather, self.expand);
+        // A grid rather than two rows, so the two sliders start at the same
+        // place however long their labels are.
+        egui::Grid::new("segment-edge").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Expand");
+            ui.add(egui::Slider::new(&mut self.expand, 0..=50).suffix(" px")).on_hover_text(
+                "Grow the selection outward. Useful when the edge has cut inside \
+                 the subject, or to leave room for a stroke.",
+            );
+            ui.end_row();
             ui.label("Feather");
-            ui.add(egui::Slider::new(&mut self.feather, 0.0..=40.0).suffix(" px"));
+            ui.add(egui::Slider::new(&mut self.feather, 0.0..=40.0).suffix(" px"))
+                .on_hover_text("Soften the edge of the selection.");
+            ui.end_row();
         });
-        if (self.feather - before).abs() > f32::EPSILON {
-            // Feathering is done here rather than by the model, so it costs
-            // nothing to change and needs no second pass over the picture.
+        if (self.feather - before.0).abs() > f32::EPSILON || self.expand != before.1 {
             actions.push(Action::SegmentPreview);
         }
 

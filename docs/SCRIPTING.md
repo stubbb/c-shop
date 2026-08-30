@@ -78,7 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
-| `segment [class=\|box=\|point=] [feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
+| `segment [class=\|box=\|point=] [expand= feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
 | `style NAME [key=value...]` | Apply a named style — see below. |
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
@@ -102,6 +102,7 @@ the picture in advance:
 
 ```
 open dog.jpg
+resize fit=1000               # the models see plenty at this size, and it is quicker
 detect                        # → dog 90% at 4,303 632x501; bench 56%
 segment class=dog feather=1   # the dog becomes the selection
 layer via-copy                # lift it onto its own layer
@@ -151,7 +152,8 @@ a selection applies to it.
 | `segment box=x0,y0,x1,y1` | Cut out what is in that rectangle. |
 | `segment point=x,y` | Cut out what is at that point; several as `x,y;x,y`. |
 | `segment point=… not-point=x,y` | And exclude what is at these. |
-| `feather=2` | Soften the edge of the result, in pixels. |
+| `expand=3` | Grow the result outward, up to 50 pixels. For an edge that has cut inside the subject, or to leave room for a stroke. |
+| `feather=2` | Soften the edge of the result, in pixels. Applied after `expand=`. |
 | `conf=0.4` | Raise the detector's threshold; 0.25 by default. |
 
 #### Writing a script that cannot see

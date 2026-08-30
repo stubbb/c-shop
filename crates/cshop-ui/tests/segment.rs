@@ -130,3 +130,59 @@ fn cancelling_restores_the_previous_selection() {
     let after = h.app.doc().unwrap().doc.selection.as_ref().map(|s| s.bounds());
     assert_eq!(before, after, "cancel should put the selection back");
 }
+
+/// Expand has to make the selection bigger, and by about what it says.
+#[test]
+fn expand_grows_the_selection_it_was_given() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let Some(mut h) = Harness::new((1400, 820)) else { return };
+    if !open_sample(&mut h, "dog.jpg") {
+        return;
+    }
+    h.app.push(Action::ResizeImage {
+        width: 600,
+        height: 900,
+        filter: cshop_core::resample::Resampling::Bilinear,
+    });
+    h.settle(2);
+    h.app.push(Action::ShowSegment);
+    h.settle(1);
+    if let Dialog::Segment(d) = &mut h.app.dialog {
+        d.add_hint(Vec2::new(270.0, 500.0), true);
+    }
+
+    let run = |h: &mut Harness| {
+        h.app.push(Action::SegmentPreview);
+        for _ in 0..200 {
+            h.settle(1);
+            let Dialog::Segment(d) = &h.app.dialog else { break };
+            if !d.busy {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        h.app.doc().unwrap().doc.selection.as_ref().map(|s| s.bounds()).expect("a selection")
+    };
+
+    let tight = run(&mut h);
+    if let Dialog::Segment(d) = &mut h.app.dialog {
+        d.expand = 8;
+    }
+    let grown = run(&mut h);
+
+    // The second pass reuses the cached embedding, so what is being measured
+    // here is the growing, not the model — it was given the same click twice.
+    //
+    // Every side that has room moves out by the radius asked for. A side
+    // already against the picture's edge has nowhere to go, and on this
+    // photograph the dog runs off the left, so three sides move and one holds.
+    assert_eq!(grown.y0, tight.y0 - 8, "the top should move by the radius: {tight:?} {grown:?}");
+    assert_eq!(grown.y1, tight.y1 + 8, "and the bottom: {tight:?} {grown:?}");
+    assert_eq!(grown.x1, tight.x1 + 8, "and the right: {tight:?} {grown:?}");
+    assert!(
+        (tight.x0 - 8..=tight.x0).contains(&grown.x0),
+        "and the left by no more, however much room it had: {tight:?} {grown:?}"
+    );
+}

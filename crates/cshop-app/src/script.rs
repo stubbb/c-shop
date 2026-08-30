@@ -1339,6 +1339,10 @@ impl Runner {
         self.need_doc()?;
         let conf = cmd.f32("conf")?.unwrap_or(0.25);
         let feather = cmd.f32("feather")?.unwrap_or(0.0);
+        let expand = cmd.u32("expand")?.unwrap_or(0);
+        if expand > 50 {
+            return Err("expand goes up to 50 pixels".to_string());
+        }
 
         let prompt = if let Some(name) = cmd.opt("class") {
             Prompt::Class(name.to_string())
@@ -1409,6 +1413,11 @@ impl Runner {
             }
         }
         let mut selection = cshop_core::selection::Selection::from_mask(coverage);
+        // Grown before softened: expanding an already-soft edge hardens it,
+        // which is not what either option is asked for.
+        if expand > 0 {
+            selection.expand(expand);
+        }
         if feather > 0.0 {
             selection.feather(feather);
         }
@@ -1416,6 +1425,18 @@ impl Runner {
             return Err("the segmenter returned an empty mask".into());
         }
         let bounds = selection.bounds();
+        // Measured on the selection that is actually set, not on the mask the
+        // model returned: `expand` and `feather` both move this, and a caller
+        // deciding whether to trust the result is reading this number.
+        let covered = {
+            let mut sum = 0u64;
+            for y in bounds.y0..bounds.y1 {
+                for x in bounds.x0..bounds.x1 {
+                    sum += selection.coverage(x, y) as u64;
+                }
+            }
+            sum as f32 / (255.0 * w as f32 * h as f32)
+        };
 
         let Some(view) = self.app.doc_mut() else { return Err("no document".into()) };
         let dirty = view.history.apply(
@@ -1432,7 +1453,7 @@ impl Runner {
         };
         Ok(format!(
             "segmented {what}: {:.1}% of the image, {}x{} at {},{}, confidence {:.2}",
-            result.coverage * 100.0,
+            covered * 100.0,
             bounds.width(),
             bounds.height(),
             bounds.x0,

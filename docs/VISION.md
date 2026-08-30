@@ -66,6 +66,7 @@ no second vocabulary to learn.
 | `segment box=x0,y0,x1,y1` | Cut out what is in that rectangle. |
 | `segment point=x,y` | Cut out what is at that point. Several as `x,y;x,y`. |
 | `segment point=… not-point=x,y` | And exclude what is at these. |
+| `segment … expand=3` | Grow the result outward, up to 50 pixels. |
 | `segment … feather=2` | Soften the edge of the result, in pixels. |
 
 With nothing said, `segment` uses whatever `detect` last found — which is the
@@ -75,9 +76,12 @@ whole point of running them in sequence.
 
 **Select ▸ Segment Object…** opens a window that is not modal, because the
 canvas is its control as well as its preview. Click the thing you want; the
-selection appears. Click again to refine, Alt-click to say "not this", and drag
-the feather slider to soften the edge. *Find objects* lists what the detector
-recognises, if anything, so a dog can be chosen by name instead of by aim.
+selection appears. Click again to refine, Alt-click to say "not this", and use
+the two sliders on the edge: *Expand* grows the selection outward, for when the
+model has cut a little inside the subject, and *Feather* softens it. Both work
+on the mask the model has already returned, so neither costs a second look at
+the picture. *Find objects* lists what the detector recognises, if anything, so
+a dog can be chosen by name instead of by aim.
 
 Cancel puts the selection back as it was.
 

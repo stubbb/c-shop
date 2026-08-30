@@ -812,3 +812,14 @@ fn segment_tells_apart_no_detection_from_an_empty_one() {
         "it should say the detection was empty, not that there was none: {note}"
     );
 }
+
+/// The expand option is bounded, and says so before it goes near a model.
+#[test]
+fn segment_will_not_expand_past_its_range() {
+    let Some(report) = run("new 60 60\nsegment point=30,30 expand=60") else { return };
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    assert!(
+        note.contains("expand goes up to 50 pixels"),
+        "it should name the limit rather than try: {note}"
+    );
+}

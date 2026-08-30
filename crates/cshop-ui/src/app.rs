@@ -2775,9 +2775,9 @@ impl CShopApp {
     /// Run the segmenter for whatever the window has been told, on another
     /// thread, and show the result as the selection when it arrives.
     fn segment_preview(&mut self) {
-        let (prompt, feather) = {
+        let (prompt, feather, expand) = {
             let Dialog::Segment(d) = &self.dialog else { return };
-            (d.prompt(), d.feather)
+            (d.prompt(), d.feather, d.expand)
         };
         let Some(prompt) = prompt else {
             // Nothing to go on: put the selection back as it was.
@@ -2823,6 +2823,10 @@ impl CShopApp {
                         }
                     }
                     let mut selection = cshop_core::selection::Selection::from_mask(coverage);
+                    // Grown first, softened second — see the window's own note.
+                    if expand > 0 {
+                        selection.expand(expand);
+                    }
                     if feather > 0.0 {
                         selection.feather(feather);
                     }
