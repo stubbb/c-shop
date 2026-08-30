@@ -233,7 +233,7 @@ goes on CPU-side filtering and encoding rather than on compositing. Pass
 [docs/DEPLOY.md](docs/DEPLOY.md) covers fonts, the token, workspace ownership
 and sizing, with the measurements behind that claim.
 
-### Recognising and cutting out
+### Recognising, cutting out and cleaning up
 
 An optional pack adds three neural networks — one that finds objects and says
 where they are, one that turns a point or a box into a mask, and one that
@@ -271,13 +271,43 @@ it becomes the selection, click again to refine, Alt-click to exclude, and a
 slider softens the edge. `segment` leaves an ordinary selection either way, so
 everything the editor already does with one applies.
 
-**Filter ▸ Remove Noise…** is the third: SCUNet, a Swin transformer inside a
-UNet, over the layer or over the selection. It costs about twenty-six thousand
-pixels a second, which is why the selection matters and why the window says how
-long it will take before you commit to it — and why the model runs once, behind
-a progress bar, with the strength mixed back afterwards rather than guessed at
-beforehand. On a photograph with noise added at σ=22 it goes from 21.96 dB to
-34.72 dB.
+### Removing noise
+
+The third model is SCUNet — Swin transformer blocks inside a UNet — reached
+from **Filter ▸ Remove Noise…** or from `denoise`. A phone photograph of a
+hillside at night, twelve megapixels, taken at the sort of ISO that turns a sky
+into confetti:
+
+```
+open noise1.jpg
+denoise     # → removed noise: 252 tiles, moved 7.5 levels a channel
+```
+
+![The whole frame, before and after](docs/example-noise-full.jpg)
+
+Even shrunk to fit here the sky is a different thing on the right, and the
+clouds the noise was hiding come back. The blue square marks the part below, at
+one pixel to one pixel:
+
+![The marked detail, before and after](docs/example-noise-detail.jpg)
+
+The magenta-and-green confetti is gone and the houses are still houses —
+window frames, roof lines, the railing along the terrace, the individual street
+lights. Measured as high-frequency energy, the sky lost 92% of what it had and
+the town only 79%, which is the difference between noise and detail showing up
+as a number.
+
+It is honest about what it costs. That frame took **7 minutes 40 seconds**; the
+window said "about 8 minutes" before starting, from a rate measured on quite
+different pictures, so the warning is worth believing. Most of any photograph
+does not need this, so select the part that does and it is seconds instead. And because the model runs *once*,
+with **strength** mixing its answer back afterwards, the question of how much
+of it you want is settled against the finished picture rather than guessed at
+beforehand.
+
+The trade is real and worth knowing: what removes sensor noise also softens
+fine texture that resembles it. Deep foliage goes slightly painterly here. That
+is what `strength` is for.
 
 The models run in a separate process, so the editor keeps its single-binary,
 no-dependency, offline build whether they are installed or not.

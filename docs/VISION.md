@@ -144,6 +144,17 @@ noisy     21.96 dB
 denoised  34.72 dB      (+12.76)
 ```
 
+And on a real one — a phone at night, twelve megapixels, at one pixel to one
+pixel:
+
+![Before and after, at full resolution](example-noise-detail.jpg)
+
+Where there is no reference to measure against, high-frequency energy stands in
+for it. Across that frame the sky lost 92% of what it had and the town below it
+only 79%: the same pass, told apart by whether what it found was noise or a
+window frame. The whole twelve megapixels took 7 minutes 40 seconds, against
+the 8 minutes the window predicted from the rate above.
+
 The picture is taken in overlapping tiles of 256 pixels, each weighted by a
 taper that falls to nothing at its edge, so tiles cross-fade instead of butting
 up against each other with slightly different ideas about the noise. That it
