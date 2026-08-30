@@ -534,8 +534,9 @@ pub struct Runner {
     /// Prefixes the steps a style runs, so a failure inside one says which.
     trail: Vec<String>,
     /// What `detect` last found, so `segment` can follow it without repeating
-    /// the prompt.
-    detected: Vec<cshop_ui::vision::Found>,
+    /// the prompt. `None` until one has run, which is a different thing from
+    /// one that ran and found nothing — and the two want different advice.
+    detected: Option<Vec<cshop_ui::vision::Found>>,
 }
 
 /// Run a script and return what happened.
@@ -563,7 +564,7 @@ impl Runner {
             report: Report::default(),
             depth: 0,
             trail: Vec::new(),
-            detected: Vec::new(),
+            detected: None,
         }
     }
 
@@ -1305,6 +1306,7 @@ impl Runner {
                 format!("no {classes}")
             };
             self.report.facts.push(("detect".into(), what.clone()));
+            self.detected = Some(Vec::new());
             return Ok(format!("found {what}"));
         }
 
@@ -1323,7 +1325,7 @@ impl Runner {
             lines.push(line);
         }
         // Kept so `segment` with no prompt can use what was just found.
-        self.detected = found;
+        self.detected = Some(found);
         Ok(format!("found {}: {}", lines.len(), lines.join("; ")))
     }
 
@@ -1362,10 +1364,17 @@ impl Runner {
                 Ok(out)
             };
             Prompt::Points(points("point")?, points("not-point")?)
-        } else if let Some(found) = self.detected.first() {
+        } else if let Some(found) = self.detected.as_ref().and_then(|f| f.first()) {
             // Straight after `detect`, with nothing else said, segment what it
             // found — which is the whole point of running them in sequence.
             Prompt::Box(found.box_)
+        } else if self.detected.is_some() {
+            // A `detect` ran and came back empty. Saying "there was no detect"
+            // would send the caller looking for the wrong mistake.
+            return Err(
+                "the last `detect` found nothing to segment; name a class, a box or a point"
+                    .to_string(),
+            );
         } else {
             return Err(
                 "segment needs class=, box=, point=, or a `detect` before it".to_string()

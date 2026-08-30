@@ -212,11 +212,32 @@ where they are, one that turns a point or a box into a mask:
 vision/setup.sh
 ```
 
-**Select ▸ Segment Object…** opens a window where clicking the thing you want
-makes it the selection; click again to refine, Alt-click to exclude, and a
-slider softens the edge. From a script the two work in sequence — `detect` to
-find a dog, `segment` to cut it out — and the result is an ordinary selection,
-so everything the editor already does with one applies.
+Together they take a photograph to a cut-out without anyone having to say where
+anything is. This is the whole of it:
+
+```
+open dog.jpg
+detect                        # → dog 90% at 4,303 632x501; bench 56%
+segment class=dog feather=1   # the dog becomes the selection
+layer via-copy                # lift it onto its own layer
+layer select 0
+layer delete                  # drop the background
+export dog.png                # PNG keeps the transparency
+```
+
+| | | |
+|---|---|---|
+| ![The photograph](docs/example-dog-before.jpg) | ![What the detector found](docs/example-dog-detect.jpg) | ![The dog on transparency](docs/example-dog-cutout.jpg) |
+| the photograph | what `detect` found | what `segment` cut out |
+
+The middle picture is drawn by C-Shop from the detector's own answer — the
+boxes and labels are `shape` and `text` commands — so the whole illustration is
+the editor describing its own work.
+
+**Select ▸ Segment Object…** does the same by hand: click the thing you want and
+it becomes the selection, click again to refine, Alt-click to exclude, and a
+slider softens the edge. `segment` leaves an ordinary selection either way, so
+everything the editor already does with one applies.
 
 The models run in a separate process, so the editor keeps its single-binary,
 no-dependency, offline build whether they are installed or not.

@@ -97,23 +97,104 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 
 Two models, installed separately — see [VISION.md](VISION.md). One says what is
 in a picture and where; the other turns a point or a box into a mask. Together
-they take a photograph to a cut-out:
+they take a photograph to a cut-out without the caller knowing anything about
+the picture in advance:
+
+```
+open dog.jpg
+detect                        # → dog 90% at 4,303 632x501; bench 56%
+segment class=dog feather=1   # the dog becomes the selection
+layer via-copy                # lift it onto its own layer
+layer select 0
+layer delete                  # drop the background
+export dog.png                # PNG keeps the transparency
+```
+
+| | | |
+|---|---|---|
+| ![The photograph](example-dog-before.jpg) | ![What the detector found](example-dog-detect.jpg) | ![The dog on transparency](example-dog-cutout.jpg) |
+| the photograph | what `detect` found | what `segment` cut out |
+
+The middle picture was drawn by this same harness: the boxes and labels are
+`shape` and `text` commands fed from the detector's own answer.
+
+#### What a caller gets back
+
+`detect` puts one fact per object into the report, so a caller reading the JSON
+does not have to parse prose:
+
+```json
+"facts": {
+  "detect dog":   "dog 90% at 4,303 632x501",
+  "detect bench": "bench 56% at 0,511 667x472"
+}
+```
+
+The box is `x,y` of its top-left then `width x height`, in document pixels
+after any `resize` — the same coordinates `shape`, `text` and `select` take, so
+a detection can be fed straight into them without conversion. Finding nothing
+is not a failure: the fact reads `nothing the detector knows` and the run
+carries on.
+
+`segment` reports what it did in its step note — the class, the share of the
+image covered, the bounds of the result and the model's own confidence — and
+leaves the mask as the **selection**. That is the important part of the design:
+there is no new noun to learn, because everything the editor already does with
+a selection applies to it.
+
+#### Prompting it
+
+| | |
+|---|---|
+| `segment class=dog` | Detect that class and cut out the best match. |
+| `segment` | Cut out whatever `detect` last found. |
+| `segment box=x0,y0,x1,y1` | Cut out what is in that rectangle. |
+| `segment point=x,y` | Cut out what is at that point; several as `x,y;x,y`. |
+| `segment point=… not-point=x,y` | And exclude what is at these. |
+| `feather=2` | Soften the edge of the result, in pixels. |
+| `conf=0.4` | Raise the detector's threshold; 0.25 by default. |
+
+#### Writing a script that cannot see
+
+Three things are worth knowing before pointing an agent at this.
+
+**The detector knows eighty kinds of thing and no others.** A sky, a mountain,
+a road, a building, a plant: none of them are on the list, and `detect` on a
+landscape comes back empty. That is not a failure to handle by retrying with a
+lower threshold — it is the wrong tool for that subject. The segmenter has no
+list at all, so `segment point=x,y` works on anything; but a point has to be
+chosen, and choosing one without seeing the picture is guesswork. Prefer
+`class=` where a class exists, and expect to look at the result where it does
+not.
+
+**Check the coverage before trusting it.** The step note says what share of the
+image the mask took. A subject that should be a fifth of the frame coming back
+at 95% means the model read the prompt as "everything", and a result of 0%
+means it found no boundary there. Both are worth reacting to rather than
+exporting.
+
+**Refine with points rather than re-running.** Asked about a box, the model
+answers "the object in this box" — a dog on a bench, boxed together, can come
+back as one thing. A second call with `not-point=` on the part you do not want
+costs nothing extra, because the expensive half of the work is cached against
+the image.
+
+A shape that survives all three:
 
 ```
 open photo.jpg
-detect                          # what is in here?
-segment class=dog feather=1     # cut that out, softening the edge
-layer via-copy                  # lift the selection onto its own layer
+resize fit=1600          # smaller is faster, and the models see plenty
+detect class=person
+segment feather=1
+layer via-copy
 layer select 0
-layer delete                    # drop the background
-export dog.png                  # PNG keeps the transparency
+layer delete
+export person.png
 ```
 
-`segment` leaves a selection rather than a layer, so everything the editor
-already does with one applies. The detector knows eighty kinds of thing and no
-others, so a sky or a building comes back empty from `detect` — but
-`segment point=x,y` works on anything, because the segmenter does not know or
-care what it is looking at.
+`resize` first is worth doing: the models work at about a thousand pixels
+whatever they are given, so a print-size photograph costs time in the reading
+and buys nothing in the answer.
 
 ### Paths and boolean operations
 

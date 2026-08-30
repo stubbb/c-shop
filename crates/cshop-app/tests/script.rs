@@ -786,3 +786,29 @@ fn detect_then_segment_isolates_what_was_found() {
     );
     let _ = std::fs::remove_file(&out);
 }
+
+/// "There was no detect" and "the detect found nothing" are different
+/// mistakes, and a caller that cannot see the picture needs to be told which.
+#[test]
+fn segment_tells_apart_no_detection_from_an_empty_one() {
+    let Some(report) = run("new 60 60\nsegment") else { return };
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    if note.contains("not installed") || note.contains("setup.sh") {
+        return;
+    }
+    assert!(note.contains("or a `detect` before it"), "{note}");
+
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    // A detect that runs and finds nothing must say so rather than claim it
+    // never ran.
+    let Some(report) = run("new 200 200 background=white\ndetect class=person\nsegment") else {
+        return;
+    };
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    assert!(
+        note.contains("found nothing to segment"),
+        "it should say the detection was empty, not that there was none: {note}"
+    );
+}
