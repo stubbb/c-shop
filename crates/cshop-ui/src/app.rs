@@ -116,6 +116,9 @@ pub struct CShopApp {
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
+    /// The hole being filled in, while the model works on it.
+    #[allow(clippy::type_complexity)]
+    inpaint_job: Option<std::sync::mpsc::Receiver<Result<(LayerId, PixelBuffer), String>>>,
     /// The map the labeller wrote, kept between looking and separating.
     separate_map: Option<PixelBuffer>,
     /// The labeller, while it looks: what it found and the map it wrote.
@@ -222,6 +225,7 @@ impl CShopApp {
             upscale_job: None,
             separate_job: None,
             separate_map: None,
+            inpaint_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -350,6 +354,7 @@ impl CShopApp {
         self.poll_denoise(&ctx);
         self.poll_upscale(&ctx);
         self.poll_separate(&ctx);
+        self.poll_inpaint(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -1365,6 +1370,8 @@ impl CShopApp {
                     ));
                 }
             }
+            Action::FillInSelection => self.start_inpaint(),
+
             Action::ShowSeparate => {
                 let picked = self.doc().and_then(|v| {
                     let id = v.doc.active?;
@@ -2924,6 +2931,112 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Hand the selection to the model as a hole to fill in.
+    ///
+    /// On a thread, because it is a couple of seconds and a window that stops
+    /// answering for a couple of seconds is a window that looks broken.
+    fn start_inpaint(&mut self) {
+        if self.inpaint_job.is_some() {
+            return;
+        }
+        let picked = self.doc().and_then(|v| {
+            let id = v.doc.active?;
+            let layer = v.doc.tree.get(id)?;
+            let pixels = layer.pixels()?.clone();
+            let selection = v.doc.selection.clone()?;
+            Some((id, layer.offset, pixels, selection))
+        });
+        let Some((id, offset, source, selection)) = picked else {
+            self.fail("Filling in needs a selection on a layer with pixels in it");
+            return;
+        };
+
+        let (w, h) = (source.width(), source.height());
+        let mut mask = PixelBuffer::filled(w, h, Rgba8::BLACK);
+        let mut any = false;
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                if selection.coverage(x + offset.0, y + offset.1) > 127 {
+                    mask.set(x, y, Rgba8::WHITE);
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            self.fail("The selection does not overlap this layer");
+            return;
+        }
+
+        self.notify("Filling in…");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let input = dir.join("source.png");
+                let mask_path = dir.join("mask.png");
+                let output = dir.join("filled.png");
+                cshop_io::save(&input, &source, 100)
+                    .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                cshop_io::save(&mask_path, &mask, 100)
+                    .map_err(|e| format!("could not write the mask: {e}"))?;
+                let path = crate::vision::inpaint(&input, &mask_path, &output)?;
+                let filled = cshop_io::load(&path)
+                    .map_err(|e| format!("could not read the filled image back: {e}"))?;
+
+                // Alpha is the layer's own; the model works in RGB and has no
+                // opinion about coverage.
+                let mut pixels = source.clone();
+                for y in 0..h as i32 {
+                    for x in 0..w as i32 {
+                        if mask.get(x, y).r > 127 {
+                            let c = filled.get(x, y);
+                            let a = pixels.get(x, y).a;
+                            pixels.set(x, y, Rgba8::new(c.r, c.g, c.b, a));
+                        }
+                    }
+                }
+                Ok((id, pixels))
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = tx.send(result);
+        });
+        self.inpaint_job = Some(rx);
+    }
+
+    pub fn poll_inpaint(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.inpaint_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(_) => {
+                self.inpaint_job = None;
+                self.fail("The model stopped without answering");
+            }
+            Ok(Err(why)) => {
+                self.inpaint_job = None;
+                self.fail(why);
+            }
+            Ok(Ok((id, pixels))) => {
+                self.inpaint_job = None;
+                let Some(view) = self.doc_mut() else { return };
+                let Some(layer) = view.doc.tree.get(id) else { return };
+                let (offset, mask) = (layer.offset, layer.mask.clone());
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                        id, pixels, offset, mask, "Fill In",
+                    )),
+                );
+                view.mark_dirty(dirty);
+                view.invalidate();
+                self.notify("Filled in");
+            }
+        }
+    }
+
     /// Ask the labeller what is in the picture, on a thread.
     ///
     /// Half a second, but on the frame thread half a second is a visible

@@ -22,6 +22,9 @@ Two models:
 * **Real-ESRGAN** enlarges. Four times up, inventing the detail that a bigger
   sensor would have recorded — which is why it is judged by eye rather than by
   arithmetic; see `upscale`.
+* **LaMa** fills a hole in with what was probably behind it. Given a picture
+  and a mask it invents the covered part from the rest, which is how an object
+  is removed rather than merely painted over — see `inpaint`.
 * **SegFormer** labels every pixel with what it is: a hundred and fifty kinds
   of thing, and pointedly the kinds YOLO has never heard of — sky, mountain,
   road, building, water, plant. It says *what and roughly where*; it does not
@@ -586,6 +589,19 @@ def upscale(image_path, out_path, scale):
     }
 
 
+# LaMa's frame, which is not negotiable: the export is fixed at 512 square.
+# Its mask is 1 where the picture should be invented and 0 where it should be
+# left, and it returns the untouched part bit for bit — so the compositing is
+# the model's job rather than this file's.
+LAMA_SIDE = 512
+
+# How much of the surroundings to hand it along with the hole. Inpainting is
+# entirely a question of what is *around* the hole, so a crop that hugs the
+# mask gives it nothing to go on; half the hole's size again on each side is
+# enough context without throwing away resolution on a large picture.
+LAMA_CONTEXT = 0.5
+
+
 # ---------------------------------------------------------------------------
 # Labelling every pixel
 # ---------------------------------------------------------------------------
@@ -645,6 +661,84 @@ def classify(image_path, out_path, top=8):
     return {"ok": True, "map": out_path, "width": width, "height": height, "regions": found}
 
 
+# ---------------------------------------------------------------------------
+# Filling a hole in
+# ---------------------------------------------------------------------------
+
+
+def inpaint(image_path, mask_path, out_path):
+    """Invent what was behind whatever the mask covers.
+
+    Worked on a crop rather than the whole picture. The model only ever sees
+    512 square, so handing it a forty megapixel frame would mean scaling the
+    whole thing down to that and scaling the answer back up — the fill would
+    arrive as a soft smear whatever its shape. A crop around the hole, with
+    room either side for context, spends those 512 pixels where they matter.
+
+    Only the masked pixels are written back. Everything else is the original,
+    untouched by any resampling, which is what keeps the seam invisible: there
+    is no seam, because nothing outside the hole was replaced.
+    """
+    import numpy as np
+    from PIL import Image
+
+    sess = session("lama.onnx")
+    names = [i.name for i in sess.get_inputs()]
+
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    mask = Image.open(mask_path).convert("L").resize((width, height), Image.NEAREST)
+    m = np.asarray(mask, np.uint8) > 127
+    if not m.any():
+        fail("there is nothing selected to fill in")
+
+    ys, xs = np.nonzero(m)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    pad_y = max(int((y1 - y0) * LAMA_CONTEXT), 16)
+    pad_x = max(int((x1 - x0) * LAMA_CONTEXT), 16)
+    cy0, cy1 = max(0, y0 - pad_y), min(height, y1 + pad_y)
+    cx0, cx1 = max(0, x0 - pad_x), min(width, x1 + pad_x)
+
+    crop = image.crop((cx0, cy0, cx1, cy1))
+    crop_mask = Image.fromarray((m[cy0:cy1, cx0:cx1] * 255).astype(np.uint8), "L")
+    small = np.asarray(crop.resize((LAMA_SIDE, LAMA_SIDE), Image.BILINEAR), np.float32) / 255.0
+    small_mask = np.asarray(
+        crop_mask.resize((LAMA_SIDE, LAMA_SIDE), Image.NEAREST), np.float32
+    )
+    small_mask = (small_mask > 127).astype(np.float32)
+
+    out = sess.run(
+        None,
+        {names[0]: small.transpose(2, 0, 1)[None], names[1]: small_mask[None, None]},
+    )[0][0]
+    filled = out.transpose(1, 2, 0)
+    # The export hands back 0..255 rather than 0..1, which is worth checking
+    # rather than assuming: a wrong guess here is a black picture.
+    if float(filled.max()) > 1.5:
+        filled = filled / 255.0
+    filled = np.clip(filled, 0.0, 1.0)
+
+    back = Image.fromarray((filled * 255.0 + 0.5).astype(np.uint8), "RGB").resize(
+        (cx1 - cx0, cy1 - cy0), Image.BICUBIC
+    )
+    whole = np.asarray(image).copy()
+    patch = np.asarray(back)
+    region = m[cy0:cy1, cx0:cx1]
+    whole[cy0:cy1, cx0:cx1][region] = patch[region]
+    Image.fromarray(whole, "RGB").save(out_path)
+
+    return {
+        "ok": True,
+        "path": out_path,
+        "width": width,
+        "height": height,
+        "filled": [x0, y0, x1, y1],
+        "context": [cx0, cy0, cx1, cy1],
+        "pixels": int(m.sum()),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -655,6 +749,11 @@ def main():
     d.add_argument("--image", required=True)
     d.add_argument("--conf", type=float, default=0.25)
     d.add_argument("--classes", default="", help="comma-separated, to keep only these")
+
+    p_ = sub.add_parser("inpaint", help="fill a hole in with what was behind it")
+    p_.add_argument("image")
+    p_.add_argument("--mask", required=True)
+    p_.add_argument("--out", required=True)
 
     c = sub.add_parser("classify", help="label every pixel with what it is")
     c.add_argument("image")
@@ -695,6 +794,7 @@ def main():
                 "scunet_color_real_psnr.onnx.data",
                 "realesr-general-x4v3.onnx",
                 "segformer-ade.onnx",
+                "lama.onnx",
             )
             if not os.path.exists(os.path.join(MODELS, n))
         ]
@@ -720,6 +820,10 @@ def main():
                 fail(f"{v!r} is not an x,y point")
             out.append((x, y))
         return out
+
+    if args.command == "inpaint":
+        print(json.dumps(inpaint(args.image, args.mask, args.out)))
+        return
 
     if args.command == "classify":
         print(json.dumps(classify(args.image, args.out)))

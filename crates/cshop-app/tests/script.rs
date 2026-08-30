@@ -1183,3 +1183,56 @@ fn separate_names_what_it_did_find() {
     assert!(note.contains("nothing matched"), "{note}");
     assert!(note.contains("This picture holds"), "it should say what is there: {note}");
 }
+
+// --- filling a hole in -----------------------------------------------------
+
+#[test]
+fn inpaint_needs_a_selection_to_fill() {
+    let Some(report) = run("new 96 96 background=#405070\ninpaint") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("needs a selection"), "{:?}", notes(&report));
+}
+
+/// The whole point: what is selected disappears and what is not is left to the
+/// bit, because the model hands the rest back untouched.
+#[test]
+fn inpaint_fills_the_selection_and_leaves_the_rest() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cshop-fill-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let before = dir.join("before.png");
+    let after = dir.join("after.png");
+
+    let Some(report) = run(&format!(
+        "new 160 160 background=#3a5a80\ngradient 0 0 160 160 from=#203040 to=#e0d0b0\n\
+         export {}\nselect 50 50 60 60\ninpaint\nselect none\nexport {}",
+        before.display(),
+        after.display()
+    )) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[4].note.contains("filled in 60x60 at 50,50"), "{:?}", notes(&report));
+
+    let a = cshop_io::load(&before).unwrap();
+    let b = cshop_io::load(&after).unwrap();
+    let mut outside = 0;
+    let mut inside = 0;
+    for y in 0..160i32 {
+        for x in 0..160i32 {
+            let hole = (50..110).contains(&x) && (50..110).contains(&y);
+            if a.get(x, y) != b.get(x, y) {
+                if hole {
+                    inside += 1;
+                } else {
+                    outside += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(outside, 0, "{outside} pixels outside the hole moved");
+    assert!(inside > 0, "the hole should have been filled");
+    let _ = std::fs::remove_dir_all(&dir);
+}

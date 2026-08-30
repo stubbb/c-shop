@@ -10,10 +10,11 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
-An optional **deep-learning pack** adds five neural networks to that: one that
+An optional **deep-learning pack** adds six neural networks to that: one that
 finds objects and names them, one that turns a point or a box into a mask, one
-that labels every pixel with what it is, one that takes the noise out of a
-photograph and one that enlarges it. So "cut the
+that labels every pixel with what it is, one that fills a hole in with what was
+behind it, one that takes the noise out of a photograph and one that enlarges
+it. So "cut the
 dog out of this picture" and "clean up this sky" become things the editor can
 be asked for rather than things someone has to do by hand. They run in a process of their
 own, so the editor keeps its single-binary, no-dependency build whether they
@@ -236,9 +237,10 @@ and sizing, with the measurements behind that claim.
 
 ### Recognising, cutting out and cleaning up
 
-An optional pack adds five neural networks — one that finds objects and says
+An optional pack adds six neural networks — one that finds objects and says
 where they are, one that turns a point or a box into a mask, one that labels
-every pixel with what it is, one that removes noise and one that enlarges:
+every pixel with what it is, one that fills a hole in, one that removes noise
+and one that enlarges:
 
 ```sh
 vision/setup.sh
@@ -309,6 +311,28 @@ beforehand.
 The trade is real and worth knowing: what removes sensor noise also softens
 fine texture that resembles it. Deep foliage goes slightly painterly here. That
 is what `strength` is for.
+
+### Making something disappear
+
+Three of them compose into the thing people actually want:
+
+```
+open dog.jpg
+detect class=dog             # → found 1: dog 90% at 4,274 569x450
+segment class=dog expand=6   # the dog becomes the selection
+inpaint                      # → filled in 574x455 at 0,272
+```
+
+![The dog, and the bench without it](docs/example-fill-in.jpg)
+
+Seven seconds, and nobody had to say where anything was. There is no seam
+because nothing outside the hole is replaced — the model hands the rest back
+bit for bit, and a test asserts that not one pixel outside the selection may
+differ.
+
+It continues what surrounds the hole and does nothing else: no prompt, no
+diffusion, nothing that takes minutes on a processor. **Remove this**, not
+**imagine that**. **Edit ▸ Fill In Selection** does the same by hand.
 
 ### Separating a picture by what is in it
 
@@ -387,7 +411,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-777 tests, and the interesting ones are not unit tests:
+781 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

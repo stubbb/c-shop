@@ -330,6 +330,8 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Make what is selected disappear, inventing what was behind it.
+    FillInSelection,
     /// Open the separate-by-content window and start looking.
     ShowSeparate,
     /// Make a layer from each kind of thing that was ticked.

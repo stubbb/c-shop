@@ -22,10 +22,11 @@ fi
 echo "  installing onnxruntime, numpy, pillow"
 "$venv/bin/pip" install --quiet --upgrade --no-input onnxruntime numpy pillow
 
-# Five models. YOLOv8n finds things and says where they are; MobileSAM turns a
-# point or a box into a mask; SCUNet takes the noise out of a photograph;
-# Real-ESRGAN enlarges one; SegFormer says what every pixel is. All ONNX so
-# that the runtime is the only dependency — no PyTorch, no CUDA, no compiler.
+# Six models. YOLOv8n finds things and says where they are; MobileSAM turns a
+# point or a box into a mask; SegFormer says what every pixel is; SCUNet takes
+# the noise out of a photograph; Real-ESRGAN enlarges one; LaMa fills a hole in
+# with what was probably behind it. All ONNX so that the runtime is the only
+# dependency — no PyTorch, no CUDA, no compiler.
 fetch() {
     local name="$1" url="$2"
     if [ -s "$models/$name" ]; then
@@ -59,6 +60,11 @@ fetch realesr-general-x4v3.onnx \
 # never heard of. The full-precision export rather than the quantised one,
 # which is a third of the size and uses an operator this runtime does not
 # implement — it loads and then refuses, which is a poor way to find out.
+# LaMa, for filling a hole in. Two hundred megabytes, and the largest thing
+# here by some way; it is also the only one that can make an object disappear.
+fetch lama.onnx \
+    "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
+
 fetch segformer-ade.onnx \
     "https://huggingface.co/onnx-community/segformer-b3-finetuned-ade-512-512-ONNX/resolve/main/onnx/model.onnx"
 

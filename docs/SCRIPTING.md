@@ -78,6 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `inpaint` | Make the selection disappear, inventing what was behind it. Needs the [vision pack](VISION.md). |
 | `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
 | `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
 | `denoise [strength=]` | Remove noise from the active layer, or from the selection. Needs the [vision pack](VISION.md). |
@@ -167,6 +168,29 @@ this can run it on a small selection first and read that number.
 It is worth reaching for: the model is very good on sensor noise and grain, and
 will also quietly remove fine texture that resembles them — skin pores, distant
 foliage, fabric weave.
+
+### Making something disappear
+
+`inpaint` takes the selection as a hole and fills it with what was probably
+behind it. It composes with the other two into the thing an agent is usually
+actually asked for:
+
+```
+detect class=car
+segment class=car expand=6
+inpaint            # → filled in 574x455 at 0,272
+```
+
+Nothing outside the selection changes — the model returns the rest of the
+picture bit for bit — so there is no seam to blend and no feathering to tune.
+Do feather or expand the *selection* a little: a mask that hugs an object
+leaves its own edge behind for the model to continue.
+
+It continues what surrounds the hole and does nothing else. There is no prompt,
+because there is no text encoder and no diffusion model in this pack — both
+would take minutes a picture on a processor rather than seconds. It is
+**remove this**, not **imagine that**, and a large hole in something detailed
+comes back soft, which is the model admitting it does not know.
 
 ### Separating a picture by what is in it
 

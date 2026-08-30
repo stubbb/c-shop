@@ -6,12 +6,12 @@ Two neural networks, as something you opt into.
 vision/setup.sh
 ```
 
-That is the whole installation: a Python environment and about 130 MB of model
-weights, under `~/.cache/cshop/vision` — half a gigabyte all told, most of it
-the runtime rather than the models. Nothing in the editor needs it: open, edit
-and save behave exactly as before whether it is there or not, and only five
-commands — `detect`, `segment`, `denoise`, `upscale` and `separate` — and four
-windows ask for it.
+That is the whole installation: a Python environment and about 510 MB of model
+weights, under `~/.cache/cshop/vision`, which comes to a little under a
+gigabyte with the runtime. Nothing in the editor needs it: open, edit
+and save behave exactly as before whether it is there or not, and only six
+commands — `detect`, `segment`, `denoise`, `upscale`, `separate` and `inpaint`
+— and four windows ask for it.
 
 ## Why it is a separate process
 
@@ -40,6 +40,10 @@ where to look.
 
 Which is why they are better together than either alone: YOLO finds the dog
 and says where, SAM cuts it out.
+
+**LaMa** fills a hole in with what was probably behind it. Given a picture and
+a mask it invents the covered part from what surrounds it, which is how an
+object is *removed* rather than merely painted over.
 
 **SegFormer** labels every pixel with what it is — a hundred and fifty kinds of
 thing from [ADE20K][ade], and pointedly the kinds YOLO has never heard of: sky,
@@ -185,6 +189,51 @@ sensor noise and grain, and it will also quietly remove fine texture that
 happens to resemble them — skin pores, distant foliage, fabric weave. That is
 what `strength` is for, and why the window lets you move it *after* seeing the
 result rather than guessing beforehand.
+
+## Making something disappear
+
+The three that find things and the one that fills holes compose into the thing
+people actually want:
+
+```
+open dog.jpg
+detect class=dog             # → found 1: dog 90% at 4,274 569x450
+segment class=dog expand=6   # the dog becomes the selection
+inpaint                      # → filled in 574x455 at 0,272
+```
+
+![The dog, and the bench without it](example-fill-in.jpg)
+
+Seven seconds, three models, and nobody had to say where anything was. The
+bench slats continue through where the dog sat and the foliage behind is
+rebuilt. **Edit ▸ Fill In Selection** does the same by hand, on whatever is
+selected.
+
+### How it avoids a seam
+
+There is no seam, because nothing outside the hole is replaced. The model hands
+back the unmasked part of the picture bit for bit, and only the masked pixels
+are written — so there is no blending to get wrong and no feathering to tune.
+A test asserts exactly that: not one pixel outside the selection may differ.
+
+The model only ever sees 512 square. Rather than scale a whole frame down to
+that and the answer back up — which would deliver every fill as a soft smear —
+it is given a crop around the hole with half the hole's size again on each side
+for context. Inpainting is entirely a question of what surrounds the hole, so
+that context is not optional; and spending the 512 pixels on the crop rather
+than the frame is what keeps the fill sharp.
+
+### What it will and will not do
+
+It continues what is around the hole: a bench, a wall, foliage, sky, a floor.
+It is very good at that and it is *all* it does. It will not invent a thing
+that was never there, because nothing here is prompted by words — there is no
+text encoder in this pack and no diffusion model, both of which would take
+minutes a picture on a processor rather than seconds.
+
+So it is the honest form of the idea: **remove this** rather than **imagine
+that**. A large hole in the middle of something detailed will come back soft,
+which is the model admitting it does not know.
 
 ## Separating a picture by what is in it
 

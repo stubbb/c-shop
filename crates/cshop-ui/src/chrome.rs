@@ -425,6 +425,11 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
+            if item_enabled(ui, "Fill In Selection", "", has_doc).clicked() {
+                app.push(Action::FillInSelection);
+                ui.close();
+            }
+            ui.separator();
             if item_enabled(ui, "Separate by Content…", "", has_doc).clicked() {
                 app.push(Action::ShowSeparate);
                 ui.close();

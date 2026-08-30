@@ -755,11 +755,12 @@ impl Runner {
             "denoise" => self.cmd_denoise(cmd),
             "upscale" => self.cmd_upscale(cmd),
             "separate" => self.cmd_separate(cmd),
+            "inpaint" => self.cmd_inpaint(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, lens, denoise, upscale, separate, export, \
-                 save"
+                 order, info, profile, lens, denoise, upscale, separate, inpaint, \
+                 export, save"
             )),
         }
     }
@@ -1300,6 +1301,113 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Make whatever is selected disappear, inventing what was behind it.
+    ///
+    /// The selection is the hole. Everything outside it comes back untouched —
+    /// the model returns it bit for bit — so this leaves no seam to blend and
+    /// nothing to feather.
+    fn cmd_inpaint(&mut self, cmd: &Command) -> Result<String, String> {
+        let _ = cmd;
+        self.need_doc()?;
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to fill in")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels to fill in")?;
+        let offset = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id).map(|l| l.offset))
+            .unwrap_or((0, 0));
+        let selection = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.selection.clone())
+            .ok_or("inpaint needs a selection: it is the hole to fill in")?;
+
+        // The selection lives in document space and the layer in its own, so
+        // the mask is drawn in the layer's.
+        let (w, h) = (source.width(), source.height());
+        let mut mask = cshop_core::pixels::PixelBuffer::filled(w, h, Rgba8::BLACK);
+        let mut any = false;
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let v = selection.coverage(x + offset.0, y + offset.1);
+                if v > 127 {
+                    mask.set(x, y, Rgba8::WHITE);
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            return Err("the selection does not overlap this layer".to_string());
+        }
+
+        let dir = self.vision_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let input = dir.join("source.png");
+        let mask_path = dir.join("mask.png");
+        let output = dir.join("filled.png");
+        let write = cshop_io::save(&input, &source, 100)
+            .and_then(|_| cshop_io::save(&mask_path, &mask, 100));
+        if let Err(e) = write {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(format!("could not write the image for the model: {e}"));
+        }
+        let filled = match cshop_ui::vision::inpaint(&input, &mask_path, &output) {
+            Ok(path) => match cshop_io::load(&path) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(format!("could not read the filled image back: {e}"));
+                }
+            },
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Alpha is the layer's own; the model works in RGB and has no opinion
+        // about coverage.
+        let mut pixels = source.clone();
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                if mask.get(x, y).r > 127 {
+                    let c = filled.get(x, y);
+                    let a = pixels.get(x, y).a;
+                    pixels.set(x, y, Rgba8::new(c.r, c.g, c.b, a));
+                }
+            }
+        }
+
+        let bounds = selection.bounds();
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let Some(layer) = view.doc.tree.get(id) else { return Err("the layer went away".into()) };
+        let mask_of = layer.mask.clone();
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id, pixels, offset, mask_of, "Fill In",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!(
+            "filled in {}x{} at {},{}",
+            bounds.width(),
+            bounds.height(),
+            bounds.x0,
+            bounds.y0
+        ))
     }
 
     /// Split a picture into layers by what things are.

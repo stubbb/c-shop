@@ -422,3 +422,16 @@ pub fn classify(image: &Path, out: &Path) -> Result<Classified, String> {
         .collect();
     Ok(Classified { map: PathBuf::from(answer.str_field("map").unwrap_or(out_s)), regions })
 }
+
+/// Fill a hole in with what was probably behind it.
+///
+/// `mask` is white where the picture should be invented and black where it
+/// should be left. Only the masked pixels come back changed — the model
+/// returns the rest bit for bit — so there is no seam to hide.
+pub fn inpaint(image: &Path, mask: &Path, out: &Path) -> Result<PathBuf, String> {
+    let image = image_arg(image)?;
+    let mask_s = mask.to_str().ok_or("that mask path is not text")?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let answer = run(&["inpaint", image, "--mask", mask_s, "--out", out_s])?;
+    Ok(PathBuf::from(answer.str_field("path").unwrap_or(out_s)))
+}
