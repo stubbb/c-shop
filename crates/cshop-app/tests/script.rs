@@ -1058,3 +1058,60 @@ fn a_vignette_alone_leaves_nothing_to_crop() {
     assert!(!report.steps[1].note.contains("cropped"), "{:?}", notes(&report));
     assert!(report.steps[2].note.starts_with("200x200"), "{:?}", notes(&report));
 }
+
+// --- noise removal ---------------------------------------------------------
+
+#[test]
+fn denoise_says_when_the_pack_is_missing_or_cleans_up() {
+    let Some(report) = run("new 96 96 background=#807060\ndenoise") else { return };
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    if !cshop_ui::vision::is_available() {
+        assert!(note.contains("setup.sh") || note.contains("not installed"), "{note}");
+        return;
+    }
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(note.contains("removed noise"), "{note}");
+    assert!(note.contains("tile"), "it should say how much work it was: {note}");
+}
+
+/// Strength zero would be a slow way to change nothing, so it is refused
+/// rather than run.
+#[test]
+fn denoise_refuses_a_strength_of_nothing() {
+    let Some(report) = run("new 64 64 background=white\ndenoise strength=0") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("exactly as it is"), "{:?}", notes(&report));
+}
+
+/// A selection is what makes this usable on a large photograph, so it has to
+/// actually narrow the work — and say that it did.
+#[test]
+fn denoise_follows_the_selection() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let Some(report) = run("new 200 200 background=#606060\nselect 20 20 64 64\ndenoise") else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    let note = &report.steps[2].note;
+    assert!(note.contains("over 64x64 at 20,20"), "{note}");
+}
+
+/// And a selection that misses the layer entirely is a mistake worth naming.
+#[test]
+fn denoise_refuses_a_selection_that_misses() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let Some(report) = run(
+        "new 200 200 background=white\nlayer new\nselect 0 0 20 20\nmove 400 400\ndenoise",
+    ) else {
+        return;
+    };
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    assert!(
+        note.contains("does not overlap") || note.contains("no pixels"),
+        "{note}"
+    );
+}

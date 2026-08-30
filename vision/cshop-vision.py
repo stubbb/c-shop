@@ -16,6 +16,9 @@ Two models:
   anything *is*; it separates whatever the prompt points at from its
   surroundings. That is why the two are better together than either alone:
   YOLO finds the dog, SAM cuts it out.
+* **SCUNet** removes noise. A Swin-Conv-UNet: transformer blocks inside a
+  UNet, which is what makes it quick enough to be worth waiting for — see
+  `denoise` below for the arithmetic.
 
 Subcommands print one JSON object to stdout. Errors print JSON too, with
 `"ok": false` and a message, so the caller never has to parse a traceback.
@@ -75,6 +78,24 @@ def sam_frame():
     except (OSError, ValueError):
         pass
     return w, h
+
+
+# The denoiser's constraints, which are not negotiable and not documented
+# anywhere except in the shapes it refuses.
+#
+# Its Swin windows are 8 pixels and it downsamples three times, so every side
+# it is given must be a multiple of 8 x 2^3 = 64. Anything else fails inside a
+# reshape with a message about tensors, which is a poor way to find out.
+DENOISE_MULTIPLE = 64
+
+# How much picture goes through at a time, and how much neighbouring tiles
+# share. Overlap is what stops the seams: each tile is weighted by a taper that
+# falls to nothing at its edge, so where two tiles meet they cross-fade instead
+# of butting up against each other with slightly different ideas about the
+# noise. Thirty-two pixels is enough for that and cheap: the waste is the
+# overlap area, which at 256 with 32 is about a quarter.
+DENOISE_TILE = 256
+DENOISE_OVERLAP = 32
 
 
 def fail(message, **extra):
@@ -315,6 +336,127 @@ def write_mask(mask, path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Denoising
+# ---------------------------------------------------------------------------
+
+
+def taper(size, overlap):
+    """A weight that is flat in the middle and falls to nothing at both ends.
+
+    Smoothstep rather than linear, so the weight's *slope* matches at the seam
+    as well as its value. A linear ramp leaves a faint crease visible on a
+    smooth gradient, which is exactly the kind of picture someone is denoising.
+    """
+    import numpy as np
+
+    w = np.ones(size, np.float32)
+    if overlap > 0:
+        t = (np.arange(overlap, dtype=np.float32) + 0.5) / overlap
+        ramp = t * t * (3.0 - 2.0 * t)
+        w[:overlap] = ramp
+        w[-overlap:] = ramp[::-1]
+    return w
+
+
+def tile_starts(extent, tile, stride):
+    """Where each tile begins along one axis.
+
+    The last tile is pushed flush against the far edge rather than hanging off
+    it. That overlaps its neighbour by more than the others do, which the
+    weighting handles for nothing, and it means no padding beyond what the
+    model's multiple-of-64 rule already demands.
+    """
+    if extent <= tile:
+        return [0]
+    starts = list(range(0, extent - tile, stride))
+    if not starts or starts[-1] != extent - tile:
+        starts.append(extent - tile)
+    return starts
+
+
+def denoise(image_path, out_path, strength):
+    """Remove noise, a tile at a time, reporting progress as it goes.
+
+    Alpha is carried through untouched. Noise is a property of the colour a
+    sensor recorded; coverage is not something a camera measured, and running
+    it through a denoiser would soften the edge of a cut-out for no reason.
+    """
+    import numpy as np
+    from PIL import Image
+
+    sess = session("scunet_color_real_psnr.onnx")
+    name = sess.get_inputs()[0].name
+
+    image = Image.open(image_path)
+    has_alpha = image.mode in ("RGBA", "LA") or "transparency" in image.info
+    rgb = np.asarray(image.convert("RGB"), np.float32) / 255.0
+    alpha = np.asarray(image.convert("RGBA"), np.uint8)[..., 3] if has_alpha else None
+    height, width, _ = rgb.shape
+
+    # Up to a multiple of 64, by reflection, so the edges of the picture see
+    # picture rather than black.
+    pad_h = (-height) % DENOISE_MULTIPLE
+    pad_w = (-width) % DENOISE_MULTIPLE
+    padded = np.pad(rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+    ph, pw, _ = padded.shape
+
+    tile = min(DENOISE_TILE, ph, pw)
+    tile -= tile % DENOISE_MULTIPLE
+    tile = max(tile, DENOISE_MULTIPLE)
+    overlap = min(DENOISE_OVERLAP, tile // 4)
+    stride = max(tile - overlap, DENOISE_MULTIPLE)
+
+    ys = tile_starts(ph, tile, stride)
+    xs = tile_starts(pw, tile, stride)
+    weight_1d = taper(tile, overlap)
+    window = np.outer(weight_1d, weight_1d)[..., None]
+
+    total = len(ys) * len(xs)
+    print(json.dumps({"tiles": total}), file=sys.stderr, flush=True)
+
+    acc = np.zeros_like(padded)
+    wsum = np.zeros((ph, pw, 1), np.float32)
+    done = 0
+    for y in ys:
+        for x in xs:
+            patch = padded[y : y + tile, x : x + tile].transpose(2, 0, 1)[None]
+            out = sess.run(None, {name: patch})[0][0].transpose(1, 2, 0)
+            acc[y : y + tile, x : x + tile] += out * window
+            wsum[y : y + tile, x : x + tile] += window
+            done += 1
+            # One line per tile, so the caller's progress bar moves at the rate
+            # the work actually happens rather than at a guessed one.
+            print(json.dumps({"tile": done, "tiles": total}), file=sys.stderr, flush=True)
+
+    cleaned = np.clip(acc / np.maximum(wsum, 1e-6), 0.0, 1.0)[:height, :width]
+
+    # Strength mixes the result back over the original. The model was trained
+    # on one kind of noise and a photograph has its own; being able to take
+    # half of what it decided is the difference between a tool and a verdict.
+    s = float(min(max(strength, 0.0), 1.0))
+    if s < 1.0:
+        cleaned = cleaned * s + rgb * (1.0 - s)
+
+    out = (cleaned * 255.0 + 0.5).astype(np.uint8)
+    if alpha is not None:
+        out = np.dstack([out, alpha])
+    Image.fromarray(out, "RGBA" if alpha is not None else "RGB").save(out_path)
+
+    # How much it actually changed, so a caller can tell "there was no noise"
+    # from "nothing happened".
+    moved = float(np.mean(np.abs(cleaned - rgb)) * 255.0)
+    return {
+        "ok": True,
+        "path": out_path,
+        "width": width,
+        "height": height,
+        "tiles": total,
+        "strength": s,
+        "moved": round(moved, 3),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -325,6 +467,11 @@ def main():
     d.add_argument("--image", required=True)
     d.add_argument("--conf", type=float, default=0.25)
     d.add_argument("--classes", default="", help="comma-separated, to keep only these")
+
+    n = sub.add_parser("denoise", help="remove noise")
+    n.add_argument("image")
+    n.add_argument("--out", required=True)
+    n.add_argument("--strength", type=float, default=1.0)
 
     s = sub.add_parser("segment", help="cut something out")
     s.add_argument("--image", required=True)
@@ -340,7 +487,16 @@ def main():
     if args.command == "check":
         missing = [
             n
-            for n in ("yolov8n.onnx", "mobile_sam.encoder.onnx", "sam.decoder.onnx")
+            for n in (
+                "yolov8n.onnx",
+                "mobile_sam.encoder.onnx",
+                "sam.decoder.onnx",
+                "scunet_color_real_psnr.onnx",
+                # The weights live beside the graph and are referred to by
+                # name; without them the model loads and then fails, which is
+                # a worse way to find out than being told here.
+                "scunet_color_real_psnr.onnx.data",
+            )
             if not os.path.exists(os.path.join(MODELS, n))
         ]
         try:
@@ -365,6 +521,10 @@ def main():
                 fail(f"{v!r} is not an x,y point")
             out.append((x, y))
         return out
+
+    if args.command == "denoise":
+        print(json.dumps(denoise(args.image, args.out, args.strength)))
+        return
 
     if args.command == "detect":
         wanted = {c.strip() for c in args.classes.split(",") if c.strip()}

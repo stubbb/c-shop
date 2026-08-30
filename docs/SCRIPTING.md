@@ -78,6 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `denoise [strength=]` | Remove noise from the active layer, or from the selection. Needs the [vision pack](VISION.md). |
 | `segment [class=\|box=\|point=] [expand= feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
 | `style NAME [key=value...]` | Apply a named style — see below. |
@@ -138,6 +139,32 @@ to take. And the two corrections that fill the frame rather than emptying it —
 a barrel correction, and `scale` above 1 — can cancel out a rotation's losses
 entirely, in which case the canvas is left alone and the report says nothing
 about cropping.
+
+### Removing noise
+
+`denoise` runs a transformer over the active layer and puts the result back.
+Two things decide whether it is a good idea in a given script.
+
+**It is slow, and the selection is the lever.** About twenty-six thousand
+pixels a second, so a whole 24 megapixel frame is a quarter of an hour and a
+sky in the corner of it is a few seconds. Select first:
+
+```
+select 40 30 200 160
+denoise                  # → removed noise over 200x160 at 40,30: 2 tiles,
+                         #    moved 16.7 levels a channel
+```
+
+**The report says how much it changed.** `moved` is the mean absolute change
+per channel in 8-bit levels, which is what tells "there was no noise here"
+apart from "nothing happened": a clean picture comes back with `moved 1.5` and
+a noisy one with `moved 16.7`. An agent deciding whether a photograph needed
+this can run it on a small selection first and read that number.
+
+`strength=` mixes the model's answer back over the original, between 0 and 1.
+It is worth reaching for: the model is very good on sensor noise and grain, and
+will also quietly remove fine texture that resembles them — skin pores, distant
+foliage, fabric weave.
 
 ### Colour spaces, and files made of ink
 

@@ -36,6 +36,7 @@ SCREENSHOT OPTIONS:
     --demo-selection                build a document with an active selection
     --demo-profile                  open the colour-profile window
     --demo-lens                     open the lens-correction window
+    --demo-denoise                  open the noise-removal window
     --right-click X,Y               right-click there, to capture a context menu
 ";
 
@@ -93,6 +94,7 @@ fn main() {
     let mut demo_profile = false;
     let mut demo_lens = false;
     let mut demo_lens_busy = false;
+    let mut demo_denoise = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
@@ -162,6 +164,7 @@ fn main() {
             "--demo-segment" => demo_segment = true,
             "--demo-profile" => demo_profile = true,
             "--demo-lens" => demo_lens = true,
+            "--demo-denoise" => demo_denoise = true,
             "--demo-lens-busy" => {
                 demo_lens = true;
                 demo_lens_busy = true;
@@ -361,6 +364,26 @@ fn main() {
                 }
                 if demo_profile {
                     app.dispatch(cshop_ui::commands::Action::ShowColorProfile);
+                }
+                if demo_denoise {
+                    let raster = app.doc().and_then(|v| {
+                        v.doc
+                            .tree
+                            .iter_all()
+                            .into_iter()
+                            .find(|id| v.doc.tree.get(*id).is_some_and(|l| l.pixels().is_some()))
+                    });
+                    if let Some(id) = raster {
+                        app.dispatch(cshop_ui::commands::Action::SelectLayer(id));
+                    }
+                    app.dispatch(cshop_ui::commands::Action::ShowDenoise);
+                    if let cshop_ui::dialogs::Dialog::Denoise(d) = &mut app.dialog {
+                        // Frozen part-way, so the capture catches the bar.
+                        let p = std::sync::Arc::new(cshop_ui::vision::DenoiseProgress::default());
+                        p.total.store(24, std::sync::atomic::Ordering::Relaxed);
+                        p.done.store(9, std::sync::atomic::Ordering::Relaxed);
+                        d.progress = Some(p);
+                    }
                 }
                 if demo_lens {
                     // The sample document opens with a group selected, which

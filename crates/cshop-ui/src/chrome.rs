@@ -695,6 +695,10 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ShowLens);
                 ui.close();
             }
+            if item_enabled(ui, "Remove Noise…", "", has_doc).clicked() {
+                app.push(Action::ShowDenoise);
+                ui.close();
+            }
             ui.separator();
 
             // Grouped exactly as the Filter menu is, so the shape is familiar.

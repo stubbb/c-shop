@@ -6,10 +6,11 @@ Two neural networks, as something you opt into.
 vision/setup.sh
 ```
 
-That is the whole installation: a Python environment and about 60 MB of model
-weights, under `~/.cache/cshop/vision`. Nothing in the editor needs it — open,
-edit and save behave exactly as before whether it is there or not — and only
-two commands, `detect` and `segment`, and one window ask for it.
+That is the whole installation: a Python environment and about 130 MB of model
+weights, under `~/.cache/cshop/vision` — half a gigabyte all told, most of it
+the runtime rather than the models. Nothing in the editor needs it: open, edit
+and save behave exactly as before whether it is there or not, and only three
+commands — `detect`, `segment` and `denoise` — and two windows ask for it.
 
 ## Why it is a separate process
 
@@ -38,6 +39,15 @@ where to look.
 
 Which is why they are better together than either alone: YOLO finds the dog
 and says where, SAM cuts it out.
+
+**SCUNet** removes noise. A Swin-Conv-UNet: Swin transformer blocks inside a
+UNet, which is what makes it quick enough to be worth waiting for — the UNet's
+downsampling is why it costs a fifth of what a transformer working at full
+resolution does. The variant here is the one trained on real photographic
+degradation rather than on synthetic noise of a known strength, which on this
+machine's measurements beat the fixed-sigma models at every noise level tried
+*and* was far gentler on a picture that was not noisy in the first place. That
+last part is what matters most, because most of any photograph is not noisy.
 
 [coco]: https://cocodataset.org
 
@@ -84,6 +94,73 @@ the picture. *Find objects* lists what the detector recognises, if anything, so
 a dog can be chosen by name instead of by aim.
 
 Cancel puts the selection back as it was.
+
+## Removing noise
+
+```
+open photo.jpg
+select 40 30 200 160     # only this part, which is much quicker
+denoise                  # → removed noise over 200x160 at 40,30: 2 tiles,
+                         #    moved 16.7 levels a channel
+```
+
+Or **Filter ▸ Remove Noise…**, which does the same by hand and tells you how
+long it is likely to take before you commit to it.
+
+### What it costs
+
+About **twenty-six thousand pixels a second**, on every core the machine has —
+measured on sixteen of them, so a smaller machine will be slower. That is the
+single most important thing to know about this tool:
+
+| | |
+|---|---|
+| a 480×360 crop | 8 seconds |
+| a 900×600 picture | 20 seconds |
+| a 2 megapixel picture | a minute and a half |
+| a 24 megapixel frame | a quarter of an hour |
+
+So **select the part that needs it**. The noise that bothers anyone is usually
+in a sky or a shadow, not across the whole frame, and cleaning a corner takes
+seconds where cleaning everything takes minutes. Both the window and the script
+work on the selection when there is one.
+
+### The shape of the window
+
+There is no live preview, because there is no viewport small enough to make one
+feel live. What there is instead is the shape the cost actually has: the model
+runs **once**, behind a progress bar, and then **strength** mixes its answer
+back over the original — which is instant. So the judgement everybody actually
+wants to make, *how much of this do I want*, is made after the waiting rather
+than before it, against the real picture at full size. Keep commits it as one
+history entry; Cancel puts the original back.
+
+### How well it works
+
+Measured, on a photograph with gaussian noise added at σ=22:
+
+```
+noisy     21.96 dB
+denoised  34.72 dB      (+12.76)
+```
+
+The picture is taken in overlapping tiles of 256 pixels, each weighted by a
+taper that falls to nothing at its edge, so tiles cross-fade instead of butting
+up against each other with slightly different ideas about the noise. That it
+works is measurable rather than a matter of opinion: the average pixel-to-pixel
+step *at* a tile boundary is 0.01080, and elsewhere in the same picture 0.01082.
+
+Alpha is never touched. Noise is a property of the colour a sensor recorded;
+coverage is not something a camera measured, and running it through a denoiser
+would soften the edge of a cut-out for no reason.
+
+### What it is not
+
+It is one model with one idea of what noise looks like. It is very good on
+sensor noise and grain, and it will also quietly remove fine texture that
+happens to resemble them — skin pores, distant foliage, fabric weave. That is
+what `strength` is for, and why the window lets you move it *after* seeing the
+result rather than guessing beforehand.
 
 ## What it does well, and what it does not
 

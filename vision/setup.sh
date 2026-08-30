@@ -22,9 +22,10 @@ fi
 echo "  installing onnxruntime, numpy, pillow"
 "$venv/bin/pip" install --quiet --upgrade --no-input onnxruntime numpy pillow
 
-# Two models. YOLOv8n finds things and says where they are; MobileSAM turns a
-# point or a box into a mask. Both are ONNX so that the runtime is the only
-# dependency — no PyTorch, no CUDA, no compiler.
+# Three models. YOLOv8n finds things and says where they are; MobileSAM turns a
+# point or a box into a mask; SCUNet takes the noise out of a photograph. All
+# ONNX so that the runtime is the only dependency — no PyTorch, no CUDA, no
+# compiler.
 fetch() {
     local name="$1" url="$2"
     if [ -s "$models/$name" ]; then
@@ -38,6 +39,19 @@ fetch() {
 
 fetch yolov8n.onnx \
     "https://huggingface.co/webml/yolov8n/resolve/main/onnx/yolov8n.onnx"
+
+# SCUNet, the real-photograph variant rather than one trained for a particular
+# level of synthetic noise. On this machine's measurements it beat the sigma-25
+# model at every noise level tried and was far gentler on a picture that was
+# not noisy in the first place — 39.5 dB against 34.1 dB — which is the case
+# that matters, because most of any photograph is not noisy.
+#
+# Its weights live beside it in a `.data` file that the model refers to *by
+# name*, so both must land with the names they were published under.
+fetch scunet_color_real_psnr.onnx \
+    "https://huggingface.co/Heliosoph/scunet-onnx/resolve/main/scunet_color_real_psnr.onnx"
+fetch scunet_color_real_psnr.onnx.data \
+    "https://huggingface.co/Heliosoph/scunet-onnx/resolve/main/scunet_color_real_psnr.onnx.data"
 
 if [ ! -s "$models/mobile_sam.encoder.onnx" ] || [ ! -s "$models/sam.decoder.onnx" ]; then
     echo "  fetching MobileSAM"

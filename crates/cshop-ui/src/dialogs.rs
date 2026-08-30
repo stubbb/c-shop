@@ -30,6 +30,8 @@ pub enum Dialog {
     ColorProfile(Box<crate::profile_ui::ProfileDialog>),
     /// Boxed: it holds a 720p copy of the picture to preview against.
     Lens(Box<crate::lens_ui::LensDialog>),
+    /// Boxed: it holds the region twice over, before and after.
+    Denoise(Box<crate::denoise_ui::DenoiseDialog>),
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),

@@ -752,10 +752,11 @@ impl Runner {
             "export" | "save" => self.cmd_write(cmd),
             "profile" => self.cmd_profile(cmd),
             "lens" => self.cmd_lens(cmd),
+            "denoise" => self.cmd_denoise(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, lens, export, save"
+                 order, info, profile, lens, denoise, export, save"
             )),
         }
     }
@@ -1296,6 +1297,105 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Take the noise out of the active layer.
+    ///
+    /// The layer rather than the composite, because the result replaces that
+    /// layer's pixels: denoising the flattened picture and putting it back on
+    /// one layer would quietly discard everything above it.
+    ///
+    /// A selection narrows the work, which is worth reaching for. The model
+    /// costs about a second for every hundred thousand pixels, so a whole
+    /// twenty-four megapixel frame is several minutes and the sky in the
+    /// corner of it is a few seconds.
+    fn cmd_denoise(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let strength = cmd.f32("strength")?.unwrap_or(1.0).clamp(0.0, 1.0);
+        if strength == 0.0 {
+            return Err("strength=0 would leave the picture exactly as it is".to_string());
+        }
+
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to clean up")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels to clean up")?;
+
+        // The selection, in the layer's own frame, clipped to it. Nothing
+        // selected means the whole layer.
+        let offset = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id).map(|l| l.offset))
+            .unwrap_or((0, 0));
+        let region = match self.app.doc().and_then(|v| v.doc.selection.as_ref().map(|s| s.bounds()))
+        {
+            Some(r) if !r.is_empty() => cshop_core::geom::IRect::new(
+                r.x0 - offset.0,
+                r.y0 - offset.1,
+                r.x1 - offset.0,
+                r.y1 - offset.1,
+            )
+            .intersect(&source.bounds()),
+            _ => source.bounds(),
+        };
+        if region.is_empty() {
+            return Err("the selection does not overlap this layer".to_string());
+        }
+
+        let patch = source.copy_rect(region);
+        let dir = self.vision_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let input = dir.join("noisy.png");
+        let output = dir.join("clean.png");
+        cshop_io::save(&input, &patch, 100)
+            .map_err(|e| format!("could not write the image for the model: {e}"))?;
+
+        let progress = cshop_ui::vision::DenoiseProgress::default();
+        let answer = cshop_ui::vision::denoise(&input, &output, strength, &progress);
+        let answer = match answer {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
+        let cleaned = cshop_io::load(&answer.path)
+            .map_err(|e| format!("could not read the cleaned image back: {e}"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut pixels = source.clone();
+        pixels.paste(&cleaned, region.x0, region.y0);
+
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let Some(layer) = view.doc.tree.get(id) else { return Err("the layer went away".into()) };
+        let mask = layer.mask.clone();
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id, pixels, offset, mask, "Remove Noise",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+
+        let where_ = if region == source.bounds() {
+            String::new()
+        } else {
+            format!(" over {}x{} at {},{}", region.width(), region.height(), region.x0, region.y0)
+        };
+        Ok(format!(
+            "removed noise{where_}: {} tile{}, moved {:.1} levels a channel",
+            answer.tiles,
+            if answer.tiles == 1 { "" } else { "s" },
+            answer.moved
+        ))
     }
 
     /// Find objects, and report what and where they are.

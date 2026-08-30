@@ -330,6 +330,16 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Open the noise-removal window on the active layer.
+    ShowDenoise,
+    /// Start the model on the selected region, on a worker thread.
+    RunDenoise,
+    /// Re-blend the model's answer at the strength now chosen.
+    DenoiseRestrength,
+    /// Commit what is on the canvas as one history entry.
+    DenoiseKeep,
+    /// Put the original pixels back.
+    DenoiseCancel,
     /// Open the lens-correction window on the active layer.
     ShowLens,
     /// Run the agreed corrections over the whole layer, on a worker thread.

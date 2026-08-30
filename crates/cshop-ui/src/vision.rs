@@ -230,3 +230,112 @@ pub fn segment(image: &Path, prompt: &Prompt, out: &Path, conf: f32) -> Result<S
 fn image_arg(path: &Path) -> Result<&str, String> {
     path.to_str().ok_or_else(|| "that image path is not text".to_string())
 }
+
+// --- denoising -------------------------------------------------------------
+
+/// What a denoising run came back with.
+#[derive(Debug, Clone)]
+pub struct Denoised {
+    pub path: PathBuf,
+    /// How many tiles the picture was taken in.
+    pub tiles: u32,
+    /// Mean absolute change per channel, in 8-bit levels. Near zero means the
+    /// picture had nothing the model recognised as noise — which is a
+    /// different answer from "it failed", and worth being able to say.
+    pub moved: f32,
+}
+
+/// How far a denoising run has got, shared with whoever is drawing the bar.
+#[derive(Debug, Default)]
+pub struct DenoiseProgress {
+    pub done: std::sync::atomic::AtomicU32,
+    pub total: std::sync::atomic::AtomicU32,
+}
+
+impl DenoiseProgress {
+    /// Zero until the sidecar has said how many tiles there are, and then the
+    /// fraction of them finished.
+    pub fn fraction(&self) -> f32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let total = self.total.load(Relaxed);
+        if total == 0 {
+            return 0.0;
+        }
+        (self.done.load(Relaxed) as f32 / total as f32).min(1.0)
+    }
+}
+
+/// Remove noise, reporting progress as the sidecar works through the tiles.
+///
+/// Unlike [`run`], this reads the child's stderr as it arrives rather than
+/// waiting for it. A denoiser is slow enough — seconds for a small picture,
+/// minutes for a large one — that a caller with no idea how far it has got
+/// cannot tell it apart from one that has hung.
+pub fn denoise(
+    image: &Path,
+    out: &Path,
+    strength: f32,
+    progress: &DenoiseProgress,
+) -> Result<Denoised, String> {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let (Some(python), Some(script)) = (python(), script()) else {
+        return Err(NOT_INSTALLED.to_string());
+    };
+    let image = image_arg(image)?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let strength = strength.clamp(0.0, 1.0).to_string();
+
+    let mut child = Command::new(&python)
+        .arg(&script)
+        .args(["denoise", image, "--out", out_s, "--strength", &strength])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run the vision pack: {e}"))?;
+
+    // Read stderr on this thread as it comes, keeping the last few lines in
+    // case the run fails and they turn out to be the explanation.
+    let mut tail: Vec<String> = Vec::new();
+    if let Some(err) = child.stderr.take() {
+        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+            if let Ok(note) = json::parse(line.trim()) {
+                if let Some(total) = note.get("tiles").and_then(Json::as_f64) {
+                    progress.total.store(total as u32, Relaxed);
+                }
+                if let Some(done) = note.get("tile").and_then(Json::as_f64) {
+                    progress.done.store(done as u32, Relaxed);
+                }
+                continue;
+            }
+            tail.push(line);
+            if tail.len() > 4 {
+                tail.remove(0);
+            }
+        }
+    }
+
+    let finished = child
+        .wait_with_output()
+        .map_err(|e| format!("the vision pack could not be waited for: {e}"))?;
+    let stdout = String::from_utf8_lossy(&finished.stdout);
+    let parsed = json::parse(stdout.trim()).map_err(|_| {
+        if tail.is_empty() {
+            format!("the vision pack said nothing (exit {:?})", finished.status.code())
+        } else {
+            format!("the vision pack failed: {}", tail.join(" / "))
+        }
+    })?;
+    if parsed.get("ok").and_then(Json::as_bool) == Some(false) {
+        let why = parsed.str_field("error").unwrap_or("it did not say why");
+        let hint = parsed.str_field("hint").map(|h| format!(" ({h})")).unwrap_or_default();
+        return Err(format!("{why}{hint}"));
+    }
+
+    Ok(Denoised {
+        path: PathBuf::from(parsed.str_field("path").unwrap_or(out_s)),
+        tiles: parsed.get("tiles").and_then(Json::as_f64).unwrap_or(0.0) as u32,
+        moved: parsed.get("moved").and_then(Json::as_f64).unwrap_or(0.0) as f32,
+    })
+}

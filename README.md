@@ -10,12 +10,13 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
-An optional **deep-learning pack** adds two neural networks to that: one that
-finds objects and names them, one that turns a point or a box into a mask. So
-"cut the dog out of this photograph" becomes something the editor can be asked
-for rather than something someone has to trace, by hand or by script. They run
-in a process of their own, so the editor keeps its single-binary, no-dependency
-build whether they are installed or not.
+An optional **deep-learning pack** adds three neural networks to that: one that
+finds objects and names them, one that turns a point or a box into a mask, and
+one that takes the noise out of a photograph. So "cut the dog out of this
+picture" and "clean up this sky" become things the editor can be asked for
+rather than things someone has to do by hand. They run in a process of their
+own, so the editor keeps its single-binary, no-dependency build whether they
+are installed or not.
 
 ![C-Shop](docs/screenshot.png)
 
@@ -234,8 +235,9 @@ and sizing, with the measurements behind that claim.
 
 ### Recognising and cutting out
 
-An optional pack adds two neural networks — one that finds objects and says
-where they are, one that turns a point or a box into a mask:
+An optional pack adds three neural networks — one that finds objects and says
+where they are, one that turns a point or a box into a mask, and one that
+removes noise:
 
 ```sh
 vision/setup.sh
@@ -268,6 +270,14 @@ the editor describing its own work.
 it becomes the selection, click again to refine, Alt-click to exclude, and a
 slider softens the edge. `segment` leaves an ordinary selection either way, so
 everything the editor already does with one applies.
+
+**Filter ▸ Remove Noise…** is the third: SCUNet, a Swin transformer inside a
+UNet, over the layer or over the selection. It costs about twenty-six thousand
+pixels a second, which is why the selection matters and why the window says how
+long it will take before you commit to it — and why the model runs once, behind
+a progress bar, with the strength mixed back afterwards rather than guessed at
+beforehand. On a photograph with noise added at σ=22 it goes from 21.96 dB to
+34.72 dB.
 
 The models run in a separate process, so the editor keeps its single-binary,
 no-dependency, offline build whether they are installed or not.
@@ -314,7 +324,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-759 tests, and the interesting ones are not unit tests:
+767 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

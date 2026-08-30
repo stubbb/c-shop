@@ -114,6 +114,8 @@ pub struct CShopApp {
     segment_job: Option<std::sync::mpsc::Receiver<SegmentOutcome>>,
     /// The full-resolution lens pass, while it runs. See [`CShopApp::poll_lens`].
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
+    /// The denoising run, while it works its way through the tiles.
+    denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -206,6 +208,7 @@ impl CShopApp {
             segment_before: None,
             segment_job: None,
             lens_job: None,
+            denoise_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -331,6 +334,7 @@ impl CShopApp {
         self.now = ctx.input(|i| i.time);
         self.poll_segment(&ctx);
         self.poll_lens(&ctx);
+        self.poll_denoise(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -400,6 +404,7 @@ impl CShopApp {
             Dialog::ColorPicker(d) => d.title(),
             Dialog::ColorProfile(d) => d.title(),
             Dialog::Lens(d) => d.title(),
+            Dialog::Denoise(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -451,6 +456,7 @@ impl CShopApp {
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorProfile(d) => close = d.ui(ui, &mut actions),
                 Dialog::Lens(d) => close = d.ui(ui, &mut actions),
+                Dialog::Denoise(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1340,6 +1346,58 @@ impl CShopApp {
                     ));
                 }
             }
+            Action::ShowDenoise => {
+                let picked = self.doc().and_then(|v| {
+                    let id = v.doc.active?;
+                    let layer = v.doc.tree.get(id)?;
+                    let pixels = layer.pixels()?;
+                    let offset = layer.offset;
+                    // A selection narrows the work, in the layer's own frame.
+                    let region = match v.doc.selection.as_ref().map(|s| s.bounds()) {
+                        Some(r) if !r.is_empty() => IRect::new(
+                            r.x0 - offset.0,
+                            r.y0 - offset.1,
+                            r.x1 - offset.0,
+                            r.y1 - offset.1,
+                        )
+                        .intersect(&pixels.bounds()),
+                        _ => pixels.bounds(),
+                    };
+                    (!region.is_empty()).then(|| (id, region, pixels.copy_rect(region)))
+                });
+                match picked {
+                    Some((id, region, before)) => {
+                        self.dialog = Dialog::Denoise(Box::new(
+                            crate::denoise_ui::DenoiseDialog::new(id, region, before),
+                        ));
+                    }
+                    None => self.fail("Removing noise needs a layer with pixels in it"),
+                }
+            }
+            Action::RunDenoise => self.start_denoise(),
+            Action::DenoiseRestrength => {
+                let blended = match &self.dialog {
+                    Dialog::Denoise(d) => d.blended().map(|b| (d.layer, d.region, b)),
+                    _ => None,
+                };
+                if let Some((id, region, pixels)) = blended {
+                    self.show_denoise_patch(id, region, &pixels);
+                }
+            }
+            Action::DenoiseKeep => self.keep_denoise(),
+            Action::DenoiseCancel => {
+                let restore = match &self.dialog {
+                    Dialog::Denoise(d) if d.showing => {
+                        Some((d.layer, d.region, d.before.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((id, region, before)) = restore {
+                    self.show_denoise_patch(id, region, &before);
+                }
+                self.dialog = Dialog::None;
+            }
+
             Action::ShowLens => {
                 let source = self.doc().and_then(|v| {
                     let id = v.doc.active?;
@@ -2801,6 +2859,149 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Put a patch straight into the layer, without going through the history.
+    ///
+    /// The same trick the Segment window uses: this is a preview that happens
+    /// to be made of pixels, and giving it an undo entry per slider movement
+    /// would fill the panel with steps nobody wants to go back to. What lands
+    /// in the history is whatever is showing when Keep is pressed.
+    fn show_denoise_patch(&mut self, id: LayerId, region: IRect, patch: &PixelBuffer) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get_mut(id) else { return };
+        let offset = layer.offset;
+        let Some(pixels) = layer.pixels_mut() else { return };
+        pixels.paste(patch, region.x0, region.y0);
+        let dirty = cshop_core::document::Dirty::pixels(
+            id,
+            IRect::new(
+                region.x0 + offset.0,
+                region.y0 + offset.1,
+                region.x1 + offset.0,
+                region.y1 + offset.1,
+            ),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        if let Dialog::Denoise(d) = &mut self.dialog {
+            d.showing = true;
+        }
+    }
+
+    /// Hand the region to the model, on a thread, and watch the tiles go by.
+    fn start_denoise(&mut self) {
+        let Dialog::Denoise(d) = &self.dialog else { return };
+        if d.progress.is_some() || d.cleaned.is_some() {
+            return;
+        }
+        let (before, strength) = (d.before.clone(), 1.0f32);
+        let progress = std::sync::Arc::new(crate::vision::DenoiseProgress::default());
+        if let Dialog::Denoise(d) = &mut self.dialog {
+            d.progress = Some(progress.clone());
+            d.status.clear();
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                std::fs::create_dir_all(&dir).map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let input = dir.join("noisy.png");
+                let output = dir.join("clean.png");
+                cshop_io::save(&input, &before, 100)
+                    .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                let answer = crate::vision::denoise(&input, &output, strength, &progress)?;
+                cshop_io::load(&answer.path)
+                    .map_err(|e| format!("could not read the cleaned image back: {e}"))
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = tx.send(result);
+        });
+        self.denoise_job = Some(rx);
+    }
+
+    /// Collect the model's answer, and keep the bar moving until it arrives.
+    pub fn poll_denoise(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.denoise_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(_) => {
+                self.denoise_job = None;
+                if let Dialog::Denoise(d) = &mut self.dialog {
+                    d.progress = None;
+                    d.status = "The model stopped without answering.".into();
+                }
+            }
+            Ok(Err(why)) => {
+                self.denoise_job = None;
+                if let Dialog::Denoise(d) = &mut self.dialog {
+                    d.progress = None;
+                    d.status = why;
+                }
+            }
+            Ok(Ok(cleaned)) => {
+                self.denoise_job = None;
+                let shown = match &mut self.dialog {
+                    Dialog::Denoise(d) => {
+                        d.progress = None;
+                        d.cleaned = Some(cleaned);
+                        d.status = "Done. Move the strength to take less of it.".into();
+                        d.blended().map(|b| (d.layer, d.region, b))
+                    }
+                    // The window was closed while the model worked, so there
+                    // is nothing to show it to.
+                    _ => None,
+                };
+                if let Some((id, region, pixels)) = shown {
+                    self.show_denoise_patch(id, region, &pixels);
+                }
+            }
+        }
+    }
+
+    /// Commit what is on the canvas: one entry, the whole layer.
+    fn keep_denoise(&mut self) {
+        let taken = match &self.dialog {
+            Dialog::Denoise(d) => d.blended().map(|b| (d.layer, d.region, d.before.clone(), b)),
+            _ => None,
+        };
+        let Some((id, region, before, after)) = taken else { return };
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let (offset, mask) = (layer.offset, layer.mask.clone());
+        let Some(current) = layer.pixels() else { return };
+
+        // The history holds whole layers, so the entry is built from the
+        // layer as it was before the preview was pasted over it.
+        let mut original = current.clone();
+        original.paste(&before, region.x0, region.y0);
+        let mut corrected = original.clone();
+        corrected.paste(&after, region.x0, region.y0);
+
+        // Put the original back first, so the entry's "before" is the truth
+        // rather than the preview that is currently showing.
+        if let Some(px) = view.doc.tree.get_mut(id).and_then(|l| l.pixels_mut()) {
+            *px = original;
+        }
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id,
+                corrected,
+                offset,
+                mask,
+                "Remove Noise",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        // Closed here rather than by the button that pushed this, so the
+        // action is the whole of the operation however it was reached.
+        self.dialog = Dialog::None;
+        self.notify("Noise removed");
+    }
+
     /// Start the full-resolution pass on a worker thread.
     ///
     /// The window stays live while it runs, which is the point of doing it
