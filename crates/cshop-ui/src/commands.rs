@@ -163,7 +163,9 @@ pub enum Action {
     OpenPath(PathBuf),
     Save,
     ShowSaveAsDialog,
-    SavePath(PathBuf),
+    /// Save to this path. `deep` writes sixteen bits a channel, which only
+    /// PNG and TIFF can hold — see [`cshop_core::color::Rgba16`].
+    SavePath { path: PathBuf, deep: bool },
     CloseDocument(usize),
     SelectDocument(usize),
 

@@ -157,8 +157,9 @@ effect is already evaluated with room to spare. Narrowing to eight bits was
 simply the last thing that happened on the way out. `depth=16` asks it not to,
 and the numbers above are what that is worth.
 
-Only PNG and TIFF can hold it, and a request to write sixteen bits into a
-format that cannot is refused rather than quietly narrowed. Ink can be deep
+Save As offers it as a checkbox, shown only for the two formats that can hold
+it — PNG and TIFF — and a scripted request to write sixteen bits into any other
+is refused rather than quietly narrowed. Ink can be deep
 too: `depth=16 profile=<a CMYK profile>` writes a sixteen-bit CMYK TIFF.
 
 ### What is still eight bits

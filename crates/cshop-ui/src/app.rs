@@ -795,7 +795,9 @@ impl CShopApp {
 
             Action::Save => {
                 match self.doc().and_then(|d| d.doc.path.clone()) {
-                    Some(path) => self.save_to(path),
+                    // Plain Save writes what the document already is. Depth is
+                    // a choice made in the Save As window, not carried along.
+                    Some(path) => self.save_to(path, false),
                     // Never saved before, so Save behaves as Save As.
                     None => self.push(Action::ShowSaveAsDialog),
                 }
@@ -813,7 +815,7 @@ impl CShopApp {
                 self.dialog = Dialog::FileBrowser(browser);
             }
 
-            Action::SavePath(path) => self.save_to(path),
+            Action::SavePath { path, deep } => self.save_to(path, deep),
 
             Action::CloseDocument(i) => {
                 let current = self.active.unwrap_or(0);
@@ -1514,7 +1516,7 @@ impl CShopApp {
         }
     }
 
-    fn save_to(&mut self, path: PathBuf) {
+    fn save_to(&mut self, path: PathBuf, deep: bool) {
         let Some(i) = self.active else { return };
 
         // Saving a flat format means exporting the composited result, so read
@@ -1528,7 +1530,19 @@ impl CShopApp {
 
         // A layered format saves the document itself; a flat one gets the
         // composite. `save_document` decides from the extension.
-        let result = {
+        let result = if deep {
+            let format = cshop_io::ImageFormat::from_path(&path);
+            match format {
+                Some(f) => {
+                    let view = &mut self.docs[i];
+                    let profile = view.doc.profile.clone();
+                    let deep_pixels = view.read_composite_deep(&gpu);
+                    cshop_io::encode_deep(&deep_pixels, f, &profile, &profile)
+                        .and_then(|bytes| Ok(std::fs::write(&path, bytes)?))
+                }
+                None => Err(cshop_io::IoError::Unsupported(path.display().to_string())),
+            }
+        } else {
             let view = &self.docs[i];
             cshop_io::save_document(&path, &view.doc, &pixels)
         };

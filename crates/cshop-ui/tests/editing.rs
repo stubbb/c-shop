@@ -368,7 +368,7 @@ fn saving_writes_the_composited_stack_and_reopens() {
     let path = dir.join("out.png");
     let _ = std::fs::remove_file(&path);
 
-    app.dispatch(Action::SavePath(path.clone()));
+    app.dispatch(Action::SavePath { path: path.clone(), deep: false });
     assert!(path.exists(), "saving should have written the file");
 
     let reloaded = cshop_io::load(&path).expect("the saved file should decode");
@@ -395,7 +395,7 @@ fn jpeg_export_flattens_transparency_onto_white() {
     let path = dir.join("out.jpg");
     let _ = std::fs::remove_file(&path);
 
-    app.dispatch(Action::SavePath(path.clone()));
+    app.dispatch(Action::SavePath { path: path.clone(), deep: false });
     let reloaded = cshop_io::load(&path).expect("the JPEG should decode");
     let px = reloaded.get(8, 8);
     assert!(px.r > 240 && px.g > 240 && px.b > 240, "transparency should become white, got {px:?}");

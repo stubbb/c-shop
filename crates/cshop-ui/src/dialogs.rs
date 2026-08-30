@@ -721,6 +721,9 @@ pub struct FileBrowser {
     pub dir: PathBuf,
     pub filename: String,
     pub format: ImageFormat,
+    /// Write sixteen bits a channel. Only offered for the formats that can
+    /// hold it, and reset when the format changes to one that cannot.
+    pub deep: bool,
     entries: Vec<Entry>,
     error: Option<String>,
     /// Bumped to force a re-read after navigating.
@@ -746,6 +749,7 @@ impl FileBrowser {
             dir,
             filename: String::new(),
             format: ImageFormat::Png,
+            deep: false,
             entries: Vec::new(),
             error: None,
             needs_refresh: true,
@@ -936,6 +940,23 @@ impl FileBrowser {
             }
         });
 
+        if self.mode == BrowserMode::Save {
+            let can_be_deep =
+                matches!(self.format, ImageFormat::Png | ImageFormat::Tiff);
+            if can_be_deep {
+                ui.checkbox(&mut self.deep, "16 bits a channel")
+                    .on_hover_text(
+                        "Keep the precision the compositor already works in. Blends, \
+                         opacity, adjustment layers and effects are evaluated deeper \
+                         than eight bits; this stops the last step throwing it away.",
+                    );
+            } else {
+                // Nothing else here can hold it, so the option cannot be left
+                // quietly set and silently ignored.
+                self.deep = false;
+            }
+        }
+
         if self.mode == BrowserMode::Save && !self.format.supports_alpha() {
             ui.label(
                 egui::RichText::new(
@@ -958,7 +979,9 @@ impl FileBrowser {
                     BrowserMode::Open => {
                         actions.push(Action::OpenPath(self.dir.join(self.filename.trim())))
                     }
-                    BrowserMode::Save => actions.push(Action::SavePath(self.target())),
+                    BrowserMode::Save => {
+                        actions.push(Action::SavePath { path: self.target(), deep: self.deep })
+                    }
                 }
                 close = true;
             }

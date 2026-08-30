@@ -80,3 +80,27 @@ fn a_profile_that_will_not_read_is_reported() {
     h.settle(2);
     assert!(h.app.doc().unwrap().doc.profile.is_srgb(), "nothing should have changed");
 }
+
+/// Saving deep from the window has to write a deep file, and saving without
+/// the box ticked has to write the ordinary one.
+#[test]
+fn the_save_window_can_ask_for_sixteen_bits() {
+    let Some(mut h) = Harness::new((1400, 820)) else { return };
+    open(&mut h);
+    let dir = std::env::temp_dir().join(format!("cshop-ui-deep-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+
+    for (name, deep) in [("eight.png", false), ("sixteen.png", true)] {
+        let path = dir.join(name);
+        h.app.push(Action::SavePath { path: path.clone(), deep });
+        h.settle(3);
+        let bytes = std::fs::read(&path).expect("it should have been written");
+        assert_eq!(
+            cshop_io::is_deep(&bytes, None),
+            deep,
+            "{name} should{} be deep",
+            if deep { "" } else { " not" }
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
