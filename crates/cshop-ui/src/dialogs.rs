@@ -28,6 +28,8 @@ pub enum Dialog {
     ColorPicker(ColorPickerDialog),
     /// Boxed: it holds every profile it found on the machine.
     ColorProfile(Box<crate::profile_ui::ProfileDialog>),
+    /// Boxed: it holds a 720p copy of the picture to preview against.
+    Lens(Box<crate::lens_ui::LensDialog>),
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),

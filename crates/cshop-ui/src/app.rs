@@ -112,6 +112,8 @@ pub struct CShopApp {
     /// with the work on this thread the window freezes and nothing can say it
     /// is busy, least of all a spinner that never gets drawn.
     segment_job: Option<std::sync::mpsc::Receiver<SegmentOutcome>>,
+    /// The full-resolution lens pass, while it runs. See [`CShopApp::poll_lens`].
+    lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -203,6 +205,7 @@ impl CShopApp {
             edit_run: 0,
             segment_before: None,
             segment_job: None,
+            lens_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -327,6 +330,7 @@ impl CShopApp {
         let ctx = ui.ctx().clone();
         self.now = ctx.input(|i| i.time);
         self.poll_segment(&ctx);
+        self.poll_lens(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -395,6 +399,7 @@ impl CShopApp {
             Dialog::Fill(_) => "Fill",
             Dialog::ColorPicker(d) => d.title(),
             Dialog::ColorProfile(d) => d.title(),
+            Dialog::Lens(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -445,6 +450,7 @@ impl CShopApp {
                 Dialog::Fill(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorProfile(d) => close = d.ui(ui, &mut actions),
+                Dialog::Lens(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1334,6 +1340,22 @@ impl CShopApp {
                     ));
                 }
             }
+            Action::ShowLens => {
+                let source = self.doc().and_then(|v| {
+                    let id = v.doc.active?;
+                    Some((id, v.doc.tree.get(id)?.pixels()?.clone()))
+                });
+                match source {
+                    Some((id, pixels)) => {
+                        self.dialog = Dialog::Lens(Box::new(
+                            crate::lens_ui::LensDialog::new(id, &pixels),
+                        ));
+                    }
+                    None => self.fail("Lens correction needs a layer with pixels in it"),
+                }
+            }
+            Action::ApplyLens => self.start_lens(),
+
             Action::ShowColorProfile => {
                 if let Some(view) = self.doc() {
                     self.dialog = Dialog::ColorProfile(Box::new(
@@ -2779,6 +2801,131 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Start the full-resolution pass on a worker thread.
+    ///
+    /// The window stays live while it runs, which is the point of doing it
+    /// this way: a 60 megapixel correction takes seconds, and a frozen window
+    /// with no progress bar is indistinguishable from a crash.
+    fn start_lens(&mut self) {
+        let Dialog::Lens(d) = &self.dialog else { return };
+        if d.applying.is_some() {
+            return;
+        }
+        let (lens, autocrop, id) = (d.lens, d.autocrop, d.layer);
+        let Some(source) = self.doc().and_then(|v| v.doc.tree.get(id)?.pixels().cloned()) else {
+            self.fail("That layer has no pixels any more");
+            return;
+        };
+
+        let total = cshop_core::lens::total_rows(source.height());
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        if let Dialog::Lens(d) = &mut self.dialog {
+            d.applying = Some((progress.clone(), total));
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let plane = cshop_core::filters::plane::Plane::from_pixels(&source);
+            let out = cshop_core::lens::apply(&plane, lens, Some(&progress));
+            let crop = autocrop
+                .then(|| cshop_core::lens::largest_opaque_rect(&out))
+                .filter(|r| !r.is_empty());
+            let _ = tx.send(LensOutcome::Done { pixels: Box::new(out.to_pixels()), crop });
+        });
+        self.lens_job = Some(rx);
+    }
+
+    /// Collect the pass when it finishes, and keep the progress bar moving
+    /// while it does not.
+    pub fn poll_lens(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.lens_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                self.lens_job = None;
+                if let Dialog::Lens(d) = &mut self.dialog {
+                    d.applying = None;
+                }
+                self.fail("The correction stopped without finishing");
+            }
+            Ok(LensOutcome::Failed(why)) => {
+                self.lens_job = None;
+                if let Dialog::Lens(d) = &mut self.dialog {
+                    d.applying = None;
+                }
+                self.fail(why);
+            }
+            Ok(LensOutcome::Done { pixels, crop }) => {
+                self.lens_job = None;
+                let Dialog::Lens(d) = &self.dialog else { return };
+                let (id, autocrop) = (d.layer, d.autocrop);
+                let _ = autocrop;
+                self.finish_lens(id, *pixels, crop);
+                self.dialog = Dialog::None;
+            }
+        }
+    }
+
+    /// Put the corrected pixels in, and crop if that was asked for.
+    ///
+    /// One history entry for both, because they are one action as far as
+    /// anyone undoing them is concerned.
+    fn finish_lens(&mut self, id: LayerId, pixels: PixelBuffer, crop: Option<IRect>) {
+        let gpu = self.gpu.clone();
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let (offset, mask) = (layer.offset, layer.mask.clone());
+
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> =
+            vec![Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id,
+                pixels,
+                offset,
+                mask,
+                "Lens Correction",
+            ))];
+
+        // The crop is measured in the layer's own frame; the canvas is in the
+        // document's, so it moves by the layer's offset before being used.
+        let mut cropped = None;
+        if let Some(r) = crop {
+            let doc_rect = IRect::new(
+                r.x0 + offset.0,
+                r.y0 + offset.1,
+                r.x1 + offset.0,
+                r.y1 + offset.1,
+            )
+            .intersect(&view.doc.bounds());
+            if !doc_rect.is_empty()
+                && (doc_rect.width() != view.doc.width || doc_rect.height() != view.doc.height)
+            {
+                steps.push(Box::new(cshop_core::history::ResizeCanvas::new(
+                    doc_rect.width(),
+                    doc_rect.height(),
+                    (-doc_rect.x0, -doc_rect.y0),
+                )));
+                cropped = Some((doc_rect.width(), doc_rect.height()));
+            }
+        }
+
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Lens Correction", steps)),
+        );
+        view.mark_dirty(dirty);
+        if cropped.is_some() {
+            view.resize_targets(&gpu);
+            view.zoom_initialised = false;
+        }
+        view.invalidate();
+        match cropped {
+            Some((w, h)) => self.notify(format!("Lens correction applied, cropped to {w}x{h}")),
+            None => self.notify("Lens correction applied"),
+        }
+    }
+
     pub fn poll_segment(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.segment_job else { return };
         match rx.try_recv() {
@@ -4319,6 +4466,14 @@ impl PenDraft {
 }
 
 /// What a background segmentation came back with.
+/// What the full-resolution lens pass came back with.
+pub enum LensOutcome {
+    /// The corrected pixels, and the rectangle to keep if a crop was asked
+    /// for — measured on the real result rather than on the preview.
+    Done { pixels: Box<PixelBuffer>, crop: Option<IRect> },
+    Failed(String),
+}
+
 pub enum SegmentOutcome {
     Ready { selection: Box<cshop_core::selection::Selection>, coverage: f32 },
     Failed(String),

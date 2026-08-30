@@ -20,6 +20,7 @@ pub mod filter_ui;
 pub mod icons;
 pub mod input_harness;
 pub mod layer_style;
+pub mod lens_ui;
 pub mod panels;
 pub mod properties;
 pub mod theme;

@@ -330,6 +330,10 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Open the lens-correction window on the active layer.
+    ShowLens,
+    /// Run the agreed corrections over the whole layer, on a worker thread.
+    ApplyLens,
     ShowColorProfile,
     /// Change the document's working space. `None` means the built-in sRGB.
     /// `convert` chooses between rewriting the pixels and relabelling them —

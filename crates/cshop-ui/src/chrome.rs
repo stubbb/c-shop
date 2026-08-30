@@ -688,6 +688,14 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
+            // Above the categories rather than inside one, because it is not a
+            // filter: it changes the geometry of the picture and can change
+            // its size, which nothing under Distort does.
+            if item_enabled(ui, "Lens Correction…", "", has_doc).clicked() {
+                app.push(Action::ShowLens);
+                ui.close();
+            }
+            ui.separator();
 
             // Grouped exactly as the Filter menu is, so the shape is familiar.
             let all = cshop_core::filters::Filter::all_defaults();

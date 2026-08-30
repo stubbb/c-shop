@@ -93,6 +93,17 @@ Clouds and Fibers; Find Edges, Emboss, Solarize and Diffuse; High Pass, Offset,
 Maximum, Minimum and a 5×5 custom convolution. Each previews live, with zoom
 and pan so you can judge detail at 1:1, and repeats with `Ctrl+F`.
 
+**Lens correction.** Distortion, perspective, angle and vignette in one
+window, composed into a single resampling pass rather than four — a picture
+straightened, then unbent, then de-keystoned separately comes out softer than
+one that had all of it done at the same moment. The preview runs at 720p and is
+exact rather than approximate, because every control is in units of the frame
+and none has a size in pixels. Optional autocrop takes the largest rectangle
+with no transparency in it, read off the alpha that actually resulted rather
+than predicted from the settings. The full-resolution pass runs on a worker
+thread behind a progress bar, so the window stays alive on a 60 megapixel
+frame.
+
 **Transforms.** Free Transform with eight handles and rotation, where Shift
 constrains, Alt works from the centre and Ctrl pulls a corner into a true
 perspective distort. Fixed rotations and flips, Crop with aspect presets, Image
@@ -294,7 +305,7 @@ cshop-app  →  cshop-ui  →  cshop-gpu  →  cshop-core
   interaction layer.
 - **`cshop-app`** — the window, the swapchain, and the offscreen capture path.
 
-About 55,000 lines of Rust and 500 of WGSL, with a further 400 of Python in the
+About 56,000 lines of Rust and 500 of WGSL, with a further 400 of Python in the
 optional vision sidecar — the only part that is not Rust, and the only part
 that runs outside the binary. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 explains the decisions that are not obvious from the code — the colour space,
@@ -303,7 +314,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-736 tests, and the interesting ones are not unit tests:
+759 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

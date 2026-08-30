@@ -751,10 +751,11 @@ impl Runner {
             "info" => self.cmd_info(cmd),
             "export" | "save" => self.cmd_write(cmd),
             "profile" => self.cmd_profile(cmd),
+            "lens" => self.cmd_lens(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, export, save"
+                 order, info, profile, lens, export, save"
             )),
         }
     }
@@ -1598,6 +1599,139 @@ impl Runner {
         );
         self.report.facts.push(("document".into(), fact.clone()));
         Ok(fact)
+    }
+
+    /// Lens correction: the geometry of the photograph rather than its colour.
+    ///
+    /// Applied to the active layer in one pass, and — with `autocrop` — the
+    /// canvas is cut back to the largest rectangle with nothing transparent in
+    /// it, which is what makes a straightened photograph usable without
+    /// anyone having to guess at a crop.
+    fn cmd_lens(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::lens::{apply, largest_opaque_rect, Lens};
+        self.need_doc()?;
+
+        let mut lens = Lens::default();
+        if let Some(v) = cmd.f32("distortion")? {
+            lens.distortion = v.clamp(-1.0, 1.0);
+        }
+        if let Some(v) = cmd.f32("rotation")? {
+            lens.rotation = v;
+        }
+        if let Some(v) = cmd.f32("perspective-v")? {
+            lens.perspective_v = v.clamp(-1.0, 1.0);
+        }
+        if let Some(v) = cmd.f32("perspective-h")? {
+            lens.perspective_h = v.clamp(-1.0, 1.0);
+        }
+        if let Some(v) = cmd.f32("scale")? {
+            lens.scale = v.clamp(0.05, 8.0);
+        }
+        if let Some(v) = cmd.f32("vignette")? {
+            lens.vignette = v.clamp(-1.0, 1.0);
+        }
+        if let Some(v) = cmd.f32("midpoint")? {
+            lens.vignette_midpoint = v.clamp(0.0, 0.99);
+        }
+        let autocrop = cmd.flag("autocrop");
+
+        if lens.is_identity() {
+            return Err(
+                "lens needs something to correct: distortion=, rotation=, perspective-v=, \
+                 perspective-h=, scale= or vignette="
+                    .to_string(),
+            );
+        }
+
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to correct")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels to correct")?;
+
+        let plane = cshop_core::filters::plane::Plane::from_pixels(&source);
+        let out = apply(&plane, lens, None);
+        let crop = (autocrop && lens.moves_pixels())
+            .then(|| largest_opaque_rect(&out))
+            .filter(|r| !r.is_empty());
+        let pixels = out.to_pixels();
+
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let Some(layer) = view.doc.tree.get(id) else { return Err("the layer went away".into()) };
+        let (offset, mask) = (layer.offset, layer.mask.clone());
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> =
+            vec![Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id,
+                pixels,
+                offset,
+                mask,
+                "Lens Correction",
+            ))];
+
+        let mut cropped = None;
+        if let Some(r) = crop {
+            let doc_rect = cshop_core::geom::IRect::new(
+                r.x0 + offset.0,
+                r.y0 + offset.1,
+                r.x1 + offset.0,
+                r.y1 + offset.1,
+            )
+            .intersect(&view.doc.bounds());
+            if !doc_rect.is_empty()
+                && (doc_rect.width() != view.doc.width || doc_rect.height() != view.doc.height)
+            {
+                steps.push(Box::new(cshop_core::history::ResizeCanvas::new(
+                    doc_rect.width(),
+                    doc_rect.height(),
+                    (-doc_rect.x0, -doc_rect.y0),
+                )));
+                cropped = Some((doc_rect.width(), doc_rect.height()));
+            }
+        }
+
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Lens Correction", steps)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+
+        let mut said = Vec::new();
+        if lens.distortion != 0.0 {
+            said.push(if lens.distortion > 0.0 {
+                format!("pincushion {:.3}", lens.distortion)
+            } else {
+                format!("barrel {:.3}", -lens.distortion)
+            });
+        }
+        if lens.rotation != 0.0 {
+            said.push(format!("rotated {:.1}°", lens.rotation));
+        }
+        if lens.perspective_v != 0.0 || lens.perspective_h != 0.0 {
+            said.push(format!(
+                "keystone {:.2},{:.2}",
+                lens.perspective_h, lens.perspective_v
+            ));
+        }
+        if (lens.scale - 1.0).abs() >= f32::EPSILON {
+            said.push(format!("scaled {:.2}", lens.scale));
+        }
+        if lens.vignette != 0.0 {
+            said.push(if lens.vignette > 0.0 {
+                format!("vignette lifted {:.2}", lens.vignette)
+            } else {
+                format!("vignette darkened {:.2}", -lens.vignette)
+            });
+        }
+        Ok(match cropped {
+            Some((w, h)) => format!("corrected: {}, cropped to {w}x{h}", said.join(", ")),
+            None => format!("corrected: {}", said.join(", ")),
+        })
     }
 
     /// Look up a profile by name or by path. `srgb` is spelled out rather than

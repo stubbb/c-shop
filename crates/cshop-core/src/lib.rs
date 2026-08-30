@@ -29,6 +29,7 @@ pub mod geom;
 pub mod history;
 pub mod json;
 pub mod layer;
+pub mod lens;
 pub mod mask;
 pub mod paint;
 pub mod path;

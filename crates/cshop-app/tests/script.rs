@@ -992,3 +992,69 @@ fn a_deep_export_to_a_shallow_format_is_refused() {
     assert!(report.steps[1].note.contains("sixteen bits"), "{:?}", notes(&report));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- lens correction -------------------------------------------------------
+
+#[test]
+fn lens_needs_something_to_correct() {
+    let Some(report) = run("new 40 30 background=white\nlens") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("rotation="), "{:?}", notes(&report));
+}
+
+/// Straightening a photograph leaves empty corners; `autocrop` is what makes
+/// the result usable without anyone having to guess at a crop.
+#[test]
+fn autocrop_takes_the_empty_corners_off_the_canvas() {
+    let Some(report) = run("new 400 300 background=white\nlens rotation=10 autocrop\ninfo") else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[1].note.contains("cropped to"), "{:?}", notes(&report));
+    let info = &report.steps[2].note;
+    assert!(!info.starts_with("400x300"), "the canvas should have shrunk: {info}");
+}
+
+/// And without it the canvas is left alone, corners and all.
+#[test]
+fn without_autocrop_the_canvas_keeps_its_size() {
+    let Some(report) = run("new 400 300 background=white\nlens rotation=10\ninfo") else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(!report.steps[1].note.contains("cropped"), "{:?}", notes(&report));
+    assert!(report.steps[2].note.starts_with("400x300"), "{:?}", notes(&report));
+}
+
+/// The report says which way each control went, since "distortion 0.12" alone
+/// does not say whether a line was pushed out or pulled in.
+#[test]
+fn the_report_names_the_direction_of_each_correction() {
+    let Some(report) =
+        run("new 60 60 background=white\nlens distortion=-0.2 vignette=0.4 rotation=3")
+    else {
+        return;
+    };
+    let note = &report.steps[1].note;
+    assert!(note.contains("barrel"), "{note}");
+    assert!(note.contains("lifted"), "{note}");
+    assert!(note.contains("rotated"), "{note}");
+
+    let Some(report) = run("new 60 60 background=white\nlens distortion=0.2 vignette=-0.4") else {
+        return;
+    };
+    let note = &report.steps[1].note;
+    assert!(note.contains("pincushion"), "{note}");
+    assert!(note.contains("darkened"), "{note}");
+}
+
+/// A vignette moves no pixels, so there is nothing for a crop to take even
+/// when it is asked for.
+#[test]
+fn a_vignette_alone_leaves_nothing_to_crop() {
+    let Some(report) = run("new 200 200 background=white\nlens vignette=-0.6 autocrop\ninfo")
+    else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(!report.steps[1].note.contains("cropped"), "{:?}", notes(&report));
+    assert!(report.steps[2].note.starts_with("200x200"), "{:?}", notes(&report));
+}

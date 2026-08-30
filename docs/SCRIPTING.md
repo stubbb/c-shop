@@ -91,8 +91,53 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
 | `info` | Report the document's size, layer count and working colour space. |
+| `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
 | `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks; `depth=16` writes sixteen bits a channel, which PNG and TIFF can hold and the rest cannot. |
+
+### Straightening a photograph
+
+`lens` is the geometry of the picture rather than its colour: the bend a lens
+puts in straight lines, the lean of a camera that was not square on, a horizon
+that was not level, and the darkening at the corners. All four are composed
+into **one** backward map and sampled once, because a picture straightened,
+then unbent, then de-keystoned in three passes comes out softer than one that
+had all three done at the same moment.
+
+```
+open building.jpg
+lens rotation=-1.4 distortion=0.08 perspective-v=0.18 autocrop
+```
+
+Everything is in units of the frame, not pixels: distortion is a radius where
+the corner of the picture is 1, perspective is a fraction of the frame, and
+rotation is degrees. So the same numbers mean the same thing on a thumbnail
+and on a 60 megapixel original, and a script does not have to know the size of
+what it was handed.
+
+Two things are worth knowing before pointing an agent at it.
+
+**The signs are named in the report,** because a number alone does not say
+which way a line bent:
+
+```
+corrected: pincushion 0.200, rotated 3.0°, vignette lifted 0.40, cropped to 338x246
+```
+
+Positive `distortion` is pincushion, which is what corrects the bulge of a
+wide-angle lens; negative is barrel, which corrects the pinch of a long one.
+Positive `vignette` lifts the corners, negative darkens them.
+
+**`autocrop` is a flag, and it changes the canvas.** Moving pixels leaves empty
+corners, and this takes the largest rectangle that has no transparency in it —
+found by reading the alpha that actually resulted, so it is exact for whatever
+shape the corrections happened to leave, including the bulged edges a strong
+barrel correction makes. The step reports the new size. It does nothing when
+nothing moved: a vignette on its own empties no corners, so there is nothing
+to take. And the two corrections that fill the frame rather than emptying it —
+a barrel correction, and `scale` above 1 — can cancel out a rotation's losses
+entirely, in which case the canvas is left alone and the report says nothing
+about cropping.
 
 ### Colour spaces, and files made of ink
 

@@ -35,6 +35,7 @@ SCREENSHOT OPTIONS:
     --demo                          build a sample layered document first
     --demo-selection                build a document with an active selection
     --demo-profile                  open the colour-profile window
+    --demo-lens                     open the lens-correction window
     --right-click X,Y               right-click there, to capture a context menu
 ";
 
@@ -90,6 +91,8 @@ fn main() {
     let mut demo_fx_dialog = false;
     let mut demo_segment = false;
     let mut demo_profile = false;
+    let mut demo_lens = false;
+    let mut demo_lens_busy = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
@@ -158,6 +161,11 @@ fn main() {
             "--demo" => demo = true,
             "--demo-segment" => demo_segment = true,
             "--demo-profile" => demo_profile = true,
+            "--demo-lens" => demo_lens = true,
+            "--demo-lens-busy" => {
+                demo_lens = true;
+                demo_lens_busy = true;
+            }
             "--demo-selection" => demo_selection = true,
             "--demo-quickmask" => demo_quick_mask = true,
             "--demo-adjust" => demo_adjust = true,
@@ -353,6 +361,36 @@ fn main() {
                 }
                 if demo_profile {
                     app.dispatch(cshop_ui::commands::Action::ShowColorProfile);
+                }
+                if demo_lens {
+                    // The sample document opens with a group selected, which
+                    // has no pixels of its own; the window wants a raster one.
+                    let raster = app.doc().and_then(|v| {
+                        v.doc
+                            .tree
+                            .iter_all()
+                            .into_iter()
+                            .find(|id| v.doc.tree.get(*id).is_some_and(|l| l.pixels().is_some()))
+                    });
+                    if let Some(id) = raster {
+                        app.dispatch(cshop_ui::commands::Action::SelectLayer(id));
+                    }
+                    app.dispatch(cshop_ui::commands::Action::ShowLens);
+                    if let cshop_ui::dialogs::Dialog::Lens(d) = &mut app.dialog {
+                        d.lens.distortion = -0.12;
+                        d.lens.rotation = 8.0;
+                        d.lens.vignette = -0.45;
+                        d.autocrop = true;
+                        if demo_lens_busy {
+                            // Frozen part-way, so the capture catches the
+                            // progress bar rather than a window that has
+                            // already finished.
+                            let done = std::sync::Arc::new(
+                                std::sync::atomic::AtomicU32::new(371),
+                            );
+                            d.applying = Some((done, 600));
+                        }
+                    }
                 }
                 if demo_segment {
                     // Opened and shown mid-run, so the screenshot catches the
