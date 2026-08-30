@@ -39,6 +39,29 @@ impl MaskBuffer {
         Self::new(width, height, 0)
     }
 
+    /// A layer's tone as coverage: bright pixels reveal, dark ones hide.
+    ///
+    /// Weighted by the layer's own alpha, so a greyscale picture on
+    /// transparency masks only where it actually is. Without that, the empty
+    /// part of such a layer — black and invisible — would read as "hide", which
+    /// is right by accident for black and wrong for anything else.
+    ///
+    /// Luminance rather than a plain average, because a mask painted in colour
+    /// should behave the way the eye reads that colour's brightness.
+    pub fn from_luminance(pixels: &crate::pixels::PixelBuffer) -> Self {
+        let mut out = MaskBuffer::hide_all(pixels.width(), pixels.height());
+        for y in 0..pixels.height() as i32 {
+            for x in 0..pixels.width() as i32 {
+                let c = pixels.get(x, y);
+                let tone =
+                    0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32;
+                let v = tone * (c.a as f32 / 255.0);
+                out.set(x, y, (v + 0.5).clamp(0.0, 255.0) as u8);
+            }
+        }
+        out
+    }
+
     pub fn from_bytes(width: u32, height: u32, data: Vec<u8>) -> Option<Self> {
         (data.len() == width as usize * height as usize).then_some(Self { width, height, data })
     }

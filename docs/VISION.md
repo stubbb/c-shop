@@ -207,9 +207,14 @@ the window says "from the top right" so nobody has to think in degrees.
 
 ![The photograph, the depth it read, and the same picture lit from the right](example-relight.jpg)
 
-`depth` on its own puts the middle picture into the document as a layer, which
-is useful for masking by distance — a haze that thickens with depth, a
-background darkened without selecting it.
+`depth` on its own puts the middle picture into the document as a layer, and
+`depth mask` puts it straight on as a **layer mask**: near reveals, far hides,
+so an adjustment clipped to it lands on the subject without anyone selecting
+anything. `depth mask invert` is the other way round, which is what haze does.
+
+**Layer ▸ Layer Mask ▸ From Depth** does the same, near or far, and the two
+entries beside it — **Layer to Mask** and **Mask to Selection** — are what make
+masks, layers and selections interchangeable rather than dead ends.
 
 ### From depth to shape
 

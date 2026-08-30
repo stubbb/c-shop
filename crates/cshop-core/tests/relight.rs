@@ -161,3 +161,25 @@ fn lighting_leaves_alpha_alone() {
     let after: Vec<u8> = out.pixels().iter().map(|p| p.a).collect();
     assert_eq!(before, after);
 }
+
+// --- depth as a mask -------------------------------------------------------
+
+/// Near reveals and far hides, which is the way round that makes the obvious
+/// edit obvious: mask a layer by its own depth and the subject survives.
+#[test]
+fn depth_becomes_a_mask_the_right_way_round() {
+    let depth = ramp_x(32, 32); // rises to the right, so the right is nearest
+    let near = cshop_core::relight::to_mask(&depth, false);
+    assert!(near.get(31, 16) > 200, "the near side should be revealed");
+    assert!(near.get(0, 16) < 55, "the far side should be hidden");
+
+    let far = cshop_core::relight::to_mask(&depth, true);
+    assert!(far.get(31, 16) < 55, "inverted, the near side hides");
+    assert!(far.get(0, 16) > 200, "and the far side reveals");
+
+    // The two are complements, give or take rounding.
+    for x in [0, 7, 16, 24, 31] {
+        let sum = near.get(x, 16) as i32 + far.get(x, 16) as i32;
+        assert!((sum - 255).abs() <= 1, "at {x} they sum to {sum}, not 255");
+    }
+}

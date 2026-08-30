@@ -387,6 +387,13 @@ pub enum Action {
     // --- masks ---
     AddLayerMask { hide_all: bool },
     AddLayerMaskFromSelection { invert: bool },
+    /// Mask the active layer by how far away everything in it is. Needs the
+    /// vision pack, so it runs on a worker thread.
+    AddLayerMaskFromDepth { invert: bool },
+    /// Turn the active layer into a mask on the one below it, consuming it.
+    LayerToMask,
+    /// Load the active layer's mask as the selection.
+    SelectionFromMask,
     DeleteLayerMask,
     ApplyLayerMask,
     ToggleMaskEnabled,

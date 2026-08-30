@@ -55,9 +55,12 @@ lassos, magic wand. All four boolean modes; feather, expand, contract, border,
 smooth, invert, grow and similar; animated marching ants. Every tool respects
 the selection, including partial coverage along a feathered edge.
 
-**Masks and channels.** Layer masks from a selection or blank, painted on
-directly, enabled, applied or deleted. Quick Mask. Selections saved to alpha
-channels in the Channels panel.
+**Masks and channels.** Layer masks from a selection, from blank, or from how
+far away everything is; painted on directly, enabled, applied or deleted. Masks,
+layers and selections convert between each other — a greyscale layer becomes a
+mask on the one below, a mask becomes a selection with its softness intact — so
+none of the three is a dead end. Quick Mask. Selections saved to alpha channels
+in the Channels panel.
 
 **Painting.** Brush, pencil, eraser and clone stamp sharing one stroke engine —
 size, hardness, opacity, flow and spacing behave identically across all four.
@@ -327,8 +330,12 @@ and dragging the light after that is arithmetic.
 It is not physical relighting: no cast shadows, no idea how shiny anything is,
 and the new lamp is added to whatever already lit the picture. On a subject it
 is convincing; on a scene whose lighting is the point it will look like what it
-is. `depth` on its own keeps the middle picture as a layer, for masking by
-distance.
+is.
+
+The same depth answers a second question — *which part of this is near* — which
+in a layered editor is a mask. `depth mask`, or **Layer ▸ Layer Mask ▸ From
+Depth**, puts it straight on: near reveals, far hides, and an adjustment
+clipped to it lands on the subject without anyone selecting anything.
 
 ### Making something disappear
 
@@ -441,7 +448,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-799 tests, and the interesting ones are not unit tests:
+812 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

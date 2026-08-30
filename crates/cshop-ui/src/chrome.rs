@@ -540,6 +540,23 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                     app.push(Action::AddLayerMaskFromSelection { invert: true });
                     ui.close();
                 }
+                if item_enabled(ui, "From Depth (near)", "", has_doc && !has_mask).clicked() {
+                    app.push(Action::AddLayerMaskFromDepth { invert: false });
+                    ui.close();
+                }
+                if item_enabled(ui, "From Depth (far)", "", has_doc && !has_mask).clicked() {
+                    app.push(Action::AddLayerMaskFromDepth { invert: true });
+                    ui.close();
+                }
+                ui.separator();
+                if item_enabled(ui, "Layer to Mask", "", has_doc).clicked() {
+                    app.push(Action::LayerToMask);
+                    ui.close();
+                }
+                if item_enabled(ui, "Mask to Selection", "", has_mask).clicked() {
+                    app.push(Action::SelectionFromMask);
+                    ui.close();
+                }
                 ui.separator();
                 if item_enabled(ui, "Disable / Enable", "", has_mask).clicked() {
                     app.push(Action::ToggleMaskEnabled);

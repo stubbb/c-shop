@@ -118,6 +118,9 @@ pub struct CShopApp {
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
     /// The depth model, while it looks at the picture.
     depth_job: Option<std::sync::mpsc::Receiver<Result<cshop_core::relight::DepthMap, String>>>,
+    /// Set while the depth being worked out is destined for a mask rather than
+    /// for the Relight window: the layer to put it on, and which way round.
+    depth_for_mask: Option<(LayerId, bool)>,
     /// The hole being filled in, while the model works on it.
     #[allow(clippy::type_complexity)]
     inpaint_job: Option<std::sync::mpsc::Receiver<Result<(LayerId, PixelBuffer), String>>>,
@@ -228,6 +231,7 @@ impl CShopApp {
             separate_map: None,
             inpaint_job: None,
             depth_job: None,
+            depth_for_mask: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -1643,6 +1647,9 @@ impl CShopApp {
             Action::AddLayerMaskFromSelection { invert } => {
                 self.add_layer_mask(true, invert, false)
             }
+            Action::AddLayerMaskFromDepth { invert } => self.start_depth_mask(invert),
+            Action::LayerToMask => self.layer_to_mask(),
+            Action::SelectionFromMask => self.selection_from_mask(),
             Action::DeleteLayerMask => self.remove_layer_mask(false),
             Action::ApplyLayerMask => self.remove_layer_mask(true),
 
@@ -3038,20 +3045,34 @@ impl CShopApp {
             }
             Err(_) => {
                 self.depth_job = None;
+                let for_mask = self.depth_for_mask.take().is_some();
                 if let Dialog::Relight(d) = &mut self.dialog {
                     d.busy = false;
                     d.status = "The depth model stopped without answering.".into();
                 }
+                if for_mask {
+                    self.fail("The depth model stopped without answering");
+                }
             }
             Ok(Err(why)) => {
                 self.depth_job = None;
+                let for_mask = self.depth_for_mask.take().is_some();
                 if let Dialog::Relight(d) = &mut self.dialog {
                     d.busy = false;
-                    d.status = why;
+                    d.status = why.clone();
+                }
+                if for_mask {
+                    self.fail(why);
                 }
             }
             Ok(Ok(map)) => {
                 self.depth_job = None;
+                // The same model answers two questions. Which one asked is
+                // recorded when the job starts, so the answer knows where to go.
+                if let Some((id, invert)) = self.depth_for_mask.take() {
+                    self.finish_depth_mask(id, invert, map);
+                    return;
+                }
                 let lit = match &mut self.dialog {
                     Dialog::Relight(d) => {
                         d.depth = Some(std::sync::Arc::new(map));
@@ -4557,6 +4578,151 @@ impl CShopApp {
     // -----------------------------------------------------------------------
     // Masks
     // -----------------------------------------------------------------------
+
+    /// Mask a layer by how far away everything in it is.
+    ///
+    /// The same depth the Relight window reads, put to the other obvious use:
+    /// near reveals and far hides, so an adjustment clipped to it lands on the
+    /// subject and leaves the background alone. Inverted, it builds with
+    /// distance instead, which is what haze does.
+    fn start_depth_mask(&mut self, invert: bool) {
+        if self.depth_job.is_some() {
+            self.notify("Already working out the depth");
+            return;
+        }
+        let picked = self.doc().and_then(|v| {
+            let id = v.doc.active?;
+            let layer = v.doc.tree.get(id)?;
+            if layer.mask.is_some() {
+                return None;
+            }
+            Some((id, layer.pixels()?.clone()))
+        });
+        let Some((id, pixels)) = picked else {
+            let has_mask = self.doc().is_some_and(|d| d.doc.active_has_mask());
+            if has_mask {
+                self.notify("That layer already has a mask");
+            } else {
+                self.fail("Masking by depth needs a layer with pixels in it");
+            }
+            return;
+        };
+        if !crate::vision::is_available() {
+            self.fail(crate::vision::NOT_INSTALLED);
+            return;
+        }
+        self.depth_for_mask = Some((id, invert));
+        self.notify("Working out the depth…");
+        self.start_depth(pixels);
+    }
+
+    /// Put a worked-out depth onto a layer as its mask.
+    fn finish_depth_mask(&mut self, id: LayerId, invert: bool, map: cshop_core::relight::DepthMap) {
+        let Some(view) = self.doc_mut() else { return };
+        if view.doc.tree.get(id).is_none_or(|l| l.mask.is_some()) {
+            self.notify("That layer already has a mask");
+            return;
+        }
+        let offset = view.doc.tree.get(id).map(|l| l.offset).unwrap_or((0, 0));
+        let mask = cshop_core::layer::LayerMask {
+            data: cshop_core::relight::to_mask(&map, invert),
+            offset,
+            enabled: true,
+            linked: true,
+        };
+        let dirty = view
+            .history
+            .apply(&mut view.doc, Box::new(AddLayerMask::new(id, mask, "Mask from Depth")));
+        view.mark_dirty(dirty);
+        view.doc.edit_target = EditTarget::Mask;
+        view.invalidate();
+        self.notify(if invert { "Masked by distance" } else { "Masked by nearness" });
+    }
+
+    /// Turn the active layer into a mask on the one below it.
+    ///
+    /// The layer is consumed, because that is what the operation means: a
+    /// greyscale layer sitting above a picture is a mask that has not been
+    /// attached yet. Its tone becomes coverage, weighted by its own alpha, and
+    /// both halves are one history entry — a document left with the mask
+    /// attached and the layer still there would be showing it twice.
+    fn layer_to_mask(&mut self) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(pixels) = view.doc.tree.get(id).and_then(|l| l.pixels().cloned()) else {
+            self.fail("That layer has no pixels to make a mask from");
+            return;
+        };
+        // The layer below, among its own siblings.
+        let below = view.doc.tree.position(id).and_then(|p| {
+            let siblings = match p.parent {
+                Some(parent) => view.doc.tree.get(parent)?.children().to_vec(),
+                None => view.doc.tree.root().to_vec(),
+            };
+            (p.index > 0).then(|| siblings.get(p.index - 1).copied()).flatten()
+        });
+        let Some(target) = below else {
+            self.fail("There is no layer underneath to put the mask on");
+            return;
+        };
+        if view.doc.tree.get(target).is_none_or(|l| l.mask.is_some()) {
+            self.fail("The layer underneath already has a mask");
+            return;
+        }
+
+        let offset = view.doc.tree.get(id).map(|l| l.offset).unwrap_or((0, 0));
+        let mask = cshop_core::layer::LayerMask {
+            data: cshop_core::mask::MaskBuffer::from_luminance(&pixels),
+            offset,
+            enabled: true,
+            linked: true,
+        };
+        let steps: Vec<Box<dyn cshop_core::history::Command>> = vec![
+            Box::new(AddLayerMask::new(target, mask, "Layer to Mask")),
+            Box::new(cshop_core::history::DeleteLayer::new(id)),
+        ];
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Layer to Mask", steps)),
+        );
+        view.mark_dirty(dirty);
+        view.doc.active = Some(target);
+        view.doc.selected_layers = vec![target];
+        view.doc.edit_target = EditTarget::Mask;
+        view.invalidate();
+        self.notify("Layer became a mask");
+    }
+
+    /// Load the active layer's mask as the selection.
+    fn selection_from_mask(&mut self) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(mask) = view.doc.tree.get(id).and_then(|l| l.mask.as_ref()) else {
+            self.fail("That layer has no mask to make a selection from");
+            return;
+        };
+        // The mask sits in the layer's frame and a selection in the
+        // document's, so it is placed rather than simply copied.
+        let (w, h) = (view.doc.width, view.doc.height);
+        let mut placed = cshop_core::mask::MaskBuffer::hide_all(w, h);
+        placed.paste(&mask.data, mask.offset.0, mask.offset.1);
+        let selection = cshop_core::selection::Selection::from_mask(placed);
+        let empty = selection.is_empty();
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSelection::new(
+                Some(&selection),
+                "Selection from Mask",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        if empty {
+            self.notify("That mask hides everything, so the selection is empty");
+        } else {
+            self.notify("Selection from mask");
+        }
+    }
 
     fn add_layer_mask(&mut self, from_selection: bool, invert: bool, hide_all: bool) {
         let Some(view) = self.doc_mut() else { return };

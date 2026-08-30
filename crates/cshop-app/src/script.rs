@@ -1344,15 +1344,51 @@ impl Runner {
         Ok(map)
     }
 
-    /// Put the depth into the document as a layer, for looking at.
-    fn cmd_depth(&mut self, _cmd: &Command) -> Result<String, String> {
+    /// Put the depth into the document — as a layer to look at, or as a mask
+    /// on the layer it was measured from.
+    ///
+    /// The mask is the useful half. Near reveals and far hides, so an
+    /// adjustment clipped to it lands on the subject and leaves the background
+    /// alone; `invert` builds with distance instead, which is what haze does.
+    fn cmd_depth(&mut self, cmd: &Command) -> Result<String, String> {
         self.need_doc()?;
         let id = self
             .app
             .doc()
             .and_then(|v| v.doc.active)
             .ok_or("there is no active layer to measure")?;
+        let as_mask = cmd.args.first().map(|s| s.as_str()) == Some("mask") || cmd.flag("mask");
+        let invert = cmd.flag("invert") || cmd.flag("far");
         let map = self.depth_of(id)?;
+
+        if as_mask {
+            if self.app.doc().and_then(|v| v.doc.tree.get(id)).is_some_and(|l| l.mask.is_some()) {
+                return Err("that layer already has a mask".to_string());
+            }
+            let offset = self
+                .app
+                .doc()
+                .and_then(|v| v.doc.tree.get(id).map(|l| l.offset))
+                .unwrap_or((0, 0));
+            let mask = cshop_core::layer::LayerMask {
+                data: cshop_core::relight::to_mask(&map, invert),
+                offset,
+                enabled: true,
+                linked: true,
+            };
+            let view = self.app.doc_mut().ok_or("no document")?;
+            let dirty = view.history.apply(
+                &mut view.doc,
+                Box::new(cshop_core::history::AddLayerMask::new(id, mask, "Mask from Depth")),
+            );
+            view.mark_dirty(dirty);
+            view.invalidate();
+            return Ok(format!(
+                "masked by {}",
+                if invert { "distance" } else { "nearness" }
+            ));
+        }
+
         let pixels = cshop_core::relight::to_pixels(&map);
         let (w, h) = (pixels.width(), pixels.height());
 
@@ -2063,6 +2099,29 @@ impl Runner {
                 self.app.dispatch(Action::SelectAll);
                 Ok("selected everything".into())
             }
+            Some("mask") => {
+                let had = self
+                    .app
+                    .doc()
+                    .and_then(|v| Some(v.doc.tree.get(v.doc.active?)?.mask.is_some()))
+                    .unwrap_or(false);
+                if !had {
+                    return Err("that layer has no mask to make a selection from".into());
+                }
+                self.app.dispatch(Action::SelectionFromMask);
+                let covered = self
+                    .app
+                    .doc()
+                    .and_then(|v| v.doc.selection.as_ref().map(|s| s.bounds()))
+                    .unwrap_or(cshop_core::geom::IRect::EMPTY);
+                Ok(format!(
+                    "selected the mask: {}x{} at {},{}",
+                    covered.width(),
+                    covered.height(),
+                    covered.x0,
+                    covered.y0
+                ))
+            }
             Some("none") => {
                 self.app.dispatch(Action::Deselect);
                 Ok("deselected".into())
@@ -2704,6 +2763,9 @@ impl Runner {
             "merge-down" => Action::MergeDown,
             "flatten" => Action::FlattenImage,
             "rasterize" => Action::RasterizeLayer,
+            // A greyscale layer above a picture is a mask that has not been
+            // attached yet; this attaches it and consumes the layer.
+            "to-mask" => Action::LayerToMask,
             "select" => {
                 let n = cmd.arg_f32(1, "layer index")? as usize;
                 let id = self
@@ -2716,7 +2778,7 @@ impl Runner {
             other => {
                 return Err(format!(
                     "unknown layer command {other:?}. Available: new, group, duplicate, delete, \
-                     merge-down, flatten, rasterize, select <index>"
+                     merge-down, flatten, rasterize, to-mask, select <index>"
                 ))
             }
         };

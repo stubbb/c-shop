@@ -78,7 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
-| `depth` | Put a map of how far away everything is into the document, as a layer. Needs the [vision pack](VISION.md). |
+| `depth [mask] [invert]` | How far away everything is, as a layer to look at or as a mask on the layer it was measured from. Needs the [vision pack](VISION.md). |
 | `relight [azimuth= elevation= intensity= ambient= relief= color=]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
 | `inpaint` | Make the selection disappear, inventing what was behind it. Needs the [vision pack](VISION.md). |
 | `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
@@ -88,11 +88,11 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
 | `style NAME [key=value...]` | Apply a named style — see below. |
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
-| `select X Y W H` \| `select all` \| `select none` \| `select invert` \| `select clear` | `feather=` softens the edge. |
+| `select X Y W H` \| `select all` \| `select none` \| `select invert` \| `select clear` \| `select mask` | `feather=` softens the edge. |
 | `effect NAME` | See below. Applies to the active layer; repeat to stack. |
 | `filter NAME` | `gaussian-blur box-blur motion-blur surface-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic crystallize emboss solarize diffuse twirl` |
 | `adjust NAME` | `brightness-contrast levels gradient-map photo-filter hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
-| `layer WHAT` | `new group duplicate via-copy delete merge-down flatten rasterize select <index>`. `via-copy` lifts only what is selected onto a new layer. |
+| `layer WHAT` | `new group duplicate via-copy delete merge-down flatten rasterize to-mask select <index>`. `via-copy` lifts only what is selected onto a new layer; `to-mask` turns this layer into a mask on the one below and consumes it. |
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
@@ -170,6 +170,38 @@ this can run it on a small selection first and read that number.
 It is worth reaching for: the model is very good on sensor noise and grain, and
 will also quietly remove fine texture that resembles them — skin pores, distant
 foliage, fabric weave.
+
+### Depth as a mask, and masks as selections
+
+The depth model answers two questions, and lighting is only one of them. The
+other is *which part of this is near*, which in a layered editor is a mask:
+
+```
+depth mask          # near reveals, far hides
+depth mask invert   # the other way round, which is what haze does
+```
+
+An adjustment clipped to that lands on the subject and leaves the background
+alone, without anyone selecting anything.
+
+Three conversions make masks, layers and selections interchangeable, which is
+what stops any of them being a dead end:
+
+| | |
+|---|---|
+| `depth mask` | distance becomes a mask |
+| `layer to-mask` | a greyscale layer becomes a mask on the one below, and is consumed |
+| `select mask` | a mask becomes the selection, softness and all |
+
+`layer to-mask` is for the layer a `depth` — or a `separate`, or anything
+painted — has left sitting above the picture: a greyscale layer above a
+photograph is a mask that has not been attached yet. It reads tone as coverage,
+weighted by the layer's own alpha, so a mask on transparency masks only where
+it actually is.
+
+`select mask` carries the coverage rather than thresholding it, so a soft mask
+gives a soft selection and everything that respects a selection — feathering,
+filling, `layer via-copy` — respects the softness too.
 
 ### Lighting a photograph again
 

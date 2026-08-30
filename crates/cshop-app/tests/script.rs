@@ -1294,3 +1294,48 @@ fn depth_can_be_kept_as_a_layer() {
     assert!(report.steps[2].note.contains("as a layer"), "{:?}", notes(&report));
     assert!(report.steps[3].note.contains("2 layers"), "{:?}", notes(&report));
 }
+
+// --- masks -----------------------------------------------------------------
+
+#[test]
+fn depth_can_be_had_as_a_mask() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../cshop-io/tests/assets/ink-source.png");
+    let Some(report) = run(&format!("open {path}\nresize 96 96\ndepth mask\nselect mask")) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[2].note.contains("masked by nearness"), "{:?}", notes(&report));
+    assert!(report.steps[3].note.starts_with("selected the mask"), "{:?}", notes(&report));
+
+    // And the other way round, which is what haze wants.
+    let Some(report) = run(&format!("open {path}\nresize 96 96\ndepth mask invert")) else {
+        return;
+    };
+    assert!(report.steps[2].note.contains("masked by distance"), "{:?}", notes(&report));
+}
+
+#[test]
+fn a_layer_can_be_turned_into_a_mask_and_then_a_selection() {
+    let Some(report) = run(
+        "new 64 64 background=white\nlayer new\ngradient 0 0 64 0 from=#000000 to=#ffffff\n\
+         layer to-mask\nselect mask\ninfo",
+    ) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[4].note.starts_with("selected the mask"), "{:?}", notes(&report));
+    // The gradient layer was consumed, so only the background is left.
+    assert!(report.steps[5].note.contains("1 layer"), "{:?}", notes(&report));
+}
+
+/// Asking for a selection where there is no mask should say so rather than
+/// quietly leaving the selection as it was.
+#[test]
+fn selecting_a_mask_that_is_not_there_says_so() {
+    let Some(report) = run("new 32 32 background=white\nselect mask") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("no mask"), "{:?}", notes(&report));
+}

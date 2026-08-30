@@ -180,6 +180,24 @@ pub fn apply(src: &PixelBuffer, depth: &DepthMap, lamp: Relight) -> PixelBuffer 
     out
 }
 
+/// Depth as coverage, for use as a layer mask.
+///
+/// Near is revealed and far is hidden, which is the way round that makes the
+/// obvious edit obvious: mask a layer by its own depth and what is close to
+/// the camera survives. `invert` is for the other half of that — fog, a
+/// darkened background, anything that should build with distance.
+pub fn to_mask(depth: &DepthMap, invert: bool) -> crate::mask::MaskBuffer {
+    let mut out = crate::mask::MaskBuffer::hide_all(depth.width, depth.height);
+    for y in 0..depth.height as i32 {
+        for x in 0..depth.width as i32 {
+            let v = depth.at(x, y).clamp(0.0, 1.0);
+            let v = if invert { 1.0 - v } else { v };
+            out.set(x, y, (v * 255.0 + 0.5) as u8);
+        }
+    }
+    out
+}
+
 /// Depth as a picture, for looking at or keeping as a layer.
 ///
 /// Near is white, which is the way round everyone reads a depth map even
