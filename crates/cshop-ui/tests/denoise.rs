@@ -170,3 +170,57 @@ fn cancelling_puts_the_original_back() {
         "cancel should leave no trace"
     );
 }
+
+/// Keep and Cancel both close the window, and both have work to do after the
+/// button is pressed — see the note in the separate tests for why pushing the
+/// action by hand would prove nothing.
+#[test]
+fn keep_and_cancel_survive_the_window_closing() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    // Keep: the result has to land.
+    let Some(mut h) = Harness::new((1400, 820)) else { return };
+    h.app.open_document(noisy(128, 128));
+    h.settle(2);
+    let id = h.app.doc().unwrap().doc.active.unwrap();
+    let before = h.app.doc().unwrap().doc.tree.get(id).unwrap().pixels().unwrap().clone();
+    h.app.push(Action::ShowDenoise);
+    h.settle(1);
+    h.app.push(Action::RunDenoise);
+    h.settle(1);
+    wait_for_model(&mut h);
+
+    let dialog = std::mem::replace(&mut h.app.dialog, Dialog::None);
+    h.app.finish_dialog_frame(dialog, true, vec![Action::DenoiseKeep]);
+    h.settle(3);
+    assert!(!h.app.dialog.is_open());
+    assert!(
+        h.app.doc().unwrap().history.can_undo(),
+        "Keep should have made a history entry rather than quietly doing nothing"
+    );
+    assert_ne!(h.app.doc().unwrap().doc.tree.get(id).unwrap().pixels().unwrap(), &before);
+
+    // Cancel: the preview was pasted straight into the layer, so failing to
+    // restore leaves it there for good, with no history entry to undo it.
+    let Some(mut h) = Harness::new((1400, 820)) else { return };
+    h.app.open_document(noisy(128, 128));
+    h.settle(2);
+    let id = h.app.doc().unwrap().doc.active.unwrap();
+    let before = h.app.doc().unwrap().doc.tree.get(id).unwrap().pixels().unwrap().clone();
+    h.app.push(Action::ShowDenoise);
+    h.settle(1);
+    h.app.push(Action::RunDenoise);
+    h.settle(1);
+    wait_for_model(&mut h);
+
+    let dialog = std::mem::replace(&mut h.app.dialog, Dialog::None);
+    h.app.finish_dialog_frame(dialog, true, vec![Action::DenoiseCancel]);
+    h.settle(3);
+    assert!(!h.app.dialog.is_open());
+    assert_eq!(
+        h.app.doc().unwrap().doc.tree.get(id).unwrap().pixels().unwrap(),
+        &before,
+        "Cancel has to put the original back, not leave the preview behind"
+    );
+}

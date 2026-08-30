@@ -354,17 +354,29 @@ and why `segment` is still the tool for a real cut-out.
 
 ### Enlarging
 
-**Image ▸ Upscale…**, or `upscale scale=2`, grows the whole document — canvas,
+**Image ▸ Upscale…**, or `upscale scale=4`, grows the whole document — canvas,
 layers, offsets and masks — with Real-ESRGAN putting in the detail a bigger
-sensor would have recorded. Five megabytes of model, and a 300×400 picture goes
-to four times that in under two seconds.
+sensor would have recorded. Five megabytes of model, and this 432×630 frame
+went to four times that in five seconds:
 
-It is worth knowing what it is doing. Against a known original it scores
-**worse** than plain Lanczos — 24.6 dB against 29.4 — and looks plainly better,
-because an error measure rewards a blurred average everywhere over sharp detail
-in almost the right place. It invents what it cannot know. For a picture to
-look at, that is exactly what is wanted; where the pixels are evidence, `resize`
-only ever moves what is already there.
+![The source, with the detail window marked](docs/example-upscale-source.jpg)
+
+The blue square, at one pixel to one pixel, against the same enlargement done
+by resampling:
+
+![Resampled against the model, at full resolution](docs/example-upscale-detail.jpg)
+
+Worth noticing what actually happened there. Both halves carry the *same*
+amount of high-frequency energy — 1.01 times, which says they are equally
+detailed and is useless. On the left that energy is magnified film grain and
+JPEG artefacts; on the right it is the edges of the tartan. An aggregate number
+cannot tell those apart and the eye does it instantly, which is the whole
+argument against judging an upscaler by arithmetic: against a known original
+this model also scores **worse** than Lanczos, 24.6 dB against 29.4.
+
+It invents what it cannot know. For a picture to look at, that is exactly what
+is wanted; where the pixels are evidence, `resize` only ever moves what is
+already there.
 
 The models run in a separate process, so the editor keeps its single-binary,
 no-dependency, offline build whether they are installed or not.
@@ -411,7 +423,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-781 tests, and the interesting ones are not unit tests:
+786 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

@@ -23,6 +23,12 @@ pub struct SeparateDialog {
     pub unavailable: bool,
     /// True while the labeller is looking.
     pub busy: bool,
+    /// Where the Separate button was drawn last frame.
+    ///
+    /// Kept so a test can press the real button rather than pushing the action
+    /// it queues — which is the only way to exercise what the window does as
+    /// it closes, and exactly where this went wrong once.
+    pub separate_button: Option<egui::Id>,
 }
 
 impl SeparateDialog {
@@ -40,6 +46,7 @@ impl SeparateDialog {
             },
             unavailable,
             busy: !unavailable,
+            separate_button: None,
         }
     }
 
@@ -124,7 +131,9 @@ impl SeparateDialog {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let ready = !self.busy && self.chosen.iter().any(|c| *c);
-            if ui.add_enabled(ready, egui::Button::new("Separate")).clicked() {
+            let button = ui.add_enabled(ready, egui::Button::new("Separate"));
+            self.separate_button = Some(button.id);
+            if button.clicked() {
                 actions.push(Action::RunSeparate);
                 close = true;
             }

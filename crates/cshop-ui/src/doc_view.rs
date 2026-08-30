@@ -151,6 +151,15 @@ impl DocView {
         self.needs_full = true;
     }
 
+    /// The size of the target the composite is drawn into.
+    ///
+    /// Exposed so a test can tell the difference between "the document is the
+    /// right size" and "the thing on screen is", which is exactly where
+    /// undoing a resize used to go wrong.
+    pub fn composite_size(&self) -> (u32, u32) {
+        (self.composite.width, self.composite.height)
+    }
+
     /// Layer texture cache, exposed so the status bar can report VRAM use.
     pub fn cache(&self) -> &LayerTextures {
         &self.cache

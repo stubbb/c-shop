@@ -144,3 +144,62 @@ fn each_layer_holds_only_its_own_pixels() {
         );
     }
 }
+
+/// A window whose button both queues an action and closes the window.
+///
+/// That is the ordinary shape of these windows, and it used to be broken: the
+/// window was dropped as the frame ended and the action ran afterwards, so
+/// every handler that read the window back for what to do found nothing and
+/// returned in silence. The canvas is unchanged by a successful separate — the
+/// new layers reconstruct the picture exactly — so silence looked like success.
+///
+/// This goes through [`CShopApp::finish_dialog_frame`], which is what the
+/// frame does with a window that has asked to close. Pushing the action by
+/// hand instead leaves the window open and passes either way, which is exactly
+/// how the bug got in.
+#[test]
+fn a_button_that_closes_the_window_still_does_its_work() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let Some(mut h) = Harness::new((1400, 820)) else { return };
+    if !open_sample(&mut h, "dog.jpg") {
+        return;
+    }
+    h.app.push(Action::ResizeImage {
+        width: 300,
+        height: 450,
+        filter: cshop_core::resample::Resampling::Bilinear,
+    });
+    h.settle(2);
+    let before = h.app.doc().unwrap().doc.tree.len();
+
+    h.app.push(Action::ShowSeparate);
+    for _ in 0..600 {
+        if matches!(&h.app.dialog, Dialog::Separate(d) if !d.busy) {
+            break;
+        }
+        h.settle(1);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ticked = match &h.app.dialog {
+        Dialog::Separate(d) => d.picked().len(),
+        _ => return,
+    };
+    if ticked == 0 {
+        return;
+    }
+
+    // Exactly what the frame does when the Separate button is pressed: it
+    // hands back the window, the action, and "close me".
+    let dialog = std::mem::replace(&mut h.app.dialog, Dialog::None);
+    h.app.finish_dialog_frame(dialog, true, vec![Action::RunSeparate]);
+    h.settle(3);
+
+    assert!(!h.app.dialog.is_open(), "the window should have closed");
+    assert_eq!(
+        h.app.doc().unwrap().doc.tree.len(),
+        before + ticked,
+        "and the layers should be there: closing must not cancel the work"
+    );
+}

@@ -192,7 +192,6 @@ pub struct CShopApp {
     actions: Vec<Action>,
     untitled_count: u32,
     /// Settings the New Document dialog collected, consumed by its action.
-    pending_new: Option<(String, u32, u32, cshop_core::document::Background)>,
     pub quit: bool,
 }
 
@@ -255,7 +254,6 @@ impl CShopApp {
             logo: None,
             actions: Vec::new(),
             untitled_count: 0,
-            pending_new: None,
             quit: false,
         }
     }
@@ -530,13 +528,26 @@ impl CShopApp {
                 });
         }
 
-        if !close {
-            self.dialog = dialog;
-        } else if let Dialog::NewDocument(d) = &dialog {
-            // Carry the dialog's settings into the action it queued.
-            self.pending_new = Some((d.name.clone(), d.width, d.height, d.background()));
-        }
+        self.finish_dialog_frame(dialog, close, actions);
+    }
+
+    /// What to do with a window once it has drawn itself and said what it
+    /// wants.
+    ///
+    /// The window is put back either way, and closed *after* whatever it asked
+    /// for has run. A button that both queues an action and closes the window
+    /// is the ordinary shape of these, and dropping the window first meant any
+    /// handler that read it back — for which layer, which classes, what to put
+    /// back — found nothing and returned in silence.
+    ///
+    /// Public because it is where that goes wrong, and a test that pushes an
+    /// action by hand leaves the window open and so proves nothing.
+    pub fn finish_dialog_frame(&mut self, dialog: Dialog, close: bool, actions: Vec<Action>) {
+        self.dialog = dialog;
         self.actions.extend(actions);
+        if close {
+            self.actions.push(Action::CloseDialog);
+        }
     }
 
     fn sync_documents(&mut self, renderer: &mut egui_wgpu::Renderer) {
@@ -805,9 +816,20 @@ impl CShopApp {
         }
     }
 
+    /// What the New Document window is asking for, read from the window
+    /// itself rather than from a copy taken as it closed.
+    fn new_document_settings(
+        &self,
+    ) -> Option<(String, u32, u32, cshop_core::document::Background)> {
+        match &self.dialog {
+            Dialog::NewDocument(d) => Some((d.name.clone(), d.width, d.height, d.background())),
+            _ => None,
+        }
+    }
+
     fn run(&mut self, action: Action) {
         match action {
-            Action::NewDocument => match self.pending_new.take() {
+            Action::NewDocument => match self.new_document_settings() {
                 Some((name, w, h, bg)) => {
                     self.untitled_count += 1;
                     let name = if name.trim().is_empty() {
@@ -884,25 +906,37 @@ impl CShopApp {
             }
 
             Action::Undo => {
+                let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     if let Some(dirty) = view.history.undo(&mut view.doc) {
                         view.mark_dirty(dirty);
+                        // Undoing can change the document's size — an image
+                        // resize, a crop, an enlargement — and the targets it
+                        // composites into have to follow. Without this the old
+                        // picture stays on screen around the restored one,
+                        // which reads as the two superimposed. Cheap: it
+                        // returns immediately when the size has not moved.
+                        view.resize_targets(&gpu);
                         view.invalidate();
                     }
                 }
             }
             Action::Redo => {
+                let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     if let Some(dirty) = view.history.redo(&mut view.doc) {
                         view.mark_dirty(dirty);
+                        view.resize_targets(&gpu);
                         view.invalidate();
                     }
                 }
             }
             Action::HistoryJump(target) => {
+                let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     let dirty = view.history.jump_to(&mut view.doc, target);
                     view.mark_dirty(dirty);
+                    view.resize_targets(&gpu);
                     view.invalidate();
                 }
             }
@@ -3094,16 +3128,32 @@ impl CShopApp {
     }
 
     /// One layer for each kind of thing that was ticked.
+    ///
+    /// Every way this can fail says so. Separating is one click and then
+    /// nothing visibly happens — the new layers reconstruct the picture
+    /// exactly, so the canvas is unchanged — which makes a silent failure
+    /// indistinguishable from success.
     fn run_separate(&mut self) {
         let (id, picked, feather) = match &self.dialog {
             Dialog::Separate(d) => (d.layer, d.picked(), d.feather),
-            _ => return,
+            _ => {
+                self.fail("The Separate window is not open any more");
+                return;
+            }
         };
-        let Some(map) = self.separate_map.clone() else { return };
+        if picked.is_empty() {
+            self.fail("Nothing was ticked to separate");
+            return;
+        }
+        let Some(map) = self.separate_map.clone() else {
+            self.fail("The labeller's answer has gone; open the window again");
+            return;
+        };
         let Some(source) = self
             .doc()
             .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
         else {
+            self.fail("That layer has no pixels any more");
             return;
         };
 
@@ -3136,7 +3186,16 @@ impl CShopApp {
             view.invalidate();
         }
         self.separate_map = None;
-        self.notify(format!("Separated into {made} layer{}", if made == 1 { "" } else { "s" }));
+        if made == 0 {
+            // Every chosen class turned out to hold nothing once the map was
+            // read back, which is a real answer and not a reason for silence.
+            self.fail("None of those turned out to cover any pixels");
+        } else {
+            self.notify(format!(
+                "Separated into {made} layer{}",
+                if made == 1 { "" } else { "s" }
+            ));
+        }
     }
 
     /// Hand every raster layer to the enlarger, on a thread.
@@ -3370,9 +3429,15 @@ impl CShopApp {
             Dialog::Denoise(d) => d.blended().map(|b| (d.layer, d.region, d.before.clone(), b)),
             _ => None,
         };
-        let Some((id, region, before, after)) = taken else { return };
+        let Some((id, region, before, after)) = taken else {
+            self.fail("There is no denoised result to keep");
+            return;
+        };
         let Some(view) = self.doc_mut() else { return };
-        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(layer) = view.doc.tree.get(id) else {
+            self.fail("That layer has gone");
+            return;
+        };
         let (offset, mask) = (layer.offset, layer.mask.clone());
         let Some(current) = layer.pixels() else { return };
 
