@@ -48,8 +48,33 @@ COCO = (
 
 # The side the detector's input is squared off to.
 YOLO_SIZE = 640
-# The long side SAM's encoder works at.
-SAM_SIZE = 1024
+
+# The frame the segmenter's encoder was exported for.
+#
+# Not a square, and not "the long side is 1024" — the model ships a config
+# saying `max_width: 1024, max_height: 682`, and it means it. Feeding a
+# portrait picture scaled to a 1024 long side instead put every mask 1.5 times
+# too far down the frame, 1.5 being exactly 1024/682. The shape was right and
+# the placement was wrong, which is the kind of error that looks plausible on a
+# subject in the middle of the picture and is obvious on one that is not.
+SAM_MAX_W, SAM_MAX_H = 1024, 682
+
+
+def sam_frame():
+    """The encoder's frame, from the model's own config where it is present."""
+    path = os.path.join(MODELS, "config.yaml")
+    w, h = SAM_MAX_W, SAM_MAX_H
+    try:
+        with open(path) as f:
+            for line in f:
+                key, _, value = line.partition(":")
+                if key.strip() == "max_width":
+                    w = int(value.strip())
+                elif key.strip() == "max_height":
+                    h = int(value.strip())
+    except (OSError, ValueError):
+        pass
+    return w, h
 
 
 def fail(message, **extra):
@@ -192,7 +217,9 @@ def embedding_for(image_path):
 
     image = Image.open(image_path).convert("RGB")
     width, height = image.size
-    scale = SAM_SIZE / max(width, height)
+    max_w, max_h = sam_frame()
+    # Fitted into the frame, so neither side overruns it.
+    scale = min(max_w / width, max_h / height)
 
     if os.path.exists(cached):
         return np.load(cached), (width, height), scale, True
@@ -224,16 +251,12 @@ def segment(image_path, box, points, negatives):
     if not coords:
         fail("segmenting needs a box or at least one point")
 
-    # `orig_im_size` is asked for as the padded square rather than the picture.
+    # `orig_im_size` is asked for as the model's frame rather than the picture.
     #
-    # The encoder works on the image resized so its long side is 1024 and then
-    # padded out to 1024x1024, and this decoder stretches its result across
-    # whatever size it is given without first cutting the padding off. Passing
-    # the picture's own size therefore squashes the mask into it: on a 2:3
-    # photograph everything came out two thirds of the way across, with a hard
-    # vertical edge exactly where the padding began. Asking for the square and
-    # cropping it here is the same postprocessing the reference implementation
-    # does, and the edge goes away.
+    # This decoder stretches its result across whatever size it is given
+    # without first cutting off the padding the encoder added. Asking for the
+    # frame and cropping it here is the same postprocessing the reference
+    # implementation does, and it is what puts the mask where the object is.
     masks, scores, _ = session("sam.decoder.onnx").run(
         None,
         {
@@ -242,7 +265,10 @@ def segment(image_path, box, points, negatives):
             "point_labels": np.array([labels], np.float32),
             "mask_input": np.zeros((1, 1, 256, 256), np.float32),
             "has_mask_input": np.zeros(1, np.float32),
-            "orig_im_size": np.array([SAM_SIZE, SAM_SIZE], np.float32),
+            # Asked for in the model's own frame, then cropped back to the
+            # picture below. Asking for the picture's size instead leaves the
+            # padding stretched across it.
+            "orig_im_size": np.array(list(reversed(sam_frame())), np.float32),
         },
     )
     # The decoder offers several readings of the same prompt — roughly the
@@ -258,7 +284,7 @@ def segment(image_path, box, points, negatives):
 
 
 def crop_and_resize(mask, width, height, scale):
-    """Take the picture back out of the padded square the model works in."""
+    """Take the picture back out of the padded frame the model works in."""
     import numpy as np
     from PIL import Image
 

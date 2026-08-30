@@ -54,7 +54,9 @@ for name in os.listdir(models):
     if name.endswith(".decoder.onnx") and name != "sam.decoder.onnx":
         shutil.move(os.path.join(models, name), os.path.join(models, "sam.decoder.onnx"))
 PY
-    rm -f "$models/sam.zip" "$models/config.yaml"
+    # config.yaml is kept: it carries the frame the encoder expects, which the
+    # runner reads rather than assuming.
+    rm -f "$models/sam.zip"
 fi
 
 echo

@@ -587,10 +587,18 @@ fn interact(
             if let Some(p) = response.interact_pointer_pos() {
                 let v = app.docs[index].screen_to_doc(viewport, p);
                 let alt = ui.input(|i| i.modifiers.alt);
+                let mut accepted = false;
                 if let crate::dialogs::Dialog::Segment(d) = &mut app.dialog {
-                    d.add_hint(cshop_core::geom::Vec2::new(v.x, v.y), !alt);
+                    // A click while one is already running would queue a
+                    // second and answer with whichever finished last.
+                    if !d.busy {
+                        d.add_hint(cshop_core::geom::Vec2::new(v.x, v.y), !alt);
+                        accepted = true;
+                    }
                 }
-                app.push(Action::SegmentPreview);
+                if accepted {
+                    app.push(Action::SegmentPreview);
+                }
             }
         }
         return;

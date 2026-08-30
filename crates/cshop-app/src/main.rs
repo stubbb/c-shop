@@ -87,6 +87,7 @@ fn main() {
     let mut demo_shapes = false;
     let mut demo_fx = false;
     let mut demo_fx_dialog = false;
+    let mut demo_segment = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
@@ -153,6 +154,7 @@ fn main() {
                 }
             }
             "--demo" => demo = true,
+            "--demo-segment" => demo_segment = true,
             "--demo-selection" => demo_selection = true,
             "--demo-quickmask" => demo_quick_mask = true,
             "--demo-adjust" => demo_adjust = true,
@@ -344,6 +346,28 @@ fn main() {
                     screenshot::build_effects_demo(app);
                     if demo_fx_dialog {
                         app.dispatch(cshop_ui::commands::Action::ShowLayerStyle);
+                    }
+                }
+                if demo_segment {
+                    // Opened and shown mid-run, so the screenshot catches the
+                    // spinner rather than a window that has already answered.
+                    app.dispatch(cshop_ui::commands::Action::ShowSegment);
+                    if let cshop_ui::dialogs::Dialog::Segment(d) = &mut app.dialog {
+                        d.busy = true;
+                        d.status = "Segmenting…".into();
+                        d.found = vec![
+                            cshop_ui::vision::Found {
+                                class: "dog".into(),
+                                score: 0.90,
+                                box_: [10.0, 10.0, 100.0, 100.0],
+                            },
+                            cshop_ui::vision::Found {
+                                class: "bench".into(),
+                                score: 0.55,
+                                box_: [0.0, 40.0, 120.0, 110.0],
+                            },
+                        ];
+                        d.feather = 2.0;
                     }
                 }
                 if demo_shapes {

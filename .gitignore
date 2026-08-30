@@ -13,3 +13,4 @@
 # The vision pack installs its environment and model weights outside the repo,
 # but the compose file's workspace and any stray cutouts belong to the operator.
 /vision/models/
+__pycache__/

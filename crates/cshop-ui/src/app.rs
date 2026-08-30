@@ -106,6 +106,12 @@ pub struct CShopApp {
     /// The selection as it stood before the Segment window opened, so that
     /// cancelling puts it back rather than leaving a half-chosen mask.
     segment_before: Option<cshop_core::selection::Selection>,
+    /// A segmentation running on another thread.
+    ///
+    /// The models take about a second, which is a long time to hold the frame:
+    /// with the work on this thread the window freezes and nothing can say it
+    /// is busy, least of all a spinner that never gets drawn.
+    segment_job: Option<std::sync::mpsc::Receiver<SegmentOutcome>>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -196,6 +202,7 @@ impl CShopApp {
             path_edit: PathEdit::default(),
             edit_run: 0,
             segment_before: None,
+            segment_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -319,6 +326,7 @@ impl CShopApp {
     pub fn update(&mut self, ui: &mut egui::Ui, renderer: &mut egui_wgpu::Renderer) {
         let ctx = ui.ctx().clone();
         self.now = ctx.input(|i| i.time);
+        self.poll_segment(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -2687,26 +2695,85 @@ impl CShopApp {
             Ok(s) => s,
             Err(e) => return self.fail(format!("Could not prepare the image: {e}")),
         };
-        let found = crate::vision::detect(&source.0, 0.25, "");
-        if let Some(dir) = source.0.parent() {
-            let _ = std::fs::remove_dir_all(dir);
+        if let Dialog::Segment(d) = &mut self.dialog {
+            d.busy = true;
+            d.status = "Looking…".into();
         }
-        let Dialog::Segment(d) = &mut self.dialog else { return };
-        match found {
-            Ok(objects) => {
-                d.status = if objects.is_empty() {
-                    "The detector recognised nothing here — click the object instead.".into()
-                } else {
-                    format!("Found {}. Pick one, or click the canvas.", objects.len())
-                };
-                d.found = objects;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.segment_job = Some(rx);
+        std::thread::spawn(move || {
+            let found = crate::vision::detect(&source.0, 0.25, "");
+            if let Some(dir) = source.0.parent() {
+                let _ = std::fs::remove_dir_all(dir);
             }
-            Err(e) => d.status = e,
+            let _ = tx.send(match found {
+                Ok(objects) => SegmentOutcome::Found(objects),
+                Err(e) => SegmentOutcome::Failed(e),
+            });
+        });
+    }
+
+    /// Collect a finished segmentation, if one has come back.
+    ///
+    /// Called once a frame. While a job is outstanding the frame is asked to
+    /// repaint, which is what keeps the spinner turning.
+    pub fn poll_segment(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.segment_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                self.segment_job = None;
+                if let Dialog::Segment(d) = &mut self.dialog {
+                    d.busy = false;
+                    d.status = "The segmenter stopped without answering.".into();
+                }
+            }
+            Ok(outcome) => {
+                self.segment_job = None;
+                match outcome {
+                    SegmentOutcome::Found(objects) => {
+                        if let Dialog::Segment(d) = &mut self.dialog {
+                            d.busy = false;
+                            d.status = if objects.is_empty() {
+                                "Nothing recognised here — click the object instead.".into()
+                            } else {
+                                format!("Found {}. Pick one, or click the canvas.", objects.len())
+                            };
+                            d.found = objects;
+                        }
+                    }
+                    SegmentOutcome::Ready { selection, coverage } => {
+                        if let Some(view) = self.doc_mut() {
+                            // Shown directly rather than through the history,
+                            // so refining does not leave a step per click. It
+                            // is recorded when the window is kept.
+                            view.doc.selection = Some(*selection);
+                            view.invalidate();
+                        }
+                        if let Dialog::Segment(d) = &mut self.dialog {
+                            d.busy = false;
+                            d.applied = true;
+                            d.coverage = Some(coverage);
+                            d.status = "Click again to refine, or Alt-click to exclude.".into();
+                        }
+                    }
+                    SegmentOutcome::Failed(e) => {
+                        if let Dialog::Segment(d) = &mut self.dialog {
+                            d.busy = false;
+                            d.status = e;
+                        }
+                    }
+                }
+            }
         }
     }
 
     /// Run the segmenter for whatever the window has been told, and show the
     /// result as the selection so the canvas is the preview.
+    /// Run the segmenter for whatever the window has been told, on another
+    /// thread, and show the result as the selection when it arrives.
     fn segment_preview(&mut self) {
         let (prompt, feather) = {
             let Dialog::Segment(d) = &self.dialog else { return };
@@ -2726,62 +2793,54 @@ impl CShopApp {
             return;
         };
 
-        let source = match self.segment_source() {
+        let (image, w, h) = match self.segment_source() {
             Ok(s) => s,
             Err(e) => return self.fail(format!("Could not prepare the image: {e}")),
         };
-        let (image, w, h) = source;
-        let mask_path = image.with_file_name("mask.png");
-        let result = crate::vision::segment(&image, &prompt, &mask_path, 0.25);
-        let _ = std::fs::remove_file(&image);
-        let scratch = image.parent().map(|p| p.to_path_buf());
+        if let Dialog::Segment(d) = &mut self.dialog {
+            d.busy = true;
+            d.status = "Segmenting…".into();
+        }
 
-        let outcome = result.and_then(|r| {
-            let mask = cshop_io::load(&r.mask).map_err(|e| format!("{e}"))?;
-            let _ = std::fs::remove_file(&r.mask);
-            if mask.width() != w || mask.height() != h {
-                return Err(format!("the mask came back {}x{}", mask.width(), mask.height()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.segment_job = Some(rx);
+        std::thread::spawn(move || {
+            let mask_path = image.with_file_name("mask.png");
+            let outcome = crate::vision::segment(&image, &prompt, &mask_path, 0.25)
+                .and_then(|r| {
+                    let mask = cshop_io::load(&r.mask).map_err(|e| format!("{e}"))?;
+                    if mask.width() != w || mask.height() != h {
+                        return Err(format!(
+                            "the mask came back {}x{}",
+                            mask.width(),
+                            mask.height()
+                        ));
+                    }
+                    let mut coverage = cshop_core::mask::MaskBuffer::hide_all(w, h);
+                    for y in 0..h as i32 {
+                        for x in 0..w as i32 {
+                            coverage.set(x, y, mask.get(x, y).r);
+                        }
+                    }
+                    let mut selection = cshop_core::selection::Selection::from_mask(coverage);
+                    if feather > 0.0 {
+                        selection.feather(feather);
+                    }
+                    if selection.is_empty() {
+                        return Err("nothing there to separate — try another point".into());
+                    }
+                    Ok((selection, r.coverage))
+                });
+            if let Some(dir) = image.parent() {
+                let _ = std::fs::remove_dir_all(dir);
             }
-            let mut coverage = cshop_core::mask::MaskBuffer::hide_all(w, h);
-            for y in 0..h as i32 {
-                for x in 0..w as i32 {
-                    coverage.set(x, y, mask.get(x, y).r);
+            let _ = tx.send(match outcome {
+                Ok((selection, coverage)) => {
+                    SegmentOutcome::Ready { selection: Box::new(selection), coverage }
                 }
-            }
-            let mut selection = cshop_core::selection::Selection::from_mask(coverage);
-            if feather > 0.0 {
-                selection.feather(feather);
-            }
-            if selection.is_empty() {
-                return Err("nothing there to separate — try another point".into());
-            }
-            Ok((selection, r.coverage))
+                Err(e) => SegmentOutcome::Failed(e),
+            });
         });
-
-        if let Some(dir) = scratch {
-            let _ = std::fs::remove_dir_all(dir);
-        }
-        match outcome {
-            Ok((selection, covered)) => {
-                if let Some(view) = self.doc_mut() {
-                    // Shown directly rather than through the history, so that
-                    // refining does not leave a step per click. It is written
-                    // properly when the window is kept.
-                    view.doc.selection = Some(selection);
-                    view.invalidate();
-                }
-                if let Dialog::Segment(d) = &mut self.dialog {
-                    d.applied = true;
-                    d.coverage = Some(covered);
-                    d.status = "Click again to refine, or Alt-click to exclude.".into();
-                }
-            }
-            Err(e) => {
-                if let Dialog::Segment(d) = &mut self.dialog {
-                    d.status = e;
-                }
-            }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -4191,6 +4250,14 @@ impl PenDraft {
             closed,
         }])
     }
+}
+
+/// What a background segmentation came back with.
+pub enum SegmentOutcome {
+    Ready { selection: Box<cshop_core::selection::Selection>, coverage: f32 },
+    Failed(String),
+    /// The detector's answer, when that is what was asked for.
+    Found(Vec<crate::vision::Found>),
 }
 
 /// Which point of an anchor a gesture has hold of.

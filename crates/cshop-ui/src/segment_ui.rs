@@ -36,6 +36,9 @@ pub struct SegmentDialog {
     /// whether there is something to undo.
     pub applied: bool,
     pub coverage: Option<f32>,
+    /// Whether a model is running right now, so the window can say so and the
+    /// controls that would start another are held.
+    pub busy: bool,
     /// Set when the model is not installed, so the window says so once rather
     /// than failing on every click.
     pub unavailable: bool,
@@ -87,15 +90,29 @@ impl SegmentDialog {
             return close;
         }
 
-        ui.label(egui::RichText::new(&self.status).color(p.text_dim));
+        // While a model is running, the spinner and the message are the whole
+        // point of the window: the work takes about a second, which is long
+        // enough that silence reads as a hang.
+        ui.horizontal(|ui| {
+            if self.busy {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.add_space(2.0);
+            }
+            ui.label(
+                egui::RichText::new(&self.status)
+                    .color(if self.busy { p.accent } else { p.text_dim }),
+            );
+        });
         ui.add_space(8.0);
 
         // --- what the detector can offer -----------------------------------
         ui.horizontal(|ui| {
-            if ui.button("Find objects").clicked() {
+            if ui.add_enabled(!self.busy, egui::Button::new("Find objects")).clicked() {
                 actions.push(Action::SegmentDetect);
             }
-            if !self.hints.is_empty() && ui.button("Clear points").clicked() {
+            if !self.hints.is_empty()
+                && ui.add_enabled(!self.busy, egui::Button::new("Clear points")).clicked()
+            {
                 self.hints.clear();
                 actions.push(Action::SegmentPreview);
             }
@@ -141,7 +158,7 @@ impl SegmentDialog {
 
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            let ready = self.applied;
+            let ready = self.applied && !self.busy;
             if ui.add_enabled(ready, egui::Button::new("Keep selection")).clicked() {
                 close = true;
             }

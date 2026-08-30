@@ -83,41 +83,56 @@ Cancel puts the selection back as it was.
 
 ## What it does well, and what it does not
 
-Measured on the sample images, cutting the named subject out onto transparency:
+Cutting the detector's own answer out onto transparency, across the samples:
 
-| picture | subject | prompt | result |
-|---|---|---|---|
-| dog | dog | `class=dog` | clean, though it keeps the bench the dog sits on |
-| phone in hand | phone | `class=cell-phone` | clean, hand included |
-| old buildings | building | a point | clean |
-| beach | beach | a point | the sand, correctly |
-| road and mountain | road | a point | the road surface |
-| person in a field | person | `class=person` | correct, and small |
-| building and forest | building | a point | took the hillside instead |
-| path and plants | path | a point | took a leaf instead |
+| picture | what it found | result |
+|---|---|---|
+| dog | dog 0.90 | the dog, cleanly |
+| phone in hand | cell-phone 0.89, person 0.88 | the hand, or the phone |
+| person in a field | person 0.83 | correct, and small |
+| figure in a doorway | person 0.82 | correct, a silhouette |
+| beach | chair 0.84 | the deckchair |
+| building and forest | — | nothing it knows |
+| old buildings | — | nothing it knows |
+| path and plants | — | nothing it knows |
+| road and mountain | — | nothing it knows |
 
-The last two are not model failures; they are aiming failures. A point in a
-large scene selects whatever region it lands in, and choosing that point from a
-thumbnail is guesswork. That is the argument for the window over the script:
-you click where you mean, see what you got, and refine — which is two seconds,
-against however long it takes to guess a coordinate.
+Four of the nine come back empty, and that is the detector's list rather than
+anything wrong with the pictures: sky, forest, mountain, road, building and
+plant are not among the eighty classes. For those, the window is the way in —
+the segmenter has no list and will separate whatever you click on.
 
-The dog keeping its bench is a different thing, and worth understanding.
-Prompted with a box, SAM answers "the object in this box"; a dog sitting on a
-bench, boxed together, is one object as far as it is concerned. Alt-clicking
-the bench removes it.
+The one thing worth knowing about box prompts: asked about a box, the model
+answers "the object in this box". A dog sitting on a bench, boxed together, can
+come back as one object. Alt-clicking the bench removes it.
 
 ## Notes on the implementation
 
 The image embedding — nearly all of the cost — is cached by content hash, so
 the first click on a picture takes about a second and every click after it is
-immediate. That is what makes refining by clicking worth doing at all.
+immediate. That is what makes refining by clicking worth doing at all. The work
+runs on its own thread so the window can say it is busy while it happens.
 
-One thing was wrong for a while and is worth recording. The exported decoder
-returns its mask over the *padded square* the encoder works in and stretches it
-across whatever size it is asked for, without first cutting the padding off.
-Passing the picture's own size therefore squashed every mask into two thirds of
-its width, with a hard vertical edge exactly where the padding began. It looked
-plausible on a subject in the middle of the frame, which is how it survived
-several tests. The mask's right edge measured 0.665 of the width where the
-image occupied 0.667 of the square — that is what gave it away.
+### The frame the encoder expects
+
+This cost some time and is worth writing down.
+
+The exported encoder does **not** take "the image resized so its long side is
+1024". It ships a `config.yaml` saying `max_width: 1024, max_height: 682`, and
+it means it: the image goes into that box, not a square.
+
+Feeding it a portrait picture scaled to a 1024 long side put every mask 1.5
+times too far down the frame — 1.5 being exactly 1024/682. The shape was right
+and the placement was wrong, so a subject in the middle of the picture still
+produced something that looked like a cut-out, and it survived several rounds
+of looking at the results. What settled it was a synthetic image: a white
+square at a known place, segmented, and the mask's bounds read off and compared
+with where the square actually was. On real photographs the eye supplies the
+benefit of the doubt; on a white square at y 300..500 a mask at y 450..749 is
+simply wrong, and the ratio between them names the cause.
+
+The decoder then wants `orig_im_size` given as that same frame rather than as
+the picture, because it stretches its result across whatever size it is asked
+for without first cutting off the padding the encoder added. Ask for the frame,
+crop to the part the image occupies, and resize that — which is what the
+reference implementation does, and what puts the mask where the object is.

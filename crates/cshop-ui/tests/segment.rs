@@ -60,9 +60,23 @@ fn clicking_the_canvas_segments_what_was_clicked() {
         d.add_hint(Vec2::new(270.0, 500.0), true);
     }
     h.app.push(Action::SegmentPreview);
-    h.settle(2);
+    // The model runs on another thread now, so the window says it is busy
+    // first and the answer arrives over the next few frames.
+    h.settle(1);
+    if let Dialog::Segment(d) = &h.app.dialog {
+        assert!(d.busy, "it should say it is working: {}", d.status);
+    }
+    for _ in 0..200 {
+        h.settle(1);
+        let Dialog::Segment(d) = &h.app.dialog else { break };
+        if !d.busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 
     let Dialog::Segment(d) = &h.app.dialog else { panic!("the window should still be open") };
+    assert!(!d.busy, "it should have finished: {}", d.status);
     assert!(d.applied, "a click should have produced a selection: {}", d.status);
     let coverage = d.coverage.expect("it should report what it covered");
     assert!(
@@ -102,7 +116,14 @@ fn cancelling_restores_the_previous_selection() {
         d.add_hint(Vec2::new(270.0, 500.0), true);
     }
     h.app.push(Action::SegmentPreview);
-    h.settle(2);
+    for _ in 0..200 {
+        h.settle(1);
+        let Dialog::Segment(d) = &h.app.dialog else { break };
+        if !d.busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     h.app.push(Action::SegmentCancel);
     h.settle(1);
 
