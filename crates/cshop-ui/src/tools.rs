@@ -24,6 +24,7 @@ pub enum Tool {
     Gradient,
     Text,
     Pen,
+    DirectSelect,
     Shape,
     Hand,
     Zoom,
@@ -48,6 +49,7 @@ impl Tool {
             Tool::Gradient => "Gradient",
             Tool::Text => "Horizontal Type",
             Tool::Pen => "Pen",
+            Tool::DirectSelect => "Direct Selection",
             Tool::Shape => "Shape",
             Tool::Hand => "Hand",
             Tool::Zoom => "Zoom",
@@ -76,6 +78,7 @@ impl Tool {
             Tool::Gradient => "▤",
             Tool::Text => "T",
             Tool::Pen => "✒",
+            Tool::DirectSelect => "◄",
             Tool::Shape => "▬",
             Tool::Hand => "✋",
             Tool::Zoom => "🔍",
@@ -128,6 +131,7 @@ impl Tool {
                 | Tool::Gradient
                 | Tool::Text
                 | Tool::Pen
+                | Tool::DirectSelect
                 | Tool::Shape
                 | Tool::Hand
                 | Tool::Zoom
@@ -182,6 +186,7 @@ pub const TOOL_GROUPS: &[ToolGroup] = &[
     ToolGroup { key: egui::Key::E, label: 'E', tools: &[Tool::Eraser] },
     ToolGroup { key: egui::Key::G, label: 'G', tools: &[Tool::PaintBucket, Tool::Gradient] },
     ToolGroup { key: egui::Key::T, label: 'T', tools: &[Tool::Text] },
+    ToolGroup { key: egui::Key::A, label: 'A', tools: &[Tool::DirectSelect] },
     ToolGroup { key: egui::Key::P, label: 'P', tools: &[Tool::Pen] },
     ToolGroup { key: egui::Key::U, label: 'U', tools: &[Tool::Shape] },
     ToolGroup { key: egui::Key::H, label: 'H', tools: &[Tool::Hand] },
@@ -224,6 +229,7 @@ mod tests {
             Tool::PaintBucket,
             Tool::Gradient,
             Tool::Text,
+            Tool::DirectSelect,
             Tool::Pen,
             Tool::Shape,
             Tool::Hand,

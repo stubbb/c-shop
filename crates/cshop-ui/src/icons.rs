@@ -195,6 +195,13 @@ pub fn tool(painter: &Painter, rect: Rect, tool: Tool, color: Color32) {
             painter.rect_filled(r, 1.0, color);
         }
 
+        // The hollow arrow every vector editor uses for editing points.
+        Tool::DirectSelect => {
+            let pts = [(0.30, 0.10), (0.72, 0.52), (0.52, 0.54), (0.62, 0.86), (0.46, 0.90), (0.38, 0.60), (0.24, 0.72)];
+            let path: Vec<_> = pts.iter().map(|(x, y)| p(rect, *x, *y)).collect();
+            painter.add(egui::Shape::closed_line(path, egui::Stroke::new(1.4, color)));
+        }
+
         // A nib: a wedge running to a point, split down the middle.
         Tool::Pen => {
             filled(

@@ -1125,6 +1125,14 @@ pub struct SetShapeContent {
     to_offset: (i32, i32),
     from: Option<(crate::shape::ShapeContent, (i32, i32))>,
     label: String,
+    /// Which run of edits this belongs to, if any.
+    ///
+    /// Dragging an anchor produces one of these per frame; without folding
+    /// them the history would fill with a hundred identical-looking steps and
+    /// undo would walk back through the drag a pixel at a time. An identifier
+    /// rather than a flag, so that the first edit of a run can be marked too
+    /// — and so two drags in quick succession stay two steps.
+    run: Option<u64>,
 }
 
 impl SetShapeContent {
@@ -1134,7 +1142,13 @@ impl SetShapeContent {
         to_offset: (i32, i32),
         label: impl Into<String>,
     ) -> Self {
-        Self { id, to, to_offset, from: None, label: label.into() }
+        Self { id, to, to_offset, from: None, label: label.into(), run: None }
+    }
+
+    /// Mark this edit as part of a run — one drag — so the run is one step.
+    pub fn in_run(mut self, run: u64) -> Self {
+        self.run = Some(run);
+        self
     }
 
     fn write(
@@ -1153,6 +1167,25 @@ impl SetShapeContent {
 }
 
 impl Command for SetShapeContent {
+    /// Fold a later edit of the same shape into this one.
+    ///
+    /// Only while both are marked as part of a run: two deliberate edits
+    /// should stay two steps, however quickly they follow each other.
+    fn merge(&mut self, next: &dyn Command) -> bool {
+        let Some(run) = self.run else { return false };
+        let Some(other) = (next as &dyn std::any::Any).downcast_ref::<SetShapeContent>() else {
+            return false;
+        };
+        if other.run != Some(run) || other.id != self.id {
+            return false;
+        }
+        // Keep this entry's `from`, which is the state before the drag began,
+        // and take the newest `to`.
+        self.to = other.to.clone();
+        self.to_offset = other.to_offset;
+        true
+    }
+
     fn name(&self) -> String {
         self.label.clone()
     }

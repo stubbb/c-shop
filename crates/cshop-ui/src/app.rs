@@ -99,6 +99,10 @@ pub struct CShopApp {
     pub drag_start: Option<Vec2>,
     /// The path the Pen tool is laying down, before it becomes a layer.
     pub pen: Option<PenDraft>,
+    /// Which anchors of a path layer are selected, and what is being dragged.
+    pub path_edit: PathEdit,
+    /// Counter behind [`CShopApp::next_edit_run`].
+    edit_run: u64,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -186,6 +190,8 @@ impl CShopApp {
             shape_synced: None,
             drag_start: None,
             pen: None,
+            path_edit: PathEdit::default(),
+            edit_run: 0,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -529,9 +535,19 @@ impl CShopApp {
                         queued.push(Action::CancelCrop);
                     } else if self.pen.is_some() {
                         queued.push(Action::CancelPath);
+                    } else if !self.path_edit.selected.is_empty() {
+                        self.path_edit.selected.clear();
                     } else {
                         queued.push(Action::CancelDrag);
                     }
+                }
+                // Delete removes points while the Direct Selection tool has
+                // some, rather than whatever it would otherwise mean.
+                if (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+                    && self.tool == Tool::DirectSelect
+                    && !self.path_edit.selected.is_empty()
+                {
+                    queued.push(Action::DeletePathAnchors);
                 }
                 if i.key_pressed(egui::Key::Enter) {
                     if self.pen.is_some() {
@@ -1067,6 +1083,7 @@ impl CShopApp {
             Action::CancelPath => {
                 self.pen = None;
             }
+            Action::DeletePathAnchors => self.delete_path_anchors(),
             Action::CombineShapes(op) => self.combine_shapes(op),
 
             Action::Copy => self.copy(false, false),
@@ -2493,9 +2510,11 @@ impl CShopApp {
         label: &str,
     ) {
         let Some(bounds) = path.bounds() else { return };
-        let origin = Vec2::new(bounds.x0, bounds.y0);
+        // Whole pixels, so the path's own coordinates and the layer's offset
+        // agree exactly; see `write_path`.
+        let origin = Vec2::new(bounds.x0.floor(), bounds.y0.floor());
         let local = path.translate(Vec2::new(-origin.x, -origin.y));
-        let size = ((bounds.x1 - bounds.x0).max(1.0), (bounds.y1 - bounds.y0).max(1.0));
+        let size = ((bounds.x1 - origin.x).max(1.0), (bounds.y1 - origin.y).max(1.0));
 
         let content = cshop_core::shape::ShapeContent::new(
             cshop_core::shape::ShapeKind::Path(local),
@@ -2614,6 +2633,221 @@ impl CShopApp {
             &mut view.doc,
             Box::new(cshop_core::history::Compound::new(op.name(), steps)),
         );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    // -----------------------------------------------------------------------
+    // Editing a path
+    // -----------------------------------------------------------------------
+
+    /// Replace a path layer's geometry outright. For tests that need a shape
+    /// the Pen tool cannot draw in a click or two.
+    pub fn set_path_for_test(&mut self, id: LayerId, path: cshop_core::path::PathShape) {
+        self.write_path(id, path, "Edit Path", None);
+    }
+
+    /// A fresh identifier for a run of edits that should undo as one step.
+    pub fn next_edit_run(&mut self) -> u64 {
+        self.edit_run += 1;
+        self.edit_run
+    }
+
+    /// The path layer the Direct Selection tool is working on.
+    ///
+    /// Whatever is active, so selecting a layer in the panel is how you choose
+    /// which path to edit — there is no separate notion of a "target path".
+    pub fn editable_path(&self) -> Option<(LayerId, cshop_core::path::PathShape, Vec2)> {
+        let view = self.doc()?;
+        let id = view.doc.active?;
+        let layer = view.doc.tree.get(id)?;
+        let shape = layer.shape()?;
+        let cshop_core::shape::ShapeKind::Path(path) = &shape.content().kind else {
+            return None;
+        };
+        // The box's top-left in document space. Path points are box-local, so
+        // this is what maps between the two.
+        let origin = Vec2::new(
+            (layer.offset.0 + shape.anchor().0) as f32,
+            (layer.offset.1 + shape.anchor().1) as f32,
+        );
+        Some((id, path.clone(), origin))
+    }
+
+    /// The anchor or handle nearest `at`, within grabbing distance.
+    ///
+    /// Handles are only offered for anchors already selected, because those
+    /// are the only ones drawn — a handle you cannot see is not one you meant
+    /// to grab.
+    pub fn path_hit(&self, at: Vec2, zoom: f32) -> Option<(AnchorRef, HandleKind)> {
+        let (_, path, origin) = self.editable_path()?;
+        let radius = PathEdit::GRAB_RADIUS / zoom.max(0.05);
+        let mut best: Option<(f32, AnchorRef, HandleKind)> = None;
+        let mut consider = |d: f32, r: AnchorRef, k: HandleKind| {
+            if d <= radius && best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
+                best = Some((d, r, k));
+            }
+        };
+
+        for (pi, part) in path.parts.iter().enumerate() {
+            for (si, sub) in part.subpaths.iter().enumerate() {
+                for (ai, a) in sub.anchors.iter().enumerate() {
+                    let r = (pi, si, ai);
+                    let doc = |p: Vec2| Vec2::new(origin.x + p.x, origin.y + p.y);
+                    // Handles first, so an anchor sitting under its own handle
+                    // does not swallow the click.
+                    if self.path_edit.is_selected(r) && a.at.distance(a.out_handle) > 0.5 {
+                        consider(at.distance(doc(a.in_handle)), r, HandleKind::In);
+                        consider(at.distance(doc(a.out_handle)), r, HandleKind::Out);
+                    }
+                    consider(at.distance(doc(a.at)), r, HandleKind::Anchor);
+                }
+            }
+        }
+        best.map(|(_, r, k)| (r, k))
+    }
+
+    /// Move whatever the drag has hold of by `delta`, in document pixels.
+    ///
+    /// `break_handle` is Alt: it lets one side of a smooth anchor move without
+    /// the other, which is how a smooth point becomes a corner.
+    pub fn drag_path(&mut self, delta: Vec2, break_handle: bool) {
+        let Some((target, kind)) = self.path_edit.drag else { return };
+        let Some((id, mut path, _)) = self.editable_path() else { return };
+        if delta.x == 0.0 && delta.y == 0.0 {
+            return;
+        }
+
+        // Moving an anchor moves every selected anchor, which is what makes a
+        // multiple selection worth having.
+        let moving: Vec<AnchorRef> = match kind {
+            HandleKind::Anchor if self.path_edit.is_selected(target) => {
+                self.path_edit.selected.clone()
+            }
+            HandleKind::Anchor => vec![target],
+            _ => vec![target],
+        };
+
+        for r in moving {
+            let Some(a) = path
+                .parts
+                .get_mut(r.0)
+                .and_then(|p| p.subpaths.get_mut(r.1))
+                .and_then(|s| s.anchors.get_mut(r.2))
+            else {
+                continue;
+            };
+            match kind {
+                HandleKind::Anchor => {
+                    a.at = a.at + delta;
+                    a.in_handle = a.in_handle + delta;
+                    a.out_handle = a.out_handle + delta;
+                }
+                HandleKind::Out => {
+                    let smooth = a.is_smooth();
+                    a.out_handle = a.out_handle + delta;
+                    if smooth && !break_handle {
+                        a.in_handle = a.at + (a.at - a.out_handle);
+                    }
+                }
+                HandleKind::In => {
+                    let smooth = a.is_smooth();
+                    a.in_handle = a.in_handle + delta;
+                    if smooth && !break_handle {
+                        a.out_handle = a.at + (a.at - a.in_handle);
+                    }
+                }
+            }
+        }
+
+        let run = self.path_edit.run;
+        self.write_path(id, path, "Edit Path", run);
+    }
+
+    /// Delete the selected anchors.
+    ///
+    /// A contour left with fewer than two anchors is dropped, and a path left
+    /// with nothing is deleted along with its layer — a shape layer holding no
+    /// shape would render as nothing and could not be selected again.
+    pub fn delete_path_anchors(&mut self) {
+        if self.path_edit.selected.is_empty() {
+            return;
+        }
+        let Some((id, mut path, _)) = self.editable_path() else { return };
+        let doomed = self.path_edit.selected.clone();
+
+        for (pi, part) in path.parts.iter_mut().enumerate() {
+            for (si, sub) in part.subpaths.iter_mut().enumerate() {
+                // Back to front, so the earlier indices stay valid.
+                let mut keep: Vec<usize> = (0..sub.anchors.len())
+                    .filter(|ai| !doomed.contains(&(pi, si, *ai)))
+                    .collect();
+                keep.sort_unstable();
+                let kept: Vec<_> = keep.iter().map(|i| sub.anchors[*i]).collect();
+                sub.anchors = kept;
+            }
+            part.subpaths.retain(|s| s.anchors.len() >= 2);
+        }
+        path.parts.retain(|p| !p.subpaths.is_empty());
+        self.path_edit.selected.clear();
+
+        if path.parts.is_empty() {
+            let Some(view) = self.doc_mut() else { return };
+            let dirty = view
+                .history
+                .apply(&mut view.doc, Box::new(cshop_core::history::DeleteLayer::new(id)));
+            view.mark_dirty(dirty);
+            view.invalidate();
+            self.path_edit.clear();
+            return;
+        }
+        self.write_path(id, path, "Delete Anchors", None);
+    }
+
+    /// Put an edited path back on its layer, keeping it where it looked.
+    ///
+    /// The path is renormalised so its bounds start at the box's corner, since
+    /// dragging a point can carry it outside the box the shape was built with.
+    /// The layer's offset then moves by the same amount, so the geometry does
+    /// not appear to jump.
+    fn write_path(
+        &mut self,
+        id: LayerId,
+        path: cshop_core::path::PathShape,
+        label: &str,
+        run: Option<u64>,
+    ) {
+        use cshop_core::history::SetShapeContent;
+        let Some(bounds) = path.bounds() else { return };
+        // Whole pixels, and the same number used to move the path and to move
+        // the layer. Translating the path by a fraction while rounding the
+        // layer's offset loses the remainder, and on a drag — which rewrites
+        // the path every frame — the loss accumulates until the geometry has
+        // visibly crept.
+        let shift = Vec2::new(bounds.x0.floor(), bounds.y0.floor());
+        let local = path.translate(Vec2::new(-shift.x, -shift.y));
+        let size = ((bounds.x1 - shift.x).max(1.0), (bounds.y1 - shift.y).max(1.0));
+
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(shape) = layer.shape() else { return };
+        let old_origin = (layer.offset.0 + shape.anchor().0, layer.offset.1 + shape.anchor().1);
+
+        let next = cshop_core::shape::ShapeContent {
+            kind: cshop_core::shape::ShapeKind::Path(local),
+            size,
+            style: shape.content().style,
+        };
+        let Some(rendered) = cshop_core::shape::rasterize(&next) else { return };
+        // Where the box's corner has moved to, in document space.
+        let new_origin = (old_origin.0 + shift.x as i32, old_origin.1 + shift.y as i32);
+        let offset = (new_origin.0 - rendered.anchor.0, new_origin.1 - rendered.anchor.1);
+
+        let mut cmd = SetShapeContent::new(id, next, offset, label);
+        if let Some(run) = run {
+            cmd = cmd.in_run(run);
+        }
+        let dirty = view.history.apply(&mut view.doc, Box::new(cmd));
         view.mark_dirty(dirty);
         view.invalidate();
     }
@@ -3809,5 +4043,49 @@ impl PenDraft {
             anchors: self.anchors.clone(),
             closed,
         }])
+    }
+}
+
+/// Which point of an anchor a gesture has hold of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleKind {
+    /// The anchor itself. Moving it takes its handles along.
+    Anchor,
+    /// The control point of the curve arriving at it.
+    In,
+    /// The control point of the curve leaving it.
+    Out,
+}
+
+/// One anchor's address inside a path: which operand, which contour, which
+/// point. Held by index rather than by reference so it survives the path being
+/// rebuilt on every drag frame.
+pub type AnchorRef = (usize, usize, usize);
+
+/// The Direct Selection tool's state.
+#[derive(Debug, Clone, Default)]
+pub struct PathEdit {
+    /// The layer being edited. Cleared when the selection moves elsewhere.
+    pub layer: Option<LayerId>,
+    pub selected: Vec<AnchorRef>,
+    /// What the pointer has hold of, and where it took hold.
+    pub drag: Option<(AnchorRef, HandleKind)>,
+    /// Where the pointer was on the previous frame of a drag.
+    pub last: Option<Vec2>,
+    /// Identifies this drag, so every frame of it folds into one undo step
+    /// and the next drag starts a new one.
+    pub run: Option<u64>,
+}
+
+impl PathEdit {
+    /// How close a click has to land, in screen pixels.
+    pub const GRAB_RADIUS: f32 = 7.0;
+
+    pub fn clear(&mut self) {
+        *self = PathEdit::default();
+    }
+
+    pub fn is_selected(&self, at: AnchorRef) -> bool {
+        self.selected.contains(&at)
     }
 }

@@ -24,6 +24,8 @@ named but nothing runs it.
 | `E` | Eraser |
 | `G` | Paint Bucket / Gradient |
 | `T` | Type |
+| `P` | Pen |
+| `A` | Direct Selection |
 | `U` | Shape |
 | `H` | Hand |
 | `Z` | Zoom |
@@ -133,6 +135,26 @@ letters type letters.
 
 Drag to draw. `Shift` constrains to a square or circle, `Alt` draws out from
 the centre.
+
+## Paths
+
+The Pen places a corner where you click and pulls a curve where you drag.
+Clicking the first anchor again closes the path; `Enter` ends it where it is,
+leaving it open; `Escape` abandons it.
+
+| | |
+|---|---|
+| Click an anchor | Select it |
+| `Shift`-click | Add to or remove from the selection |
+| Drag an anchor | Move every selected anchor |
+| Drag a handle | Reshape the curve |
+| `Alt`-drag a handle | Move one side only, breaking a smooth point |
+| `Delete` | Remove the selected anchors |
+| `Escape` | Deselect |
+
+Handles are shown only for anchors that are selected, so a complicated path
+does not become a thicket of lines. A drag is one undo step however many
+frames it took.
 
 ## Deliberately unbound
 

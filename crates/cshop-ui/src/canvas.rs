@@ -319,6 +319,63 @@ fn draw_selection(app: &mut CShopApp, ui: &mut egui::Ui, painter: &egui::Painter
     }
 
     // The preview of the shape currently being dragged out.
+    // The path being edited: its anchors, and the handles of whichever are
+    // selected. Handles are shown only for selected anchors, so a complicated
+    // path does not become a thicket of lines.
+    if app.tool == Tool::DirectSelect {
+        if let Some((_, path, origin)) = app.editable_path() {
+            let to_screen = |p: cshop_core::geom::Vec2| {
+                app.docs[index]
+                    .doc_to_screen(viewport, egui::vec2(origin.x + p.x, origin.y + p.y))
+            };
+            let accent = egui::Color32::from_rgb(90, 170, 255);
+            // The outline itself, so the points have something to sit on.
+            for part in &path.parts {
+                for sub in &part.subpaths {
+                    let line = sub.flatten(0.5);
+                    let pts: Vec<egui::Pos2> = line.iter().map(|p| to_screen(*p)).collect();
+                    if pts.len() >= 2 {
+                        painter.add(egui::Shape::line(
+                            pts,
+                            egui::Stroke::new(1.0, accent.gamma_multiply(0.7)),
+                        ));
+                    }
+                }
+            }
+            for (pi, part) in path.parts.iter().enumerate() {
+                for (si, sub) in part.subpaths.iter().enumerate() {
+                    for (ai, a) in sub.anchors.iter().enumerate() {
+                        let at = to_screen(a.at);
+                        let selected = app.path_edit.is_selected((pi, si, ai));
+                        if selected && a.at.distance(a.out_handle) > 0.5 {
+                            for h in [a.in_handle, a.out_handle] {
+                                let hp = to_screen(h);
+                                painter.line_segment(
+                                    [at, hp],
+                                    egui::Stroke::new(1.0, accent.gamma_multiply(0.8)),
+                                );
+                                painter.circle_filled(hp, 3.0, accent);
+                            }
+                        }
+                        // Selected anchors are filled, unselected hollow —
+                        // the convention every vector editor uses.
+                        if selected {
+                            painter.circle_filled(at, 4.0, accent);
+                            painter.circle_stroke(
+                                at,
+                                4.0,
+                                egui::Stroke::new(1.0, egui::Color32::WHITE),
+                            );
+                        } else {
+                            painter.circle_filled(at, 3.5, egui::Color32::WHITE);
+                            painter.circle_stroke(at, 3.5, egui::Stroke::new(1.2, accent));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // The Pen tool's work in progress: the curve so far, its anchors, and the
     // segment that would follow the pointer. Drawn here rather than as a layer
     // because an unfinished path is not part of the document yet.
@@ -637,6 +694,59 @@ fn interact(
                         constrain: shift,
                     });
                 }
+            }
+        }
+
+        // Direct Selection: pick an anchor or a handle, and move it.
+        Tool::DirectSelect => {
+            let zoom = app.doc().map_or(1.0, |v| v.zoom);
+            let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+
+            // The hit is taken when the button goes down, not when egui
+            // decides a drag has begun — by then the pointer has moved past
+            // the drag threshold and is no longer over the anchor it grabbed.
+            let pressed = ui.input(|i| i.pointer.primary_pressed());
+            if pressed {
+                match app.path_hit(doc_point, zoom) {
+                    Some((at, kind)) => {
+                        if kind == crate::app::HandleKind::Anchor {
+                            if shift {
+                                if let Some(i) =
+                                    app.path_edit.selected.iter().position(|s| *s == at)
+                                {
+                                    app.path_edit.selected.remove(i);
+                                } else {
+                                    app.path_edit.selected.push(at);
+                                }
+                            } else if !app.path_edit.is_selected(at) {
+                                app.path_edit.selected = vec![at];
+                            }
+                        }
+                        app.path_edit.drag = Some((at, kind));
+                        app.path_edit.last = Some(doc_point);
+                        // A fresh identifier, so this drag is its own step.
+                        app.path_edit.run = Some(app.next_edit_run());
+                    }
+                    // Clicking away from every point clears the selection, the
+                    // way clicking off a selection does everywhere else.
+                    None if !shift => app.path_edit.selected.clear(),
+                    None => {}
+                }
+            }
+            if response.dragged_by(egui::PointerButton::Primary) {
+                if let (Some(last), Some(_)) = (app.path_edit.last, app.path_edit.drag) {
+                    let delta = cshop_core::geom::Vec2::new(
+                        doc_point.x - last.x,
+                        doc_point.y - last.y,
+                    );
+                    app.drag_path(delta, alt);
+                    app.path_edit.last = Some(doc_point);
+                }
+            }
+            if ui.input(|i| i.pointer.primary_released()) {
+                app.path_edit.drag = None;
+                app.path_edit.last = None;
+                app.path_edit.run = None;
             }
         }
 

@@ -251,6 +251,8 @@ pub enum Action {
     FinishPath { closed: bool },
     /// Throw the Pen tool's draft away.
     CancelPath,
+    /// Remove the anchors the Direct Selection tool has selected.
+    DeletePathAnchors,
     /// Combine the selected shape layers into one path with this operation.
     CombineShapes(cshop_core::path::BoolOp),
     /// Step the brush diameter one notch, as `[` and `]` do.
