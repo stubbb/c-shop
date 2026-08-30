@@ -10,9 +10,10 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
-An optional **deep-learning pack** adds four neural networks to that: one that
+An optional **deep-learning pack** adds five neural networks to that: one that
 finds objects and names them, one that turns a point or a box into a mask, one
-that takes the noise out of a photograph and one that enlarges it. So "cut the
+that labels every pixel with what it is, one that takes the noise out of a
+photograph and one that enlarges it. So "cut the
 dog out of this picture" and "clean up this sky" become things the editor can
 be asked for rather than things someone has to do by hand. They run in a process of their
 own, so the editor keeps its single-binary, no-dependency build whether they
@@ -235,9 +236,9 @@ and sizing, with the measurements behind that claim.
 
 ### Recognising, cutting out and cleaning up
 
-An optional pack adds four neural networks — one that finds objects and says
-where they are, one that turns a point or a box into a mask, one that removes
-noise and one that enlarges:
+An optional pack adds five neural networks — one that finds objects and says
+where they are, one that turns a point or a box into a mask, one that labels
+every pixel with what it is, one that removes noise and one that enlarges:
 
 ```sh
 vision/setup.sh
@@ -309,6 +310,24 @@ The trade is real and worth knowing: what removes sensor noise also softens
 fine texture that resembles it. Deep foliage goes slightly painterly here. That
 is what `strength` is for.
 
+### Separating a picture by what is in it
+
+**Layer ▸ Separate by Content…**, or `separate`, labels every pixel with what
+it is — a hundred and fifty kinds of thing, including all the ones the detector
+has never heard of — and makes one layer from each:
+
+```
+open hillside.jpg
+separate    # → separated into 3 layers: sky 49%, tree 40%, mountain 11%
+```
+
+Each is an ordinary layer, named for what it is, transparent everywhere else,
+stacked above the original. So the composite is unchanged and the photograph is
+suddenly something a layered editor can take a piece at a time — grade the sky
+without touching the hillside, clean the foliage and leave the buildings alone.
+The boundaries are approximate, which is why the edge is feathered by default
+and why `segment` is still the tool for a real cut-out.
+
 ### Enlarging
 
 **Image ▸ Upscale…**, or `upscale scale=2`, grows the whole document — canvas,
@@ -368,7 +387,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-772 tests, and the interesting ones are not unit tests:
+777 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

@@ -754,10 +754,12 @@ impl Runner {
             "lens" => self.cmd_lens(cmd),
             "denoise" => self.cmd_denoise(cmd),
             "upscale" => self.cmd_upscale(cmd),
+            "separate" => self.cmd_separate(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, lens, denoise, upscale, export, save"
+                 order, info, profile, lens, denoise, upscale, separate, export, \
+                 save"
             )),
         }
     }
@@ -1298,6 +1300,130 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Split a picture into layers by what things are.
+    ///
+    /// The labeller knows a hundred and fifty kinds of thing and says which of
+    /// them each pixel belongs to; this turns that into one layer per kind,
+    /// which is the form a layered editor can actually do something with —
+    /// grade the sky without touching the hillside, clean up the foliage and
+    /// leave the buildings alone.
+    ///
+    /// The boundaries are approximate. The model reasons on a small grid, so
+    /// its edges follow the shape of a thing without hugging it; `feather=`
+    /// exists because a soft edge is the honest way to show a boundary that is
+    /// not certain, and `segment` is there for when a real cut-out is wanted.
+    fn cmd_separate(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let min = cmd.f32("min")?.unwrap_or(0.02).clamp(0.0, 1.0);
+        let feather = cmd.f32("feather")?.unwrap_or(2.0).max(0.0);
+        let wanted: Vec<String> = cmd
+            .opt("classes")
+            .map(|c| c.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to separate")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels to separate")?;
+
+        let dir = self.vision_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let input = dir.join("source.png");
+        let map_path = dir.join("labels.png");
+        cshop_io::save(&input, &source, 100)
+            .map_err(|e| format!("could not write the image for the model: {e}"))?;
+        let answer = match cshop_ui::vision::classify(&input, &map_path) {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
+        let map = match cshop_io::load(&answer.map) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(format!("could not read the map back: {e}"));
+            }
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let chosen: Vec<cshop_ui::vision::Region> = answer
+            .regions
+            .iter()
+            .filter(|r| {
+                if wanted.is_empty() {
+                    r.coverage >= min
+                } else {
+                    wanted.contains(&r.class.to_lowercase())
+                }
+            })
+            .cloned()
+            .collect();
+        if chosen.is_empty() {
+            let names: Vec<String> = answer
+                .regions
+                .iter()
+                .take(6)
+                .map(|r| format!("{} {:.0}%", r.class, r.coverage * 100.0))
+                .collect();
+            return Err(format!(
+                "nothing matched. This picture holds: {}",
+                if names.is_empty() { "nothing recognised".to_string() } else { names.join(", ") }
+            ));
+        }
+
+        // Each goes in directly above the source, so the one added last ends
+        // up highest — which means adding them in the order they are listed
+        // leaves the panel reading top-down exactly as the report does.
+        let mut made = Vec::new();
+        for region in chosen.iter() {
+            let layer =
+                cshop_ui::separate_ui::separated_layer(&source, &map, region.id, feather);
+            if layer.is_none() {
+                continue;
+            }
+            let pixels = layer.unwrap();
+            let view = self.app.doc_mut().ok_or("no document")?;
+            let new_id = view.doc.tree.alloc_id();
+            let mut fresh =
+                cshop_core::layer::Layer::raster(new_id, region.class.clone(), pixels);
+            fresh.offset = view.doc.tree.get(id).map(|l| l.offset).unwrap_or((0, 0));
+            // Directly above the layer they were separated from, in whatever
+            // group that layer lives in.
+            let pos = view
+                .doc
+                .tree
+                .position(id)
+                .map(|p| cshop_core::LayerPos { parent: p.parent, index: p.index + 1 })
+                .unwrap_or(cshop_core::LayerPos {
+                    parent: None,
+                    index: view.doc.tree.root().len(),
+                });
+            let dirty = view.history.apply(
+                &mut view.doc,
+                Box::new(cshop_core::history::AddLayer::new(fresh, pos, "Separate")),
+            );
+            view.mark_dirty(dirty);
+            made.push(format!("{} {:.0}%", region.class, region.coverage * 100.0));
+        }
+        if let Some(view) = self.app.doc_mut() {
+            view.invalidate();
+        }
+        Ok(format!(
+            "separated into {} layer{}: {}",
+            made.len(),
+            if made.len() == 1 { "" } else { "s" },
+            made.join(", ")
+        ))
     }
 
     /// Enlarge the whole image, inventing the detail rather than smearing it.

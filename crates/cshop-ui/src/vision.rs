@@ -379,3 +379,46 @@ pub fn upscale(
         tiles: parsed.get("tiles").and_then(Json::as_f64).unwrap_or(0.0) as u32,
     })
 }
+
+/// One kind of thing the labeller found, and how much of the picture it is.
+#[derive(Debug, Clone)]
+pub struct Region {
+    pub class: String,
+    /// The class number, which is also the value it has in the map.
+    pub id: u8,
+    pub coverage: f32,
+}
+
+/// A map of what every pixel is, and a list of what is in it.
+#[derive(Debug, Clone)]
+pub struct Classified {
+    /// A greyscale image whose pixel values are class numbers.
+    pub map: PathBuf,
+    pub regions: Vec<Region>,
+}
+
+/// Label every pixel with what it is.
+///
+/// One pass at a fixed size, so it costs the same half-second whatever the
+/// picture is — and its boundaries are approximate for the same reason. It
+/// answers "what is here and roughly where", which is a different question
+/// from the one [`segment`] answers.
+pub fn classify(image: &Path, out: &Path) -> Result<Classified, String> {
+    let image = image_arg(image)?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let answer = run(&["classify", image, "--out", out_s])?;
+    let regions = answer
+        .get("regions")
+        .and_then(Json::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|r| {
+            Some(Region {
+                class: r.str_field("class")?.to_string(),
+                id: r.get("id")?.as_f64()? as u8,
+                coverage: r.get("coverage")?.as_f64()? as f32,
+            })
+        })
+        .collect();
+    Ok(Classified { map: PathBuf::from(answer.str_field("map").unwrap_or(out_s)), regions })
+}

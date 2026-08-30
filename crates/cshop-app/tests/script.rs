@@ -1141,3 +1141,45 @@ fn upscale_refuses_a_scale_it_cannot_do() {
         assert!(report.steps[1].note.contains("between 1 and 4"), "{:?}", notes(&report));
     }
 }
+
+// --- separating by content -------------------------------------------------
+
+#[test]
+fn separate_makes_a_layer_for_each_kind_of_thing() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../cshop-io/tests/assets/ink-source.png");
+    let Some(report) = run(&format!("open {path}\nresize 256 256\nseparate min=0.05\ninfo")) else {
+        return;
+    };
+    let note = report.steps[2].note.clone();
+    if !report.ok {
+        // A 32-pixel abstract may genuinely hold nothing the model knows.
+        assert!(note.contains("nothing matched"), "{note}");
+        return;
+    }
+    assert!(note.starts_with("separated into"), "{note}");
+    let layers: usize = report.steps[3]
+        .note
+        .split(',')
+        .find_map(|p| p.trim().strip_suffix(" layers").or_else(|| p.trim().strip_suffix(" layer")))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    assert!(layers > 1, "the separated layers should be there too: {}", report.steps[3].note);
+}
+
+/// Asking for something that is not in the picture should say what is.
+#[test]
+fn separate_names_what_it_did_find() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let Some(report) = run("new 128 128 background=#4060a0\nseparate classes=elephant") else {
+        return;
+    };
+    assert!(!report.ok);
+    let note = &report.steps[1].note;
+    assert!(note.contains("nothing matched"), "{note}");
+    assert!(note.contains("This picture holds"), "it should say what is there: {note}");
+}

@@ -22,10 +22,10 @@ fi
 echo "  installing onnxruntime, numpy, pillow"
 "$venv/bin/pip" install --quiet --upgrade --no-input onnxruntime numpy pillow
 
-# Four models. YOLOv8n finds things and says where they are; MobileSAM turns a
+# Five models. YOLOv8n finds things and says where they are; MobileSAM turns a
 # point or a box into a mask; SCUNet takes the noise out of a photograph;
-# Real-ESRGAN enlarges one. All ONNX so that the runtime is the only
-# dependency — no PyTorch, no CUDA, no compiler.
+# Real-ESRGAN enlarges one; SegFormer says what every pixel is. All ONNX so
+# that the runtime is the only dependency — no PyTorch, no CUDA, no compiler.
 fetch() {
     local name="$1" url="$2"
     if [ -s "$models/$name" ]; then
@@ -54,6 +54,13 @@ fetch scunet_color_real_psnr.onnx \
 # which is a hundredth of what the denoiser costs and about as quick.
 fetch realesr-general-x4v3.onnx \
     "https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx"
+
+# SegFormer on ADE20K: a hundred and fifty classes, and the ones YOLO has
+# never heard of. The full-precision export rather than the quantised one,
+# which is a third of the size and uses an operator this runtime does not
+# implement — it loads and then refuses, which is a poor way to find out.
+fetch segformer-ade.onnx \
+    "https://huggingface.co/onnx-community/segformer-b3-finetuned-ade-512-512-ONNX/resolve/main/onnx/model.onnx"
 
 fetch scunet_color_real_psnr.onnx.data \
     "https://huggingface.co/Heliosoph/scunet-onnx/resolve/main/scunet_color_real_psnr.onnx.data"

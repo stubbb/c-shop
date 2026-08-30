@@ -330,6 +330,10 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Open the separate-by-content window and start looking.
+    ShowSeparate,
+    /// Make a layer from each kind of thing that was ticked.
+    RunSeparate,
     /// Open the upscale window.
     ShowUpscale,
     /// Run the enlarger over every raster layer, on a worker thread.

@@ -78,6 +78,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
 | `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
 | `denoise [strength=]` | Remove noise from the active layer, or from the selection. Needs the [vision pack](VISION.md). |
 | `segment [class=\|box=\|point=] [expand= feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
@@ -166,6 +167,28 @@ this can run it on a small selection first and read that number.
 It is worth reaching for: the model is very good on sensor noise and grain, and
 will also quietly remove fine texture that resembles them — skin pores, distant
 foliage, fabric weave.
+
+### Separating a picture by what is in it
+
+`separate` labels every pixel with what it is — a hundred and fifty kinds of
+thing, and pointedly the ones `detect` has never heard of: sky, mountain, road,
+building, water, plant — then makes one layer from each, named for it.
+
+```
+separate            # → separated into 3 layers: sky 49%, tree 40%, mountain 11%
+separate classes=sky
+separate min=0.10   # only things that are a tenth of the picture or more
+```
+
+The layers go above the one they came from, which is left alone, so the
+composite is unchanged and the picture is now addressable a piece at a time.
+Failing to match says what *is* there, so an agent that guessed wrong can try
+again with a real answer rather than a shrug.
+
+Its boundaries are approximate — the model reasons on a small grid — so
+`feather=` defaults to 2 rather than 0. When a real cut-out is wanted, this is
+the wrong command and `segment` is the right one; the two compose, since this
+answers the question SAM wants a prompt for.
 
 ### Enlarging
 

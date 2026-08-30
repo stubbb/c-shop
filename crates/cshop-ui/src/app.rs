@@ -116,6 +116,12 @@ pub struct CShopApp {
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
+    /// The map the labeller wrote, kept between looking and separating.
+    separate_map: Option<PixelBuffer>,
+    /// The labeller, while it looks: what it found and the map it wrote.
+    #[allow(clippy::type_complexity)]
+    separate_job:
+        Option<std::sync::mpsc::Receiver<Result<(Vec<crate::vision::Region>, PixelBuffer), String>>>,
     /// The enlargement, and the size and scale it was started for.
     #[allow(clippy::type_complexity)]
     upscale_job:
@@ -214,6 +220,8 @@ impl CShopApp {
             lens_job: None,
             denoise_job: None,
             upscale_job: None,
+            separate_job: None,
+            separate_map: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -341,6 +349,7 @@ impl CShopApp {
         self.poll_lens(&ctx);
         self.poll_denoise(&ctx);
         self.poll_upscale(&ctx);
+        self.poll_separate(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -412,6 +421,7 @@ impl CShopApp {
             Dialog::Lens(d) => d.title(),
             Dialog::Denoise(d) => d.title(),
             Dialog::Upscale(d) => d.title(),
+            Dialog::Separate(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -465,6 +475,7 @@ impl CShopApp {
                 Dialog::Lens(d) => close = d.ui(ui, &mut actions),
                 Dialog::Denoise(d) => close = d.ui(ui, &mut actions),
                 Dialog::Upscale(d) => close = d.ui(ui, &mut actions),
+                Dialog::Separate(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1354,6 +1365,25 @@ impl CShopApp {
                     ));
                 }
             }
+            Action::ShowSeparate => {
+                let picked = self.doc().and_then(|v| {
+                    let id = v.doc.active?;
+                    Some((id, v.doc.tree.get(id)?.pixels()?.clone()))
+                });
+                match picked {
+                    Some((id, pixels)) => {
+                        self.dialog = Dialog::Separate(Box::new(
+                            crate::separate_ui::SeparateDialog::new(id),
+                        ));
+                        if crate::vision::is_available() {
+                            self.start_separate_look(pixels);
+                        }
+                    }
+                    None => self.fail("Separating needs a layer with pixels in it"),
+                }
+            }
+            Action::RunSeparate => self.run_separate(),
+
             Action::ShowUpscale => {
                 let counted = self.doc().map(|v| {
                     let n = v
@@ -2894,6 +2924,108 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Ask the labeller what is in the picture, on a thread.
+    ///
+    /// Half a second, but on the frame thread half a second is a visible
+    /// stutter, and the window has a spinner to earn.
+    fn start_separate_look(&mut self, pixels: PixelBuffer) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let input = dir.join("source.png");
+                let map = dir.join("labels.png");
+                cshop_io::save(&input, &pixels, 100)
+                    .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                let answer = crate::vision::classify(&input, &map)?;
+                let labels = cshop_io::load(&answer.map)
+                    .map_err(|e| format!("could not read the map back: {e}"))?;
+                Ok((answer.regions, labels))
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = tx.send(result);
+        });
+        self.separate_job = Some(rx);
+    }
+
+    pub fn poll_separate(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.separate_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                self.separate_job = None;
+                if let Dialog::Separate(d) = &mut self.dialog {
+                    d.busy = false;
+                    d.status = "The labeller stopped without answering.".into();
+                }
+            }
+            Ok(Err(why)) => {
+                self.separate_job = None;
+                if let Dialog::Separate(d) = &mut self.dialog {
+                    d.busy = false;
+                    d.status = why;
+                }
+            }
+            Ok(Ok((regions, labels))) => {
+                self.separate_job = None;
+                self.separate_map = Some(labels);
+                if let Dialog::Separate(d) = &mut self.dialog {
+                    d.show(regions);
+                }
+            }
+        }
+    }
+
+    /// One layer for each kind of thing that was ticked.
+    fn run_separate(&mut self) {
+        let (id, picked, feather) = match &self.dialog {
+            Dialog::Separate(d) => (d.layer, d.picked(), d.feather),
+            _ => return,
+        };
+        let Some(map) = self.separate_map.clone() else { return };
+        let Some(source) = self
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+        else {
+            return;
+        };
+
+        let mut made = 0usize;
+        for region in &picked {
+            let Some(pixels) = crate::separate_ui::separated_layer(&source, &map, region.id, feather) else {
+                continue;
+            };
+            let Some(view) = self.doc_mut() else { return };
+            let new_id = view.doc.tree.alloc_id();
+            let mut fresh =
+                cshop_core::layer::Layer::raster(new_id, region.class.clone(), pixels);
+            fresh.offset = view.doc.tree.get(id).map(|l| l.offset).unwrap_or((0, 0));
+            let pos = view
+                .doc
+                .tree
+                .position(id)
+                .map(|p| cshop_core::LayerPos { parent: p.parent, index: p.index + 1 })
+                .unwrap_or(cshop_core::LayerPos {
+                    parent: None,
+                    index: view.doc.tree.root().len(),
+                });
+            let dirty = view
+                .history
+                .apply(&mut view.doc, Box::new(AddLayer::new(fresh, pos, "Separate")));
+            view.mark_dirty(dirty);
+            made += 1;
+        }
+        if let Some(view) = self.doc_mut() {
+            view.invalidate();
+        }
+        self.separate_map = None;
+        self.notify(format!("Separated into {made} layer{}", if made == 1 { "" } else { "s" }));
+    }
+
     /// Hand every raster layer to the enlarger, on a thread.
     fn start_upscale(&mut self) {
         let Dialog::Upscale(d) = &self.dialog else { return };

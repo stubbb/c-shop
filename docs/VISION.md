@@ -9,9 +9,9 @@ vision/setup.sh
 That is the whole installation: a Python environment and about 130 MB of model
 weights, under `~/.cache/cshop/vision` — half a gigabyte all told, most of it
 the runtime rather than the models. Nothing in the editor needs it: open, edit
-and save behave exactly as before whether it is there or not, and only four
-commands — `detect`, `segment`, `denoise` and `upscale` — and three windows ask
-for it.
+and save behave exactly as before whether it is there or not, and only five
+commands — `detect`, `segment`, `denoise`, `upscale` and `separate` — and four
+windows ask for it.
 
 ## Why it is a separate process
 
@@ -40,6 +40,14 @@ where to look.
 
 Which is why they are better together than either alone: YOLO finds the dog
 and says where, SAM cuts it out.
+
+**SegFormer** labels every pixel with what it is — a hundred and fifty kinds of
+thing from [ADE20K][ade], and pointedly the kinds YOLO has never heard of: sky,
+mountain, road, building, water, plant, earth. Where YOLO answers "there is a
+dog, here", SegFormer answers "this pixel is sky and that one is a tree". It
+does not cut anything out; that is still SAM's job.
+
+[ade]: https://groups.csail.mit.edu/vision/datasets/ADE20K/
 
 **Real-ESRGAN** enlarges, four times up, inventing the detail a bigger sensor
 would have recorded. Five megabytes for the compact "general" variant, which is
@@ -177,6 +185,42 @@ sensor noise and grain, and it will also quietly remove fine texture that
 happens to resemble them — skin pores, distant foliage, fabric weave. That is
 what `strength` is for, and why the window lets you move it *after* seeing the
 result rather than guessing beforehand.
+
+## Separating a picture by what is in it
+
+```
+open hillside.jpg
+separate            # → separated into 3 layers: sky 49%, tree 40%, mountain 11%
+```
+
+Or **Layer ▸ Separate by Content…**, which lists what it found with the share
+of the picture each takes, and lets you tick the ones worth a layer.
+
+Each becomes an ordinary raster layer, named for what it is, holding that part
+of the picture and transparent everywhere else — stacked above the one they
+came from, which is left as it was. So the composite looks unchanged and the
+picture is now something a layered editor can work on a piece at a time: grade
+the sky without touching the hillside, clean the foliage and leave the
+buildings alone.
+
+`classes=` picks by name instead of by size, and `min=` sets how much of the
+picture something has to be before it is worth a layer (2% by default).
+
+### The boundaries are approximate
+
+The model reasons on a 128-square grid whatever the picture's size, so on a
+large frame one of its decisions covers a couple of dozen pixels. Its edges
+follow the shape of a thing without hugging it.
+
+Two things follow. The class scores are enlarged *before* the argmax rather
+than after, which costs nothing and gives a boundary that follows an edge
+rather than a grid. And `feather=` defaults to two pixels rather than zero,
+because a soft edge is the honest way to draw a boundary the model was never
+certain about.
+
+For a real cut-out, this is the wrong tool and `segment` is the right one. The
+two go together well: this says what is in the picture and roughly where, which
+is exactly the prompt SAM wants.
 
 ## Enlarging
 

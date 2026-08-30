@@ -22,6 +22,10 @@ Two models:
 * **Real-ESRGAN** enlarges. Four times up, inventing the detail that a bigger
   sensor would have recorded — which is why it is judged by eye rather than by
   arithmetic; see `upscale`.
+* **SegFormer** labels every pixel with what it is: a hundred and fifty kinds
+  of thing, and pointedly the kinds YOLO has never heard of — sky, mountain,
+  road, building, water, plant. It says *what and roughly where*; it does not
+  cut anything out, which is what SAM is for.
 
 Subcommands print one JSON object to stdout. Errors print JSON too, with
 `"ok": false` and a message, so the caller never has to parse a traceback.
@@ -468,6 +472,35 @@ def denoise(image_path, out_path, strength):
     }
 
 
+# What SegFormer was trained on, in the order its output channels come in.
+# ADE20K's hundred and fifty, which overlap COCO's eighty barely at all: this
+# is the list with the sky and the mountain on it.
+ADE20K = (
+    "wall building sky floor tree ceiling road bed windowpane grass cabinet "
+    "sidewalk person earth door table mountain plant curtain chair car water "
+    "painting sofa shelf house sea mirror rug field armchair seat fence desk "
+    "rock wardrobe lamp bathtub railing cushion base box column signboard "
+    "chest-of-drawers counter sand sink skyscraper fireplace refrigerator "
+    "grandstand path stairs runway case pool-table pillow screen-door stairway "
+    "river bridge bookcase blind coffee-table toilet flower book hill bench "
+    "countertop stove palm kitchen-island computer swivel-chair boat bar "
+    "arcade-machine hovel bus towel light truck tower chandelier awning "
+    "streetlight booth television airplane dirt-track apparel pole land "
+    "bannister escalator ottoman bottle buffet poster stage van ship fountain "
+    "conveyer-belt canopy washer plaything swimming-pool stool barrel basket "
+    "waterfall tent bag minibike cradle oven ball food step tank trade-name "
+    "microwave pot animal bicycle lake dishwasher screen blanket sculpture "
+    "hood sconce vase traffic-light tray ashcan fan pier crt-screen plate "
+    "monitor bulletin-board shower radiator glass clock flag"
+).split()
+
+# The frame SegFormer was exported for, and the normalisation it expects —
+# ImageNet's, which is what its preprocessor config says.
+SEGFORMER_SIDE = 512
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
 # ---------------------------------------------------------------------------
 # Enlarging
 # ---------------------------------------------------------------------------
@@ -553,6 +586,65 @@ def upscale(image_path, out_path, scale):
     }
 
 
+# ---------------------------------------------------------------------------
+# Labelling every pixel
+# ---------------------------------------------------------------------------
+
+
+def classify(image_path, out_path, top=8):
+    """Say what each pixel is, and write the answer as a map of class numbers.
+
+    One pass at 512 square whatever the picture's size, which is why it costs
+    the same half-second on a phone snap and on a forty megapixel frame — and
+    also why the boundaries are approximate. The model reasons on a 128-square
+    grid, so on a large picture one of its decisions covers a couple of dozen
+    pixels. It is a map of what is where, not a matte.
+
+    The class scores are enlarged before the argmax rather than after, which
+    costs nothing and gives a boundary that follows an edge instead of a grid.
+    Only the classes that are actually in the running are enlarged; doing all
+    hundred and fifty would be a hundred and fifty full-size arrays for no
+    difference to the answer.
+    """
+    import numpy as np
+    from PIL import Image
+
+    sess = session("segformer-ade.onnx")
+    name = sess.get_inputs()[0].name
+
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    small = np.asarray(image.resize((SEGFORMER_SIDE, SEGFORMER_SIDE), Image.BILINEAR), np.float32)
+    small /= 255.0
+    small = (small - np.array(IMAGENET_MEAN, np.float32)) / np.array(IMAGENET_STD, np.float32)
+    logits = sess.run(None, {name: small.transpose(2, 0, 1)[None]})[0][0]
+
+    # The classes with any real presence, by total score. Everything else
+    # cannot win a pixel once these are in the argmax.
+    ranked = np.argsort(-logits.max(axis=(1, 2)))[: max(top, 1)]
+    enlarged = np.stack(
+        [
+            np.asarray(Image.fromarray(logits[c]).resize((width, height), Image.BILINEAR))
+            for c in ranked
+        ]
+    )
+    labels = ranked[enlarged.argmax(0)].astype(np.uint8)
+    Image.fromarray(labels, "L").save(out_path)
+
+    ids, counts = np.unique(labels, return_counts=True)
+    total = float(width * height)
+    found = [
+        {
+            "class": ADE20K[i] if i < len(ADE20K) else f"class-{i}",
+            "id": int(i),
+            "coverage": round(float(c) / total, 5),
+        }
+        for i, c in zip(ids.tolist(), counts.tolist())
+    ]
+    found.sort(key=lambda r: -r["coverage"])
+    return {"ok": True, "map": out_path, "width": width, "height": height, "regions": found}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -563,6 +655,10 @@ def main():
     d.add_argument("--image", required=True)
     d.add_argument("--conf", type=float, default=0.25)
     d.add_argument("--classes", default="", help="comma-separated, to keep only these")
+
+    c = sub.add_parser("classify", help="label every pixel with what it is")
+    c.add_argument("image")
+    c.add_argument("--out", required=True)
 
     u = sub.add_parser("upscale", help="enlarge")
     u.add_argument("image")
@@ -598,6 +694,7 @@ def main():
                 # a worse way to find out than being told here.
                 "scunet_color_real_psnr.onnx.data",
                 "realesr-general-x4v3.onnx",
+                "segformer-ade.onnx",
             )
             if not os.path.exists(os.path.join(MODELS, n))
         ]
@@ -623,6 +720,10 @@ def main():
                 fail(f"{v!r} is not an x,y point")
             out.append((x, y))
         return out
+
+    if args.command == "classify":
+        print(json.dumps(classify(args.image, args.out)))
+        return
 
     if args.command == "upscale":
         print(json.dumps(upscale(args.image, args.out, args.scale)))
