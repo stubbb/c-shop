@@ -77,19 +77,43 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `shape KIND X Y W H` | `rect ellipse polygon star line`. `fill= stroke= stroke-width= stroke-align= radius= sides= inner= thickness=` |
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
+| `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `segment [class=\|box=\|point=] [feather=]` | Cut something out and leave it as the selection. With nothing said, uses what `detect` last found. |
 | `fill COLOUR` | Fill the layer, or the selection if there is one. |
 | `style NAME [key=value...]` | Apply a named style — see below. |
 | `gradient X1 Y1 X2 Y2` | A gradient across the layer. Colours carry alpha, so `from=#00000000 to=#000000cc` is a wash that fades out. `style= blend= opacity= reverse` |
-| `select X Y W H` \| `select all` \| `select none` | `feather=` softens the edge. |
+| `select X Y W H` \| `select all` \| `select none` \| `select invert` \| `select clear` | `feather=` softens the edge. |
 | `effect NAME` | See below. Applies to the active layer; repeat to stack. |
 | `filter NAME` | `gaussian-blur box-blur motion-blur surface-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic crystallize emboss solarize diffuse twirl` |
 | `adjust NAME` | `brightness-contrast levels gradient-map photo-filter hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
-| `layer WHAT` | `new group duplicate delete merge-down flatten rasterize select <index>` |
+| `layer WHAT` | `new group duplicate via-copy delete merge-down flatten rasterize select <index>`. `via-copy` lifts only what is selected onto a new layer. |
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
 | `info` | Report the document's size and layer count. |
 | `export PATH` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. |
+
+### Finding and cutting out an object
+
+Two models, installed separately — see [VISION.md](VISION.md). One says what is
+in a picture and where; the other turns a point or a box into a mask. Together
+they take a photograph to a cut-out:
+
+```
+open photo.jpg
+detect                          # what is in here?
+segment class=dog feather=1     # cut that out, softening the edge
+layer via-copy                  # lift the selection onto its own layer
+layer select 0
+layer delete                    # drop the background
+export dog.png                  # PNG keeps the transparency
+```
+
+`segment` leaves a selection rather than a layer, so everything the editor
+already does with one applies. The detector knows eighty kinds of thing and no
+others, so a sky or a building comes back empty from `detect` — but
+`segment point=x,y` works on anything, because the segmenter does not know or
+care what it is looking at.
 
 ### Paths and boolean operations
 

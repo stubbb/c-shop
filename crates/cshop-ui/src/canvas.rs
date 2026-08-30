@@ -579,6 +579,23 @@ fn interact(
     // stray click must not paint on it.
     let dialog_open = app.dialog.is_open();
 
+    // The Segment window takes the canvas as its input: a click says "this",
+    // Alt-click says "not this". Handled before the tools, since while it is
+    // open that is what a click means.
+    if matches!(app.dialog, crate::dialogs::Dialog::Segment(_)) {
+        if response.clicked_by(egui::PointerButton::Primary) {
+            if let Some(p) = response.interact_pointer_pos() {
+                let v = app.docs[index].screen_to_doc(viewport, p);
+                let alt = ui.input(|i| i.modifiers.alt);
+                if let crate::dialogs::Dialog::Segment(d) = &mut app.dialog {
+                    d.add_hint(cshop_core::geom::Vec2::new(v.x, v.y), !alt);
+                }
+                app.push(Action::SegmentPreview);
+            }
+        }
+        return;
+    }
+
     // --- scroll and zoom ---------------------------------------------------
     if response.hovered() {
         let (scroll, zoom_delta, modifiers) = ui.input(|i| {

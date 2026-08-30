@@ -533,6 +533,9 @@ pub struct Runner {
     depth: usize,
     /// Prefixes the steps a style runs, so a failure inside one says which.
     trail: Vec<String>,
+    /// What `detect` last found, so `segment` can follow it without repeating
+    /// the prompt.
+    detected: Vec<cshop_ui::vision::Found>,
 }
 
 /// Run a script and return what happened.
@@ -560,6 +563,7 @@ impl Runner {
             report: Report::default(),
             depth: 0,
             trail: Vec::new(),
+            detected: Vec::new(),
         }
     }
 
@@ -728,6 +732,8 @@ impl Runner {
             "style" => self.cmd_style(cmd),
             "gradient" => self.cmd_gradient(cmd),
             "select" => self.cmd_select(cmd),
+            "detect" => self.cmd_detect(cmd),
+            "segment" => self.cmd_segment(cmd),
             "effect" => self.cmd_effect(cmd),
             "filter" => self.cmd_filter(cmd),
             "adjust" => self.cmd_adjust(cmd),
@@ -1256,6 +1262,176 @@ impl Runner {
         Ok(format!("resized {w0}x{h0} to {width}x{height}"))
     }
 
+    /// The image the vision models should look at.
+    ///
+    /// Written out flattened, because the models take a file and the document
+    /// may be a stack of layers that exists only in memory. Kept beside the
+    /// mask so both are cleaned up together.
+    fn vision_source(&mut self, dir: &Path) -> Result<(std::path::PathBuf, u32, u32), String> {
+        let composite = self.composite()?;
+        let (w, h) = (composite.width(), composite.height());
+        std::fs::create_dir_all(dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let path = dir.join("source.png");
+        cshop_io::save(&path, &composite, 100)
+            .map_err(|e| format!("could not write the image for the models: {e}"))?;
+        Ok((path, w, h))
+    }
+
+    /// Somewhere to put the image and the mask while the models work.
+    fn vision_dir(&self) -> std::path::PathBuf {
+        cshop_ui::vision::scratch()
+    }
+
+    /// Find objects, and report what and where they are.
+    ///
+    /// The detector knows eighty kinds of thing and nothing else, so a picture
+    /// of a mountain or a building comes back empty. That is not a failure of
+    /// the picture — it is the list the model was trained on, and `segment`
+    /// with a point works on anything.
+    fn cmd_detect(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let conf = cmd.f32("conf")?.unwrap_or(0.25);
+        let classes = cmd.opt("class").unwrap_or("").to_string();
+        let dir = self.vision_dir();
+        let (image, _, _) = self.vision_source(&dir)?;
+
+        let found = cshop_ui::vision::detect(&image, conf, &classes);
+        let _ = std::fs::remove_dir_all(&dir);
+        let found = found?;
+        if found.is_empty() {
+            let what = if classes.is_empty() {
+                "nothing the detector knows".to_string()
+            } else {
+                format!("no {classes}")
+            };
+            self.report.facts.push(("detect".into(), what.clone()));
+            return Ok(format!("found {what}"));
+        }
+
+        let mut lines = Vec::new();
+        for f in &found {
+            let line = format!(
+                "{} {:.0}% at {:.0},{:.0} {:.0}x{:.0}",
+                f.class,
+                f.score * 100.0,
+                f.box_[0],
+                f.box_[1],
+                f.width(),
+                f.height()
+            );
+            self.report.facts.push((format!("detect {}", f.class), line.clone()));
+            lines.push(line);
+        }
+        // Kept so `segment` with no prompt can use what was just found.
+        self.detected = found;
+        Ok(format!("found {}: {}", lines.len(), lines.join("; ")))
+    }
+
+    /// Cut something out, and leave it as the selection.
+    ///
+    /// The result is a selection rather than a new layer so that everything
+    /// the editor already does with one — feather it, duplicate through it,
+    /// fill it, invert it — applies without a second vocabulary.
+    fn cmd_segment(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_ui::vision::Prompt;
+        self.need_doc()?;
+        let conf = cmd.f32("conf")?.unwrap_or(0.25);
+        let feather = cmd.f32("feather")?.unwrap_or(0.0);
+
+        let prompt = if let Some(name) = cmd.opt("class") {
+            Prompt::Class(name.to_string())
+        } else if let Some(b) = cmd.opt("box") {
+            let v: Vec<f32> = b.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            if v.len() != 4 {
+                return Err(format!("box={b:?} should be x0,y0,x1,y1"));
+            }
+            Prompt::Box([v[0], v[1], v[2], v[3]])
+        } else if cmd.opt("point").is_some() || cmd.opt("not-point").is_some() {
+            let points = |key: &str| -> Result<Vec<(f32, f32)>, String> {
+                let Some(raw) = cmd.opt(key) else { return Ok(Vec::new()) };
+                let mut out = Vec::new();
+                // Several points as `point=x,y;x,y`, since one option cannot
+                // repeat in this grammar.
+                for part in raw.split(';').filter(|p| !p.trim().is_empty()) {
+                    let v: Vec<f32> = part.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                    if v.len() != 2 {
+                        return Err(format!("{key}={part:?} should be x,y"));
+                    }
+                    out.push((v[0], v[1]));
+                }
+                Ok(out)
+            };
+            Prompt::Points(points("point")?, points("not-point")?)
+        } else if let Some(found) = self.detected.first() {
+            // Straight after `detect`, with nothing else said, segment what it
+            // found — which is the whole point of running them in sequence.
+            Prompt::Box(found.box_)
+        } else {
+            return Err(
+                "segment needs class=, box=, point=, or a `detect` before it".to_string()
+            );
+        };
+
+        let dir = self.vision_dir();
+        let (image, w, h) = self.vision_source(&dir)?;
+        let mask_path = dir.join("mask.png");
+        let result = cshop_ui::vision::segment(&image, &prompt, &mask_path, conf);
+        let _ = std::fs::remove_file(&image);
+        let result = result.inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&dir);
+        })?;
+
+        let mask = cshop_io::load(&result.mask)
+            .map_err(|e| format!("could not read the mask back: {e}"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+        if mask.width() != w || mask.height() != h {
+            return Err(format!(
+                "the mask came back {}x{} for a {w}x{h} document",
+                mask.width(),
+                mask.height()
+            ));
+        }
+
+        // The mask arrives as grey; its brightness is the coverage.
+        let mut coverage = cshop_core::mask::MaskBuffer::hide_all(w, h);
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                coverage.set(x, y, mask.get(x, y).r);
+            }
+        }
+        let mut selection = cshop_core::selection::Selection::from_mask(coverage);
+        if feather > 0.0 {
+            selection.feather(feather);
+        }
+        if selection.is_empty() {
+            return Err("the segmenter returned an empty mask".into());
+        }
+        let bounds = selection.bounds();
+
+        let Some(view) = self.app.doc_mut() else { return Err("no document".into()) };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSelection::new(Some(&selection), "Segment")),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+
+        let what = match (&result.detected, &prompt) {
+            (Some(d), _) => format!("{} ({:.0}%)", d.class, d.score * 100.0),
+            (None, Prompt::Class(c)) => c.clone(),
+            _ => "the prompt".to_string(),
+        };
+        Ok(format!(
+            "segmented {what}: {:.1}% of the image, {}x{} at {},{}, confidence {:.2}",
+            result.coverage * 100.0,
+            bounds.width(),
+            bounds.height(),
+            bounds.x0,
+            bounds.y0,
+            result.confidence
+        ))
+    }
+
     fn cmd_select(&mut self, cmd: &Command) -> Result<String, String> {
         use cshop_core::selection::{Rectf, Selection};
         self.need_doc()?;
@@ -1267,6 +1443,16 @@ impl Runner {
             Some("none") => {
                 self.app.dispatch(Action::Deselect);
                 Ok("deselected".into())
+            }
+            Some("invert") | Some("inverse") => {
+                self.app.dispatch(Action::InverseSelection);
+                Ok("inverted the selection".into())
+            }
+            // Erase what is selected, which is how a background is removed
+            // once the subject has been segmented.
+            Some("clear") | Some("delete") => {
+                self.app.dispatch(Action::ClearLayer);
+                Ok("cleared the selection".into())
             }
             Some(_) => {
                 let x = cmd.arg_f32(0, "x")?;
@@ -1648,6 +1834,9 @@ impl Runner {
             "new" => Action::NewLayer,
             "group" => Action::NewGroup,
             "duplicate" => Action::DuplicateLayer,
+            // The selection-aware one: copies only what is selected onto a
+            // new layer, which is how a segmented object is lifted out.
+            "via-copy" | "from-selection" => Action::LayerViaCopy,
             "delete" => Action::DeleteLayer,
             "merge-down" => Action::MergeDown,
             "flatten" => Action::FlattenImage,

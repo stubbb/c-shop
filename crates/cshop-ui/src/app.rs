@@ -103,6 +103,9 @@ pub struct CShopApp {
     pub path_edit: PathEdit,
     /// Counter behind [`CShopApp::next_edit_run`].
     edit_run: u64,
+    /// The selection as it stood before the Segment window opened, so that
+    /// cancelling puts it back rather than leaving a half-chosen mask.
+    segment_before: Option<cshop_core::selection::Selection>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -192,6 +195,7 @@ impl CShopApp {
             pen: None,
             path_edit: PathEdit::default(),
             edit_run: 0,
+            segment_before: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -379,6 +383,7 @@ impl CShopApp {
             Dialog::Modify(d) => d.title(),
             Dialog::ImageSize(d) => d.title(),
             Dialog::Rename(_) => "Rename Layer",
+            Dialog::Segment(d) => d.title(),
             Dialog::Fill(_) => "Fill",
             Dialog::ColorPicker(d) => d.title(),
             Dialog::Adjustment(d) => {
@@ -414,7 +419,10 @@ impl CShopApp {
         // preview — which is no use behind a dimmed modal sitting over the
         // middle of it. That one gets a window the user can push aside; the
         // rest stay modal.
-        let movable = matches!(dialog, Dialog::LayerStyle(_));
+        // Both of these use the canvas as their preview — the Segment window
+        // uses it as its input as well — so neither may sit behind a dimmed
+        // sheet over the middle of it.
+        let movable = matches!(dialog, Dialog::LayerStyle(_) | Dialog::Segment(_));
 
         let gpu = self.gpu.clone();
         let mut body = |ui: &mut egui::Ui| {
@@ -429,6 +437,7 @@ impl CShopApp {
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
+            Dialog::Segment(d) => close = d.ui(ui, &mut actions),
                 Dialog::Filter(d) => close = d.ui(ui, &mut actions),
                 Dialog::About => {
                     ui.label("C-Shop — a native, GPU-accelerated layered image editor.");
@@ -1084,6 +1093,19 @@ impl CShopApp {
                 self.pen = None;
             }
             Action::DeletePathAnchors => self.delete_path_anchors(),
+            Action::ShowSegment => {
+                self.segment_before = self.doc().and_then(|v| v.doc.selection.clone());
+                self.dialog = Dialog::Segment(Box::new(crate::segment_ui::SegmentDialog::new()));
+            }
+            Action::SegmentDetect => self.segment_detect(),
+            Action::SegmentPreview => self.segment_preview(),
+            Action::SegmentCancel => {
+                let previous = self.segment_before.clone();
+                if let Some(view) = self.doc_mut() {
+                    view.doc.selection = previous;
+                    view.invalidate();
+                }
+            }
             Action::CombineShapes(op) => self.combine_shapes(op),
 
             Action::Copy => self.copy(false, false),
@@ -2635,6 +2657,131 @@ impl CShopApp {
         );
         view.mark_dirty(dirty);
         view.invalidate();
+    }
+
+    // -----------------------------------------------------------------------
+    // Segmenting
+    // -----------------------------------------------------------------------
+
+    /// Write the composite somewhere the models can read it.
+    ///
+    /// They take a file, and the document is a stack of layers that exists
+    /// only in memory, so there has to be a flattened copy. Kept beside the
+    /// mask under one directory so both go together.
+    fn segment_source(&mut self) -> Result<(std::path::PathBuf, u32, u32), String> {
+        let gpu = self.gpu.clone();
+        let index = self.active.ok_or("no document")?;
+        let view = &mut self.docs[index];
+        view.sync_composite_only(&gpu, &mut self.compositor);
+        let pixels = view.read_composite(&gpu);
+        let (w, h) = (pixels.width(), pixels.height());
+        let dir = crate::vision::scratch();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{e}"))?;
+        let path = dir.join("source.png");
+        cshop_io::save(&path, &pixels, 100).map_err(|e| format!("{e}"))?;
+        Ok((path, w, h))
+    }
+
+    fn segment_detect(&mut self) {
+        let source = match self.segment_source() {
+            Ok(s) => s,
+            Err(e) => return self.fail(format!("Could not prepare the image: {e}")),
+        };
+        let found = crate::vision::detect(&source.0, 0.25, "");
+        if let Some(dir) = source.0.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        let Dialog::Segment(d) = &mut self.dialog else { return };
+        match found {
+            Ok(objects) => {
+                d.status = if objects.is_empty() {
+                    "The detector recognised nothing here — click the object instead.".into()
+                } else {
+                    format!("Found {}. Pick one, or click the canvas.", objects.len())
+                };
+                d.found = objects;
+            }
+            Err(e) => d.status = e,
+        }
+    }
+
+    /// Run the segmenter for whatever the window has been told, and show the
+    /// result as the selection so the canvas is the preview.
+    fn segment_preview(&mut self) {
+        let (prompt, feather) = {
+            let Dialog::Segment(d) = &self.dialog else { return };
+            (d.prompt(), d.feather)
+        };
+        let Some(prompt) = prompt else {
+            // Nothing to go on: put the selection back as it was.
+            let previous = self.segment_before.clone();
+            if let Some(view) = self.doc_mut() {
+                view.doc.selection = previous;
+                view.invalidate();
+            }
+            if let Dialog::Segment(d) = &mut self.dialog {
+                d.applied = false;
+                d.coverage = None;
+            }
+            return;
+        };
+
+        let source = match self.segment_source() {
+            Ok(s) => s,
+            Err(e) => return self.fail(format!("Could not prepare the image: {e}")),
+        };
+        let (image, w, h) = source;
+        let mask_path = image.with_file_name("mask.png");
+        let result = crate::vision::segment(&image, &prompt, &mask_path, 0.25);
+        let _ = std::fs::remove_file(&image);
+        let scratch = image.parent().map(|p| p.to_path_buf());
+
+        let outcome = result.and_then(|r| {
+            let mask = cshop_io::load(&r.mask).map_err(|e| format!("{e}"))?;
+            let _ = std::fs::remove_file(&r.mask);
+            if mask.width() != w || mask.height() != h {
+                return Err(format!("the mask came back {}x{}", mask.width(), mask.height()));
+            }
+            let mut coverage = cshop_core::mask::MaskBuffer::hide_all(w, h);
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    coverage.set(x, y, mask.get(x, y).r);
+                }
+            }
+            let mut selection = cshop_core::selection::Selection::from_mask(coverage);
+            if feather > 0.0 {
+                selection.feather(feather);
+            }
+            if selection.is_empty() {
+                return Err("nothing there to separate — try another point".into());
+            }
+            Ok((selection, r.coverage))
+        });
+
+        if let Some(dir) = scratch {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        match outcome {
+            Ok((selection, covered)) => {
+                if let Some(view) = self.doc_mut() {
+                    // Shown directly rather than through the history, so that
+                    // refining does not leave a step per click. It is written
+                    // properly when the window is kept.
+                    view.doc.selection = Some(selection);
+                    view.invalidate();
+                }
+                if let Dialog::Segment(d) = &mut self.dialog {
+                    d.applied = true;
+                    d.coverage = Some(covered);
+                    d.status = "Click again to refine, or Alt-click to exclude.".into();
+                }
+            }
+            Err(e) => {
+                if let Dialog::Segment(d) = &mut self.dialog {
+                    d.status = e;
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -7,7 +7,8 @@
 //! the harness was built for: describe, draw, look, correct.
 //!
 //! * [`http`] — enough HTTP/1.1 to carry it, hand-written
-//! * [`json`] — likewise JSON, since nothing here should need a dependency
+//! * JSON comes from [`cshop_core::json`], which is hand-written for the same
+//!   reason and is shared with the vision pack
 //! * [`protocol`] — JSON-RPC framing and the protocol's own methods
 //! * [`tools`] — what a caller may actually ask for
 //! * [`reference`] — the manual, for a caller that has not read one
@@ -17,8 +18,10 @@
 pub mod base64;
 pub mod editor;
 pub mod http;
-pub mod json;
 pub mod protocol;
 pub mod reference;
 pub mod server;
 pub mod tools;
+
+/// JSON lives in the core crate, since more than the server needs it now.
+pub use cshop_core::json;

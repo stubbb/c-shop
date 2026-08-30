@@ -711,3 +711,78 @@ fn combining_needs_something_to_combine() {
     assert!(!report.ok);
     assert!(report.steps.iter().any(|s| s.note.contains("Union")), "should list the operations");
 }
+
+// ---------------------------------------------------------------------------
+// The vision pack
+// ---------------------------------------------------------------------------
+
+/// Without the pack, the commands have to say so — not crash, and not
+/// pretend to have worked.
+#[test]
+fn the_vision_commands_explain_themselves_when_the_pack_is_absent() {
+    if cshop_ui::vision::is_available() {
+        return;
+    }
+    for source in ["new 40 40\ndetect", "new 40 40\nsegment class=dog"] {
+        let Some(report) = run(source) else { return };
+        assert!(!report.ok, "{source:?} should fail without the pack");
+        let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+        assert!(
+            note.contains("not installed") || note.contains("setup.sh"),
+            "it should say what is missing and how: {note}"
+        );
+    }
+}
+
+#[test]
+fn segment_asks_for_a_prompt_when_given_none() {
+    let Some(report) = run("new 40 40\nsegment") else { return };
+    assert!(!report.ok);
+    let note = report.steps.last().map(|s| s.note.clone()).unwrap_or_default();
+    // Either it has no prompt, or it has no pack; both are worth saying.
+    assert!(
+        note.contains("class=") || note.contains("not installed") || note.contains("setup.sh"),
+        "{note}"
+    );
+}
+
+/// The whole point of the pair: find a thing, then cut that thing out.
+#[test]
+fn detect_then_segment_isolates_what_was_found() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let sample = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .join("assets/samples/dog.jpg");
+    if !sample.exists() {
+        return;
+    }
+    let out = std::env::temp_dir().join("cshop-vision-test-dog.png");
+    let _ = std::fs::remove_file(&out);
+    let source = format!(
+        "open {}\nresize fit=700\ndetect class=dog\nsegment feather=1\n\
+         layer via-copy\nlayer select 0\nlayer delete\nexport {}",
+        sample.display(),
+        out.display()
+    );
+    let Some(report) = run(&source) else { return };
+    assert!(report.ok, "{}", report.summary());
+
+    // The detection is reported as a fact, so a caller reading JSON gets it.
+    assert!(
+        report.facts.iter().any(|(k, _)| k.contains("dog")),
+        "the detection should be in the report: {:?}",
+        report.facts
+    );
+
+    // And the export is mostly transparent, because the background is gone.
+    let cut = cshop_io::load(&out).expect("the cutout should have been written");
+    let opaque = cut.pixels().iter().filter(|p| p.a > 128).count();
+    let share = opaque as f64 / cut.pixels().len() as f64;
+    assert!(
+        (0.02..0.6).contains(&share),
+        "a cut-out dog should be a minority of an otherwise empty picture, not {:.0}%",
+        share * 100.0
+    );
+    let _ = std::fs::remove_file(&out);
+}

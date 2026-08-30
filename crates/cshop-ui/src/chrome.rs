@@ -597,6 +597,13 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
             let has_selection = app.doc().is_some_and(|d| d.doc.has_selection());
             let can_reselect = app.doc().is_some_and(|d| d.doc.last_selection.is_some());
 
+            // The models are optional, so the entry is always there and says
+            // what is missing when it is not installed, rather than vanishing.
+            if item_enabled(ui, "Segment Object…", "", has_doc).clicked() {
+                app.push(Action::ShowSegment);
+                ui.close();
+            }
+            ui.separator();
             if item_enabled(ui, "All", &k::SELECT_ALL.label(), has_doc).clicked() {
                 app.push(Action::SelectAll);
                 ui.close();

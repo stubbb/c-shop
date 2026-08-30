@@ -253,6 +253,15 @@ pub enum Action {
     CancelPath,
     /// Remove the anchors the Direct Selection tool has selected.
     DeletePathAnchors,
+    /// Open the Segment Object window.
+    ShowSegment,
+    /// Ask the detector what is in the picture, for that window's list.
+    SegmentDetect,
+    /// Run the segmenter for the points collected so far and show the result
+    /// as the selection.
+    SegmentPreview,
+    /// Put the selection back as it was before the window opened.
+    SegmentCancel,
     /// Combine the selected shape layers into one path with this operation.
     CombineShapes(cshop_core::path::BoolOp),
     /// Step the brush diameter one notch, as `[` and `]` do.

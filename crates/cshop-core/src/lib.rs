@@ -27,6 +27,7 @@ pub mod shape;
 pub mod text;
 pub mod geom;
 pub mod history;
+pub mod json;
 pub mod layer;
 pub mod mask;
 pub mod paint;

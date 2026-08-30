@@ -203,6 +203,25 @@ goes on CPU-side filtering and encoding rather than on compositing. Pass
 [docs/DEPLOY.md](docs/DEPLOY.md) covers fonts, the token, workspace ownership
 and sizing, with the measurements behind that claim.
 
+### Recognising and cutting out
+
+An optional pack adds two neural networks — one that finds objects and says
+where they are, one that turns a point or a box into a mask:
+
+```sh
+vision/setup.sh
+```
+
+**Select ▸ Segment Object…** opens a window where clicking the thing you want
+makes it the selection; click again to refine, Alt-click to exclude, and a
+slider softens the edge. From a script the two work in sequence — `detect` to
+find a dog, `segment` to cut it out — and the result is an ordinary selection,
+so everything the editor already does with one applies.
+
+The models run in a separate process, so the editor keeps its single-binary,
+no-dependency, offline build whether they are installed or not.
+[docs/VISION.md](docs/VISION.md) covers what they do well and where they miss.
+
 ## Interface
 
 | | |

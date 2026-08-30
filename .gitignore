@@ -9,3 +9,7 @@
 # The compose file's default bind mount. Whatever is served lives here, and it
 # is the operator's data rather than the project's.
 /workspace/
+
+# The vision pack installs its environment and model weights outside the repo,
+# but the compose file's workspace and any stray cutouts belong to the operator.
+/vision/models/
