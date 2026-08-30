@@ -1236,3 +1236,61 @@ fn inpaint_fills_the_selection_and_leaves_the_rest() {
     assert!(inside > 0, "the hole should have been filled");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- depth and relighting --------------------------------------------------
+
+#[test]
+fn relight_needs_something_to_do() {
+    let Some(report) = run("new 64 64 background=#808080\nrelight intensity=0 ambient=1") else {
+        return;
+    };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("needs something to do"), "{:?}", notes(&report));
+}
+
+/// Which side the lamp is on has to change the picture, and the two sides have
+/// to differ from each other — the part with a right answer.
+#[test]
+fn the_side_the_lamp_is_on_changes_the_picture() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cshop-relight-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../cshop-io/tests/assets/ink-source.png");
+    let out = |n: &str| dir.join(n);
+
+    let mut made = Vec::new();
+    for (name, azimuth) in [("left.png", 0.0), ("right.png", 180.0)] {
+        let Some(report) = run(&format!(
+            "open {path}\nresize 128 128\n\
+             relight azimuth={azimuth} elevation=25 intensity=1.2 ambient=0.5 relief=1.5\n\
+             export {}",
+            out(name).display()
+        )) else {
+            return;
+        };
+        assert!(report.ok, "{:?}", notes(&report));
+        assert!(report.steps[2].note.contains("lit from"), "{:?}", notes(&report));
+        made.push(cshop_io::load(&out(name)).unwrap());
+    }
+    assert_ne!(
+        made[0].pixels(),
+        made[1].pixels(),
+        "lighting from the left and the right should not give the same picture"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The depth can be had as a layer, for looking at or masking with.
+#[test]
+fn depth_can_be_kept_as_a_layer() {
+    if !cshop_ui::vision::is_available() {
+        return;
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../cshop-io/tests/assets/ink-source.png");
+    let Some(report) = run(&format!("open {path}\nresize 96 96\ndepth\ninfo")) else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert!(report.steps[2].note.contains("as a layer"), "{:?}", notes(&report));
+    assert!(report.steps[3].note.contains("2 layers"), "{:?}", notes(&report));
+}

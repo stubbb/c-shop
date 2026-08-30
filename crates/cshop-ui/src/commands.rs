@@ -330,6 +330,14 @@ pub enum Action {
     CancelCrop,
     ShowImageSize,
     /// Open the colour-profile window.
+    /// Open the relight window and start working out the depth.
+    ShowRelight,
+    /// Re-light the picture with the lamp where it is now.
+    RelightPreview,
+    /// Commit what is on the canvas as one history entry.
+    RelightKeep,
+    /// Put the original back.
+    RelightCancel,
     /// Make what is selected disappear, inventing what was behind it.
     FillInSelection,
     /// Open the separate-by-content window and start looking.

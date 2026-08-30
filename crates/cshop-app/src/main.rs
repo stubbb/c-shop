@@ -37,6 +37,7 @@ SCREENSHOT OPTIONS:
     --demo-profile                  open the colour-profile window
     --demo-lens                     open the lens-correction window
     --demo-denoise                  open the noise-removal window
+    --demo-relight                  open the relight window
     --right-click X,Y               right-click there, to capture a context menu
 ";
 
@@ -95,6 +96,7 @@ fn main() {
     let mut demo_lens = false;
     let mut demo_lens_busy = false;
     let mut demo_denoise = false;
+    let mut demo_relight = false;
     let mut clicks: Vec<(f32, f32, egui::PointerButton)> = Vec::new();
     let mut script: Option<String> = None;
     let mut script_inline: Option<String> = None;
@@ -165,6 +167,7 @@ fn main() {
             "--demo-profile" => demo_profile = true,
             "--demo-lens" => demo_lens = true,
             "--demo-denoise" => demo_denoise = true,
+            "--demo-relight" => demo_relight = true,
             "--demo-lens-busy" => {
                 demo_lens = true;
                 demo_lens_busy = true;
@@ -364,6 +367,19 @@ fn main() {
                 }
                 if demo_profile {
                     app.dispatch(cshop_ui::commands::Action::ShowColorProfile);
+                }
+                if demo_relight {
+                    let raster = app.doc().and_then(|v| {
+                        v.doc
+                            .tree
+                            .iter_all()
+                            .into_iter()
+                            .find(|id| v.doc.tree.get(*id).is_some_and(|l| l.pixels().is_some()))
+                    });
+                    if let Some(id) = raster {
+                        app.dispatch(cshop_ui::commands::Action::SelectLayer(id));
+                    }
+                    app.dispatch(cshop_ui::commands::Action::ShowRelight);
                 }
                 if demo_denoise {
                     let raster = app.doc().and_then(|v| {

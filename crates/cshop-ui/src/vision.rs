@@ -435,3 +435,25 @@ pub fn inpaint(image: &Path, mask: &Path, out: &Path) -> Result<PathBuf, String>
     let answer = run(&["inpaint", image, "--mask", mask_s, "--out", out_s])?;
     Ok(PathBuf::from(answer.str_field("path").unwrap_or(out_s)))
 }
+
+/// Guess how far away everything in a picture is.
+///
+/// The answer is written as a sixteen-bit greyscale image, near-white, and
+/// read back at that depth: lighting reads the *gradient* of it, and at eight
+/// bits a gentle slope arrives as a staircase and lights like one.
+pub fn depth(image: &Path, out: &Path) -> Result<PathBuf, String> {
+    let image = image_arg(image)?;
+    let out_s = out.to_str().ok_or("that output path is not text")?;
+    let answer = run(&["depth", image, "--out", out_s])?;
+    Ok(PathBuf::from(answer.str_field("map").unwrap_or(out_s)))
+}
+
+/// Read a depth image back into the form the lighting wants.
+pub fn depth_map(path: &Path) -> Result<cshop_core::relight::DepthMap, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read the depth map: {e}"))?;
+    let (deep, _) = cshop_io::decode_deep(&bytes, Some(path), &cshop_core::profile::Profile::srgb())
+        .map_err(|e| format!("could not read the depth map: {e}"))?;
+    let data = deep.pixels().iter().map(|p| p.r as f32 / 65535.0).collect();
+    cshop_core::relight::DepthMap::from_values(deep.width(), deep.height(), data)
+        .ok_or_else(|| "the depth map came back the wrong size".to_string())
+}

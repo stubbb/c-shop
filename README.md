@@ -10,11 +10,11 @@ still edit images with it — placing type from measurements and reading back a
 report of what it drew. It runs as an **MCP server** too, so that harness can
 be reached over a network, with each result carrying a picture of what it did.
 
-An optional **deep-learning pack** adds six neural networks to that: one that
+An optional **deep-learning pack** adds seven neural networks to that: one that
 finds objects and names them, one that turns a point or a box into a mask, one
 that labels every pixel with what it is, one that fills a hole in with what was
-behind it, one that takes the noise out of a photograph and one that enlarges
-it. So "cut the
+behind it, one that guesses how far away everything is, one that takes the
+noise out of a photograph and one that enlarges it. So "cut the
 dog out of this picture" and "clean up this sky" become things the editor can
 be asked for rather than things someone has to do by hand. They run in a process of their
 own, so the editor keeps its single-binary, no-dependency build whether they
@@ -237,10 +237,10 @@ and sizing, with the measurements behind that claim.
 
 ### Recognising, cutting out and cleaning up
 
-An optional pack adds six neural networks — one that finds objects and says
+An optional pack adds seven neural networks — one that finds objects and says
 where they are, one that turns a point or a box into a mask, one that labels
-every pixel with what it is, one that fills a hole in, one that removes noise
-and one that enlarges:
+every pixel with what it is, one that fills a hole in, one that reads how far
+away everything is, one that removes noise and one that enlarges:
 
 ```sh
 vision/setup.sh
@@ -311,6 +311,24 @@ beforehand.
 The trade is real and worth knowing: what removes sensor noise also softens
 fine texture that resembles it. Deep foliage goes slightly painterly here. That
 is what `strength` is for.
+
+### Lighting a photograph again
+
+**Layer ▸ Relight…**, or `relight`, reads how far away everything is, turns
+that into which way each surface faces, and lights it from somewhere else:
+
+![The photograph, the depth it read, and the same picture lit from the right](docs/example-relight.jpg)
+
+The lamp is a dot on a circle rather than two numbers, and the window says
+"from the top right" so nobody has to think in degrees. The depth takes a third
+of a second and does not change while the lamp moves, so it is worked out once
+and dragging the light after that is arithmetic.
+
+It is not physical relighting: no cast shadows, no idea how shiny anything is,
+and the new lamp is added to whatever already lit the picture. On a subject it
+is convincing; on a scene whose lighting is the point it will look like what it
+is. `depth` on its own keeps the middle picture as a layer, for masking by
+distance.
 
 ### Making something disappear
 
@@ -423,7 +441,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-786 tests, and the interesting ones are not unit tests:
+799 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

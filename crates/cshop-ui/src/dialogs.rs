@@ -34,6 +34,8 @@ pub enum Dialog {
     Denoise(Box<crate::denoise_ui::DenoiseDialog>),
     Upscale(Box<crate::upscale_ui::UpscaleDialog>),
     Separate(Box<crate::separate_ui::SeparateDialog>),
+    /// Boxed: it holds the picture and a depth map the size of it.
+    Relight(Box<crate::relight_ui::RelightDialog>),
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),

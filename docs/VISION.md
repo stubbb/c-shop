@@ -6,12 +6,12 @@ Two neural networks, as something you opt into.
 vision/setup.sh
 ```
 
-That is the whole installation: a Python environment and about 510 MB of model
+That is the whole installation: a Python environment and about 610 MB of model
 weights, under `~/.cache/cshop/vision`, which comes to a little under a
 gigabyte with the runtime. Nothing in the editor needs it: open, edit
-and save behave exactly as before whether it is there or not, and only six
-commands — `detect`, `segment`, `denoise`, `upscale`, `separate` and `inpaint`
-— and four windows ask for it.
+and save behave exactly as before whether it is there or not, and only eight
+commands — `detect`, `segment`, `denoise`, `upscale`, `separate`, `inpaint`,
+`depth` and `relight` — and five windows ask for it.
 
 ## Why it is a separate process
 
@@ -40,6 +40,10 @@ where to look.
 
 Which is why they are better together than either alone: YOLO finds the dog
 and says where, SAM cuts it out.
+
+**Depth Anything** guesses how far away everything is. Not a model of the
+scene — one number a pixel, with no idea what is behind anything — but enough
+to work out which way a surface *faces*, which is what light responds to.
 
 **LaMa** fills a hole in with what was probably behind it. Given a picture and
 a mask it invents the covered part from what surrounds it, which is how an
@@ -189,6 +193,57 @@ sensor noise and grain, and it will also quietly remove fine texture that
 happens to resemble them — skin pores, distant foliage, fabric weave. That is
 what `strength` is for, and why the window lets you move it *after* seeing the
 result rather than guessing beforehand.
+
+## Lighting a photograph again
+
+```
+open dog.jpg
+relight azimuth=200 elevation=18 intensity=1.5 ambient=0.45 relief=1.6 color=#ffd9a8
+```
+
+Or **Layer ▸ Relight…**, where the lamp is a dot on a circle rather than two
+numbers: the middle is straight at the subject, the rim is level with it, and
+the window says "from the top right" so nobody has to think in degrees.
+
+![The photograph, the depth it read, and the same picture lit from the right](example-relight.jpg)
+
+`depth` on its own puts the middle picture into the document as a layer, which
+is useful for masking by distance — a haze that thickens with depth, a
+background darkened without selecting it.
+
+### From depth to shape
+
+Depth alone lights nothing. What a lamp responds to is which way a surface
+faces, and that is the *gradient* of the depth: where it changes quickly across
+the frame the surface is turned away, where it is flat the surface faces the
+camera. So the normal at a pixel is `(-dz/dx, -dz/dy, 1)`, scaled by **relief**
+— which is the honest control, because the depth is relative and has no unit,
+so how much shape a given change in it implies is a choice rather than a
+measurement.
+
+The depth is written at sixteen bits for exactly this reason. Lighting reads
+the gradient, and at eight bits a gentle slope arrives as a staircase and
+lights like one.
+
+### What it is not
+
+It is not physical relighting. Nothing here knows about shadows cast by one
+object onto another, about how shiny anything is, or about what colour the
+light already was — the new lamp is added to the picture rather than replacing
+what lit it. On a portrait or an animal or a still life it is convincing; on a
+scene whose lighting *is* the subject it will look like what it is.
+
+The direction convention is pinned down by tests on a ramp rather than on a
+photograph, because a photograph will look plausible lit from either side and a
+slope will not.
+
+### The shape of the window
+
+The same as the others here, and for the same reason: the depth is the slow
+half — a third of a second — and it does not change while the lamp moves, so it
+is worked out once and everything after it is arithmetic on the picture. Moving
+the lamp writes straight to the canvas without a history entry, so a session of
+trying things leaves one step to undo rather than forty.
 
 ## Making something disappear
 

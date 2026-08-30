@@ -516,6 +516,7 @@ use cshop_core::document::{Background, Document};
 use cshop_core::effects::*;
 use cshop_core::geom::{IRect, Vec2};
 use cshop_core::pixels::PixelBuffer;
+use cshop_core::relight::DepthMap;
 use cshop_gpu::context::GpuContext;
 use cshop_ui::app::CShopApp;
 use cshop_ui::commands::Action;
@@ -537,6 +538,10 @@ pub struct Runner {
     /// the prompt. `None` until one has run, which is a different thing from
     /// one that ran and found nothing — and the two want different advice.
     detected: Option<Vec<cshop_ui::vision::Found>>,
+    /// The depth of a layer, once it has been worked out. Keyed by the layer
+    /// and its size, because it is the expensive half of relighting and does
+    /// not change while the lamp moves.
+    depth_of_layer: Option<(cshop_core::layer::LayerId, u32, u32, DepthMap)>,
 }
 
 /// Run a script and return what happened.
@@ -565,6 +570,7 @@ impl Runner {
             depth: 0,
             trail: Vec::new(),
             detected: None,
+            depth_of_layer: None,
         }
     }
 
@@ -756,11 +762,13 @@ impl Runner {
             "upscale" => self.cmd_upscale(cmd),
             "separate" => self.cmd_separate(cmd),
             "inpaint" => self.cmd_inpaint(cmd),
+            "relight" => self.cmd_relight(cmd),
+            "depth" => self.cmd_depth(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
                  order, info, profile, lens, denoise, upscale, separate, inpaint, \
-                 export, save"
+                 depth, relight, export, save"
             )),
         }
     }
@@ -1301,6 +1309,129 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Work out the depth of the active layer, once, and keep it.
+    ///
+    /// Kept because it is the expensive half of relighting and does not change
+    /// while the lamp moves, so a script that tries three lightings pays for
+    /// the model once.
+    fn depth_of(&mut self, id: cshop_core::layer::LayerId) -> Result<DepthMap, String> {
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels")?;
+        if let Some((cached_id, w, h, map)) = &self.depth_of_layer {
+            if *cached_id == id && *w == source.width() && *h == source.height() {
+                return Ok(map.clone());
+            }
+        }
+
+        let dir = self.vision_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let input = dir.join("source.png");
+        let out = dir.join("depth.png");
+        if let Err(e) = cshop_io::save(&input, &source, 100) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(format!("could not write the image for the model: {e}"));
+        }
+        let map = cshop_ui::vision::depth(&input, &out)
+            .and_then(|p| cshop_ui::vision::depth_map(&p));
+        let _ = std::fs::remove_dir_all(&dir);
+        let map = map?;
+        self.depth_of_layer = Some((id, source.width(), source.height(), map.clone()));
+        Ok(map)
+    }
+
+    /// Put the depth into the document as a layer, for looking at.
+    fn cmd_depth(&mut self, _cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to measure")?;
+        let map = self.depth_of(id)?;
+        let pixels = cshop_core::relight::to_pixels(&map);
+        let (w, h) = (pixels.width(), pixels.height());
+
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let new_id = view.doc.tree.alloc_id();
+        let mut layer = cshop_core::layer::Layer::raster(new_id, "Depth", pixels);
+        layer.offset = view.doc.tree.get(id).map(|l| l.offset).unwrap_or((0, 0));
+        let pos = view
+            .doc
+            .tree
+            .position(id)
+            .map(|p| cshop_core::LayerPos { parent: p.parent, index: p.index + 1 })
+            .unwrap_or(cshop_core::LayerPos { parent: None, index: view.doc.tree.root().len() });
+        let dirty = view
+            .history
+            .apply(&mut view.doc, Box::new(cshop_core::history::AddLayer::new(layer, pos, "Depth")));
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!("measured the depth, {w}x{h}, as a layer"))
+    }
+
+    /// Light the picture again from a guess at its shape.
+    fn cmd_relight(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::relight::Relight;
+        self.need_doc()?;
+        let mut lamp = Relight::default();
+        if let Some(v) = cmd.f32("azimuth")? {
+            lamp.azimuth = v;
+        }
+        if let Some(v) = cmd.f32("elevation")? {
+            lamp.elevation = v.clamp(-89.0, 89.0);
+        }
+        if let Some(v) = cmd.f32("intensity")? {
+            lamp.intensity = v.clamp(0.0, 4.0);
+        }
+        if let Some(v) = cmd.f32("ambient")? {
+            lamp.ambient = v.clamp(0.0, 2.0);
+        }
+        if let Some(v) = cmd.f32("relief")? {
+            lamp.relief = v.clamp(0.0, 8.0);
+        }
+        if let Some(c) = cmd.color("color")? {
+            lamp.color = c;
+        }
+        if lamp.is_identity() {
+            return Err(
+                "relight needs something to do: intensity= above zero, or ambient= below one"
+                    .to_string(),
+            );
+        }
+
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer to light")?;
+        let map = self.depth_of(id)?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels")?;
+        let lit = cshop_core::relight::apply(&source, &map, lamp);
+
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let Some(layer) = view.doc.tree.get(id) else { return Err("the layer went away".into()) };
+        let (offset, mask) = (layer.offset, layer.mask.clone());
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id, lit, offset, mask, "Relight",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!(
+            "lit from {:.0}° at {:.0}° up, intensity {:.2}, ambient {:.2}, relief {:.2}",
+            lamp.azimuth, lamp.elevation, lamp.intensity, lamp.ambient, lamp.relief
+        ))
     }
 
     /// Make whatever is selected disappear, inventing what was behind it.

@@ -22,11 +22,12 @@ fi
 echo "  installing onnxruntime, numpy, pillow"
 "$venv/bin/pip" install --quiet --upgrade --no-input onnxruntime numpy pillow
 
-# Six models. YOLOv8n finds things and says where they are; MobileSAM turns a
+# Seven models. YOLOv8n finds things and says where they are; MobileSAM turns a
 # point or a box into a mask; SegFormer says what every pixel is; SCUNet takes
 # the noise out of a photograph; Real-ESRGAN enlarges one; LaMa fills a hole in
-# with what was probably behind it. All ONNX so that the runtime is the only
-# dependency — no PyTorch, no CUDA, no compiler.
+# with what was probably behind it; Depth Anything guesses how far away
+# everything is. All ONNX so that the runtime is the only dependency — no
+# PyTorch, no CUDA, no compiler.
 fetch() {
     local name="$1" url="$2"
     if [ -s "$models/$name" ]; then
@@ -62,6 +63,11 @@ fetch realesr-general-x4v3.onnx \
 # implement — it loads and then refuses, which is a poor way to find out.
 # LaMa, for filling a hole in. Two hundred megabytes, and the largest thing
 # here by some way; it is also the only one that can make an object disappear.
+# Depth Anything v2, the small one. Ninety-five megabytes and a third of a
+# second, which is what makes relighting a thing you can drag a slider on.
+fetch depth-anything-v2-small.onnx \
+    "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx"
+
 fetch lama.onnx \
     "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
 

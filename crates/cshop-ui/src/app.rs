@@ -116,6 +116,8 @@ pub struct CShopApp {
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
+    /// The depth model, while it looks at the picture.
+    depth_job: Option<std::sync::mpsc::Receiver<Result<cshop_core::relight::DepthMap, String>>>,
     /// The hole being filled in, while the model works on it.
     #[allow(clippy::type_complexity)]
     inpaint_job: Option<std::sync::mpsc::Receiver<Result<(LayerId, PixelBuffer), String>>>,
@@ -225,6 +227,7 @@ impl CShopApp {
             separate_job: None,
             separate_map: None,
             inpaint_job: None,
+            depth_job: None,
             now: 0.0,
             selection_mode: SelectionMode::Replace,
             selection_feather: 0.0,
@@ -353,6 +356,7 @@ impl CShopApp {
         self.poll_upscale(&ctx);
         self.poll_separate(&ctx);
         self.poll_inpaint(&ctx);
+        self.poll_depth(&ctx);
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -425,6 +429,7 @@ impl CShopApp {
             Dialog::Denoise(d) => d.title(),
             Dialog::Upscale(d) => d.title(),
             Dialog::Separate(d) => d.title(),
+            Dialog::Relight(d) => d.title(),
             Dialog::Adjustment(d) => {
                 title_owned = d.title();
                 &title_owned
@@ -479,6 +484,7 @@ impl CShopApp {
                 Dialog::Denoise(d) => close = d.ui(ui, &mut actions),
                 Dialog::Upscale(d) => close = d.ui(ui, &mut actions),
                 Dialog::Separate(d) => close = d.ui(ui, &mut actions),
+                Dialog::Relight(d) => close = d.ui(ui, &mut actions),
                 Dialog::Adjustment(d) => close = d.ui(ui, &mut actions),
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
@@ -1405,6 +1411,44 @@ impl CShopApp {
                 }
             }
             Action::FillInSelection => self.start_inpaint(),
+
+            Action::ShowRelight => {
+                let picked = self.doc().and_then(|v| {
+                    let id = v.doc.active?;
+                    Some((id, v.doc.tree.get(id)?.pixels()?.clone()))
+                });
+                match picked {
+                    Some((id, pixels)) => {
+                        self.dialog = Dialog::Relight(Box::new(
+                            crate::relight_ui::RelightDialog::new(id, pixels.clone()),
+                        ));
+                        if crate::vision::is_available() {
+                            self.start_depth(pixels);
+                        }
+                    }
+                    None => self.fail("Relighting needs a layer with pixels in it"),
+                }
+            }
+            Action::RelightPreview => {
+                let lit = match &self.dialog {
+                    Dialog::Relight(d) => d.lit().map(|p| (d.layer, p)),
+                    _ => None,
+                };
+                if let Some((id, pixels)) = lit {
+                    self.show_relight(id, &pixels);
+                }
+            }
+            Action::RelightKeep => self.keep_relight(),
+            Action::RelightCancel => {
+                let restore = match &self.dialog {
+                    Dialog::Relight(d) if d.showing => Some((d.layer, d.before.clone())),
+                    _ => None,
+                };
+                if let Some((id, before)) = restore {
+                    self.show_relight(id, &before);
+                }
+                self.dialog = Dialog::None;
+            }
 
             Action::ShowSeparate => {
                 let picked = self.doc().and_then(|v| {
@@ -2965,6 +3009,112 @@ impl CShopApp {
     ///
     /// Called once a frame. While a job is outstanding the frame is asked to
     /// repaint, which is what keeps the spinner turning.
+    /// Ask the depth model how far away everything is, on a thread.
+    fn start_depth(&mut self, pixels: PixelBuffer) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let input = dir.join("source.png");
+                let out = dir.join("depth.png");
+                cshop_io::save(&input, &pixels, 100)
+                    .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                let path = crate::vision::depth(&input, &out)?;
+                crate::vision::depth_map(&path)
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = tx.send(result);
+        });
+        self.depth_job = Some(rx);
+    }
+
+    pub fn poll_depth(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.depth_job else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                self.depth_job = None;
+                if let Dialog::Relight(d) = &mut self.dialog {
+                    d.busy = false;
+                    d.status = "The depth model stopped without answering.".into();
+                }
+            }
+            Ok(Err(why)) => {
+                self.depth_job = None;
+                if let Dialog::Relight(d) = &mut self.dialog {
+                    d.busy = false;
+                    d.status = why;
+                }
+            }
+            Ok(Ok(map)) => {
+                self.depth_job = None;
+                let lit = match &mut self.dialog {
+                    Dialog::Relight(d) => {
+                        d.depth = Some(std::sync::Arc::new(map));
+                        d.busy = false;
+                        d.status = "Move the lamp; the shape is worked out.".into();
+                        d.lit().map(|p| (d.layer, p))
+                    }
+                    _ => None,
+                };
+                if let Some((id, pixels)) = lit {
+                    self.show_relight(id, &pixels);
+                }
+            }
+        }
+    }
+
+    /// Show a lighting straight on the canvas, without a history entry.
+    fn show_relight(&mut self, id: LayerId, pixels: &PixelBuffer) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get_mut(id) else { return };
+        let bounds = layer.bounds();
+        let Some(px) = layer.pixels_mut() else { return };
+        *px = pixels.clone();
+        let dirty = cshop_core::document::Dirty::pixels(id, bounds);
+        view.mark_dirty(dirty);
+        view.invalidate();
+        if let Dialog::Relight(d) = &mut self.dialog {
+            d.showing = true;
+        }
+    }
+
+    /// Commit the lighting that is showing, as one entry.
+    fn keep_relight(&mut self) {
+        let taken = match &self.dialog {
+            Dialog::Relight(d) => d.lit().map(|after| (d.layer, d.before.clone(), after)),
+            _ => None,
+        };
+        let Some((id, before, after)) = taken else {
+            self.fail("There is no lighting to keep");
+            return;
+        };
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(id) else {
+            self.fail("That layer has gone");
+            return;
+        };
+        let (offset, mask) = (layer.offset, layer.mask.clone());
+        // The preview is showing, so the layer is put back first and the entry
+        // built from what was really there.
+        if let Some(px) = view.doc.tree.get_mut(id).and_then(|l| l.pixels_mut()) {
+            *px = before;
+        }
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerPixels::new(
+                id, after, offset, mask, "Relight",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        self.notify("Relit");
+    }
+
     /// Hand the selection to the model as a hole to fill in.
     ///
     /// On a thread, because it is a couple of seconds and a window that stops

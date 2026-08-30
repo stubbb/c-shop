@@ -78,6 +78,8 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `path "M x y L x y ..."` | A Bézier path as its own layer. `M` starts a contour, `L` a straight segment, `C x1 y1 x2 y2 x y` a cubic, `Z` closes it. A path that never closes is stroked rather than filled. `fill= stroke= stroke-width=` |
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
+| `depth` | Put a map of how far away everything is into the document, as a layer. Needs the [vision pack](VISION.md). |
+| `relight [azimuth= elevation= intensity= ambient= relief= color=]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
 | `inpaint` | Make the selection disappear, inventing what was behind it. Needs the [vision pack](VISION.md). |
 | `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
 | `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
@@ -168,6 +170,32 @@ this can run it on a small selection first and read that number.
 It is worth reaching for: the model is very good on sensor noise and grain, and
 will also quietly remove fine texture that resembles them — skin pores, distant
 foliage, fabric weave.
+
+### Lighting a photograph again
+
+`relight` reads how far away everything is, turns that into which way each
+surface faces, and lights it from somewhere else.
+
+```
+relight azimuth=200 elevation=18 intensity=1.5 ambient=0.45 relief=1.6
+        # → lit from 200° at 18° up, intensity 1.50, ambient 0.45, relief 1.60
+```
+
+`azimuth` is where the lamp is on a circle round the picture: **0° is to the
+left** and it goes clockwise, so 90° is above and 180° is to the right.
+`elevation` is how high, from level with the subject to straight in front.
+`ambient` is what survives where the lamp does not reach — at 1 the lamp can
+only add light, below it the unlit side falls away. `relief` is how much shape
+to read into the depth; the depth has no unit, so that is a choice rather than
+a measurement.
+
+The depth is worked out once per layer and kept, so a script that tries three
+lightings pays for the model once. `depth` on its own puts the map into the
+document as a layer, which is what to reach for when the distance is wanted as
+a mask rather than as lighting.
+
+It is not physical: no cast shadows, no idea how shiny anything is, and the new
+lamp is added to whatever already lit the picture rather than replacing it.
 
 ### Making something disappear
 

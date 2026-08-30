@@ -22,6 +22,10 @@ Two models:
 * **Real-ESRGAN** enlarges. Four times up, inventing the detail that a bigger
   sensor would have recorded — which is why it is judged by eye rather than by
   arithmetic; see `upscale`.
+* **Depth Anything** guesses how far away everything in a picture is. Not a
+  model of the scene — one number a pixel, with no idea what is behind
+  anything — but enough to work out which way a surface faces, which is what
+  lighting responds to. See `depth`.
 * **LaMa** fills a hole in with what was probably behind it. Given a picture
   and a mask it invents the covered part from the rest, which is how an object
   is removed rather than merely painted over — see `inpaint`.
@@ -661,6 +665,12 @@ def classify(image_path, out_path, top=8):
     return {"ok": True, "map": out_path, "width": width, "height": height, "regions": found}
 
 
+# What the depth model was exported for. Its patches are 14 pixels, so every
+# side it is handed has to be a multiple of that; 518 is 37 of them.
+DEPTH_SIDE = 518
+DEPTH_MULTIPLE = 14
+
+
 # ---------------------------------------------------------------------------
 # Filling a hole in
 # ---------------------------------------------------------------------------
@@ -739,6 +749,60 @@ def inpaint(image_path, mask_path, out_path):
     }
 
 
+# ---------------------------------------------------------------------------
+# How far away everything is
+# ---------------------------------------------------------------------------
+
+
+def depth(image_path, out_path):
+    """Guess the distance to everything, and write it as a picture.
+
+    Sixteen bits rather than eight, because the point of this is its
+    *gradient*: lighting reads how fast the depth changes across the frame, and
+    at eight bits a gentle slope arrives as a staircase and lights like one.
+
+    The aspect ratio is kept and the sides rounded to the model's patch size,
+    rather than squashing the picture into a square. A face stretched to square
+    comes back with the shape of a face stretched to square.
+    """
+    import numpy as np
+    from PIL import Image
+
+    sess = session("depth-anything-v2-small.onnx")
+    name = sess.get_inputs()[0].name
+
+    image = Image.open(image_path).convert("RGB")
+    width, height = image.size
+    scale = DEPTH_SIDE / max(width, height)
+    fit = lambda v: max(DEPTH_MULTIPLE, int(round(v * scale / DEPTH_MULTIPLE)) * DEPTH_MULTIPLE)
+    tw, th = fit(width), fit(height)
+
+    x = np.asarray(image.resize((tw, th), Image.BICUBIC), np.float32) / 255.0
+    x = (x - np.array(IMAGENET_MEAN, np.float32)) / np.array(IMAGENET_STD, np.float32)
+    out = sess.run(None, {name: x.transpose(2, 0, 1)[None]})[0]
+    out = np.asarray(out)
+    field = out[0] if out.ndim == 3 else out[0, 0]
+
+    # The model answers in inverse depth: larger is nearer. Stretched to fill
+    # the range, because it has no unit and nothing downstream should pretend
+    # otherwise.
+    lo, hi = float(field.min()), float(field.max())
+    field = (field - lo) / max(hi - lo, 1e-6)
+
+    big = Image.fromarray(field.astype(np.float32), "F").resize((width, height), Image.BILINEAR)
+    values = np.clip(np.asarray(big, np.float32), 0.0, 1.0)
+    # No mode argument: Pillow infers I;16 from the dtype, and passing it
+    # explicitly is deprecated.
+    Image.fromarray((values * 65535.0 + 0.5).astype(np.uint16)).save(out_path)
+    return {
+        "ok": True,
+        "map": out_path,
+        "width": width,
+        "height": height,
+        "worked_at": [tw, th],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -749,6 +813,10 @@ def main():
     d.add_argument("--image", required=True)
     d.add_argument("--conf", type=float, default=0.25)
     d.add_argument("--classes", default="", help="comma-separated, to keep only these")
+
+    dp = sub.add_parser("depth", help="guess how far away everything is")
+    dp.add_argument("image")
+    dp.add_argument("--out", required=True)
 
     p_ = sub.add_parser("inpaint", help="fill a hole in with what was behind it")
     p_.add_argument("image")
@@ -795,6 +863,7 @@ def main():
                 "realesr-general-x4v3.onnx",
                 "segformer-ade.onnx",
                 "lama.onnx",
+                "depth-anything-v2-small.onnx",
             )
             if not os.path.exists(os.path.join(MODELS, n))
         ]
@@ -820,6 +889,10 @@ def main():
                 fail(f"{v!r} is not an x,y point")
             out.append((x, y))
         return out
+
+    if args.command == "depth":
+        print(json.dumps(depth(args.image, args.out)))
+        return
 
     if args.command == "inpaint":
         print(json.dumps(inpaint(args.image, args.mask, args.out)))
