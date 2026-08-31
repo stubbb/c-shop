@@ -1565,6 +1565,303 @@ impl Command for RasterizeLayer {
     }
 }
 
+/// Resize by carving seams, with the carving already done.
+///
+/// The work happens off the main thread and arrives here finished, because
+/// eight seconds on a twelve-megapixel photograph is not something to do with
+/// the interface stopped. What is left is the same shape as any other edit:
+/// put the new pixels in, remember the old, and undo by putting them back —
+/// which it has to hold, since removing a seam is not something an inverse can
+/// undo.
+#[derive(Debug)]
+pub struct CarvedResize {
+    to: Option<Vec<(LayerId, PixelBuffer)>>,
+    size: (u32, u32),
+    before: Option<Box<Undone>>,
+}
+
+impl CarvedResize {
+    pub fn new(layers: Vec<(LayerId, PixelBuffer)>, width: u32, height: u32) -> Self {
+        Self { to: Some(layers), size: (width, height), before: None }
+    }
+}
+
+impl Command for CarvedResize {
+    fn name(&self) -> String {
+        "Content-Aware Scale".into()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.before.as_ref().map_or(0, |b| {
+            b.layers
+                .iter()
+                .map(|(_, kind, _, mask)| {
+                    let px = match kind {
+                        crate::layer::LayerKind::Raster(s) => s.bytes(),
+                        _ => 0,
+                    };
+                    px + mask.as_ref().map_or(0, mask_bytes)
+                })
+                .sum()
+        })
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        let Some(carved) = self.to.take() else { return Dirty::NONE };
+        if self.before.is_none() {
+            let layers = doc
+                .tree
+                .iter_all()
+                .into_iter()
+                .filter_map(|id| {
+                    let l = doc.tree.get(id)?;
+                    Some((id, l.kind.clone(), l.offset, l.mask.clone()))
+                })
+                .collect();
+            self.before = Some(Box::new(Undone {
+                size: (doc.width, doc.height),
+                layers,
+                selection: doc.selection.as_ref().map(|s| s.compress()),
+            }));
+        }
+        for (id, px) in carved {
+            let Some(layer) = doc.tree.get_mut(id) else { continue };
+            layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(px));
+            layer.offset = (0, 0);
+            // A mask cannot be carved along with the layer — the seams are
+            // chosen from the picture, and a mask has no picture — so it is
+            // resampled, which is what it would have got from a plain resize.
+            if let Some(mask) = &mut layer.mask {
+                mask.data = resize_mask(&mask.data, self.size.0, self.size.1);
+                mask.offset = (0, 0);
+                mask.path = None;
+            }
+        }
+        doc.width = self.size.0;
+        doc.height = self.size.1;
+        doc.set_selection(None);
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(before) = self.before.take() else { return Dirty::NONE };
+        let mut carved = Vec::new();
+        doc.width = before.size.0;
+        doc.height = before.size.1;
+        for (id, kind, offset, mask) in before.layers {
+            if let Some(layer) = doc.tree.get_mut(id) {
+                if let crate::layer::LayerKind::Raster(s) =
+                    std::mem::replace(&mut layer.kind, kind)
+                {
+                    if let Some(px) = s.eight() {
+                        carved.push((id, px.clone()));
+                    }
+                }
+                layer.offset = offset;
+                layer.mask = mask;
+            }
+        }
+        self.to = Some(carved);
+        doc.set_selection(before.selection.map(|c| c.restore()));
+        Dirty::structural(doc.bounds())
+    }
+}
+
+/// Straighten a photographed rectangle and crop to it in one step.
+///
+/// An ordinary crop is a canvas resize: nothing is resampled, because nothing
+/// moves. This one is not — the four corners the user dragged are the corners
+/// of something rectangular in the world, and putting it back means undoing
+/// the projection that made it a quadrilateral. Every layer goes through the
+/// same projective transform, so they stay registered with each other.
+///
+/// The size to land on comes from the quad's own edges: the average of the two
+/// horizontal edges and of the two vertical ones. A photographed rectangle's
+/// far edge is shorter than its near one, and taking either alone would either
+/// stretch or squash the result; the average keeps the pixel count about right
+/// while the transform sorts out the shape.
+#[derive(Debug)]
+pub struct PerspectiveCrop {
+    corners: [crate::geom::Vec2; 4],
+    width: u32,
+    height: u32,
+    filter: crate::resample::Resampling,
+    /// Everything the layers were, since a projective warp cannot be undone by
+    /// applying its inverse — the samples it dropped are not recoverable.
+    before: Option<Box<Undone>>,
+}
+
+/// One layer as it was: what it held, where it was, and what was masking it.
+type LayerBefore = (LayerId, crate::layer::LayerKind, (i32, i32), Option<LayerMask>);
+
+/// The document as it was before an edit that resamples everything.
+///
+/// Held whole, because neither a projective warp nor a carved seam can be
+/// undone by applying an inverse: both throw samples away, and the samples are
+/// what undo has to give back.
+#[derive(Debug)]
+pub struct Undone {
+    size: (u32, u32),
+    layers: Vec<LayerBefore>,
+    selection: Option<CompressedSelection>,
+}
+
+impl PerspectiveCrop {
+    /// `corners` are in document space, top-left then clockwise.
+    pub fn new(
+        corners: [crate::geom::Vec2; 4],
+        filter: crate::resample::Resampling,
+    ) -> Option<PerspectiveCrop> {
+        let side = |a: crate::geom::Vec2, b: crate::geom::Vec2| a.distance(b);
+        let w = (side(corners[0], corners[1]) + side(corners[3], corners[2])) / 2.0;
+        let h = (side(corners[0], corners[3]) + side(corners[1], corners[2])) / 2.0;
+        let (width, height) = (w.round() as u32, h.round() as u32);
+        if width < 1 || height < 1 || width > 30_000 || height > 30_000 {
+            return None;
+        }
+        // Edge lengths alone do not say the four points enclose anything: four
+        // in a row measure a perfectly reasonable rectangle. Ask for the
+        // transform here, where refusing costs nothing, rather than finding
+        // out in `apply` and leaving an undo step that did nothing.
+        let target = IRect::new(0, 0, width as i32, height as i32);
+        crate::transform::Transform::from_quad(target, corners)?.invert()?;
+        Some(PerspectiveCrop { corners, width, height, filter, before: None })
+    }
+
+    /// The size the result will be.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+impl Command for PerspectiveCrop {
+    fn name(&self) -> String {
+        "Perspective Crop".into()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.before.as_ref().map_or(0, |b| {
+            b.layers
+                .iter()
+                .map(|(_, kind, _, mask)| {
+                    let px = match kind {
+                        crate::layer::LayerKind::Raster(s) => s.bytes(),
+                        _ => 0,
+                    };
+                    px + mask.as_ref().map_or(0, mask_bytes)
+                })
+                .sum()
+        })
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        // Target rect -> the quad, then inverted: what the resampler wants is
+        // the map from where the pixels are to where they should go.
+        let target = IRect::new(0, 0, self.width as i32, self.height as i32);
+        let Some(to_quad) = crate::transform::Transform::from_quad(target, self.corners) else {
+            return Dirty::NONE;
+        };
+        let Some(matrix) = to_quad.invert() else { return Dirty::NONE };
+
+        if self.before.is_none() {
+            let layers = doc
+                .tree
+                .iter_all()
+                .into_iter()
+                .filter_map(|id| {
+                    let l = doc.tree.get(id)?;
+                    Some((id, l.kind.clone(), l.offset, l.mask.clone()))
+                })
+                .collect();
+            self.before = Some(Box::new(Undone {
+                size: (doc.width, doc.height),
+                layers,
+                selection: doc.selection.as_ref().map(|s| s.compress()),
+            }));
+        }
+
+        let clip = target;
+        for id in doc.tree.iter_all() {
+            let Some(layer) = doc.tree.get_mut(id) else { continue };
+            let offset = layer.offset;
+            if let Some(px) = layer.pixels() {
+                match crate::resample::transform(px, offset, matrix, self.filter, Some(clip)) {
+                    Some((moved, at)) => {
+                        layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(moved));
+                        layer.offset = at;
+                    }
+                    // Straightened out of the frame entirely: an empty layer
+                    // rather than a stale one in the wrong place.
+                    None => {
+                        layer.kind =
+                            crate::layer::LayerKind::Raster(Surface::Eight(PixelBuffer::new(1, 1)));
+                        layer.offset = (0, 0);
+                    }
+                }
+            }
+            if let Some(mask) = layer.mask.take() {
+                let as_pixels = mask_as_pixels(&mask.data);
+                if let Some((moved, at)) =
+                    crate::resample::transform(&as_pixels, mask.offset, matrix, self.filter, Some(clip))
+                {
+                    layer.mask = Some(LayerMask {
+                        data: pixels_as_mask(&moved),
+                        offset: at,
+                        enabled: mask.enabled,
+                        linked: mask.linked,
+                        // The path is in the old document's coordinates and a
+                        // projective warp is not something a path survives, so
+                        // what comes out is the drawing rather than the plan.
+                        path: None,
+                    });
+                }
+            }
+        }
+
+        doc.width = self.width;
+        doc.height = self.height;
+        doc.set_selection(None);
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(before) = self.before.take() else { return Dirty::NONE };
+        doc.width = before.size.0;
+        doc.height = before.size.1;
+        for (id, kind, offset, mask) in before.layers {
+            let Some(layer) = doc.tree.get_mut(id) else { continue };
+            layer.kind = kind;
+            layer.offset = offset;
+            layer.mask = mask;
+        }
+        doc.set_selection(before.selection.map(|c| c.restore()));
+        Dirty::structural(doc.bounds())
+    }
+}
+
+/// A coverage mask as an image, so the resampler can move it. Carried in alpha
+/// so premultiplied filtering treats hidden areas as absent rather than black.
+fn mask_as_pixels(mask: &MaskBuffer) -> PixelBuffer {
+    let mut out = PixelBuffer::new(mask.width(), mask.height());
+    for y in 0..mask.height() as i32 {
+        for x in 0..mask.width() as i32 {
+            let v = mask.get(x, y);
+            out.set(x, y, Rgba8::new(255, 255, 255, v));
+        }
+    }
+    out
+}
+
+fn pixels_as_mask(px: &PixelBuffer) -> MaskBuffer {
+    let mut out = MaskBuffer::hide_all(px.width(), px.height());
+    for y in 0..px.height() as i32 {
+        for x in 0..px.width() as i32 {
+            out.set(x, y, px.get(x, y).a);
+        }
+    }
+    out
+}
+
 /// Switch the document to a saved layer state, or change the list of them.
 ///
 /// One command for all of it — applying, saving, renaming, deleting — because

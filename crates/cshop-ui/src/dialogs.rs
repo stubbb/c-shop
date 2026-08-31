@@ -492,6 +492,11 @@ pub struct SizeDialog {
     pub anchor: Anchor,
     /// Editing in percent rather than pixels.
     pub percent: bool,
+    /// Carve seams instead of resampling, so the things in the picture keep
+    /// their proportions while the space between them changes.
+    pub content_aware: bool,
+    /// Route the seams around whatever is selected.
+    pub protect_selection: bool,
 }
 
 impl SizeDialog {
@@ -505,6 +510,8 @@ impl SizeDialog {
             filter: Default::default(),
             anchor: Anchor::Center,
             percent: false,
+            content_aware: false,
+            protect_selection: true,
         }
     }
 
@@ -582,17 +589,35 @@ impl SizeDialog {
 
         if self.resample {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Resample:");
-                egui::ComboBox::from_id_salt("resize-filter")
-                    .width(180.0)
-                    .selected_text(self.filter.name())
-                    .show_ui(ui, |ui| {
-                        for f in cshop_core::resample::Resampling::ALL {
-                            ui.selectable_value(&mut self.filter, f, f.name());
-                        }
-                    });
-            });
+            ui.checkbox(&mut self.content_aware, "Content-aware")
+                .on_hover_text(
+                    "Take the space out rather than squashing everything equally: a \
+                     wider frame with the same people in it, not two wider people",
+                );
+            if self.content_aware {
+                ui.checkbox(&mut self.protect_selection, "Protect the selection")
+                    .on_hover_text("The seams route around whatever is selected");
+                ui.label(
+                    egui::RichText::new(
+                        "Slower than resampling — seconds on a large photograph — \
+                         because it works out where to cut for every pixel it removes.",
+                    )
+                    .color(crate::theme::Palette::DARK.text_dim)
+                    .small(),
+                );
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Resample:");
+                    egui::ComboBox::from_id_salt("resize-filter")
+                        .width(180.0)
+                        .selected_text(self.filter.name())
+                        .show_ui(ui, |ui| {
+                            for f in cshop_core::resample::Resampling::ALL {
+                                ui.selectable_value(&mut self.filter, f, f.name());
+                            }
+                        });
+                });
+            }
         } else {
             ui.add_space(8.0);
             ui.label("Anchor:");
@@ -641,7 +666,13 @@ impl SizeDialog {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui.button("OK").clicked() {
-                if self.resample {
+                if self.resample && self.content_aware {
+                    actions.push(Action::ContentAwareScale {
+                        width: self.width,
+                        height: self.height,
+                        protect_selection: self.protect_selection,
+                    });
+                } else if self.resample {
                     actions.push(Action::ResizeImage {
                         width: self.width,
                         height: self.height,

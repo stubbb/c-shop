@@ -766,11 +766,13 @@ impl Runner {
             "relight" => self.cmd_relight(cmd),
             "depth" => self.cmd_depth(cmd),
             "guide" => self.cmd_guide(cmd),
+            "straighten" => self.cmd_straighten(cmd),
+            "align" => self.cmd_align(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
                  order, info, profile, mode, lens, denoise, upscale, separate, \
-                 inpaint, depth, relight, guide, export, save"
+                 inpaint, depth, relight, guide, straighten, align, export, save"
             )),
         }
     }
@@ -1287,6 +1289,29 @@ impl Runner {
                 height,
                 anchor: cshop_ui::commands::Anchor::Center,
             });
+        } else if cmd.flag("content-aware") {
+            // Carving runs on a worker thread for the interface's sake; a
+            // script has nothing to keep responsive and everything to gain
+            // from the next line seeing the finished picture, so it waits.
+            self.app.dispatch(Action::ContentAwareScale {
+                width,
+                height,
+                protect_selection: !cmd.flag("no-protect"),
+            });
+            let gpu = self.gpu.clone();
+            let ctx = egui::Context::default();
+            let started = std::time::Instant::now();
+            while self.app.carve_progress().is_some() {
+                self.app.poll_carve(&ctx);
+                if started.elapsed() > std::time::Duration::from_secs(600) {
+                    return Err("the content-aware scale took too long".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if let Some(view) = self.app.doc_mut() {
+                view.resize_targets(&gpu);
+            }
+            return Ok(format!("carved {w0}x{h0} to {width}x{height}"));
         } else {
             self.app.dispatch(Action::ResizeImage { width, height, filter });
         }
@@ -2549,6 +2574,80 @@ impl Runner {
              only in the history"
                 .to_string()
         })
+    }
+
+    /// `straighten X0 Y0 X1 Y1 X2 Y2 X3 Y3` — put those four points, top-left
+    /// then clockwise, on the corners of something rectangular, and the
+    /// projection that made it a quadrilateral is undone.
+    /// `align [shift|similarity|camera] [stack]` — move every layer onto the
+    /// bottom one by finding what they have in common.
+    fn cmd_align(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::align::Motion;
+        self.need_doc()?;
+        let motion = match cmd.args.first().map(|s| s.as_str()) {
+            None | Some("similarity") | Some("hand") => Motion::Similarity,
+            Some("shift") | Some("translation") | Some("tripod") => Motion::Translation,
+            Some("camera") | Some("homography") | Some("panorama") => Motion::Homography,
+            Some("stack") => Motion::Similarity,
+            Some(other) => {
+                return Err(format!(
+                    "no alignment called {other:?}; it is shift, similarity or camera"
+                ))
+            }
+        };
+        let stack = cmd.flag("stack") || cmd.args.iter().any(|a| a == "stack");
+        let before = self.app.doc().map(|v| v.doc.tree.len()).unwrap_or(0);
+        self.app.dispatch(if stack {
+            Action::StackLayers
+        } else {
+            Action::AlignLayers { motion }
+        });
+        // The app says what happened in a toast; a script wants it back as the
+        // step's result, including the refusals.
+        match self.app.toast.take() {
+            Some((msg, true)) => Err(msg),
+            Some((msg, false)) => Ok(msg),
+            None => Ok(format!(
+                "aligned; {} layers",
+                self.app.doc().map(|v| v.doc.tree.len()).unwrap_or(before)
+            )),
+        }
+    }
+
+    fn cmd_straighten(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::geom::Vec2;
+        self.need_doc()?;
+        if cmd.args.len() < 8 {
+            return Err(
+                "straighten needs four points: x0 y0 x1 y1 x2 y2 x3 y3, top-left then \
+                 clockwise"
+                    .into(),
+            );
+        }
+        let mut at = [Vec2::ZERO; 4];
+        for (i, slot) in at.iter_mut().enumerate() {
+            *slot = Vec2::new(
+                cmd.arg_f32(i * 2, "x")?,
+                cmd.arg_f32(i * 2 + 1, "y")?,
+            );
+        }
+        let filter = match cmd.opt("filter") {
+            Some("bilinear") => cshop_core::resample::Resampling::Bilinear,
+            Some("nearest") => cshop_core::resample::Resampling::Nearest,
+            _ => cshop_core::resample::Resampling::Bicubic,
+        };
+        let edit = cshop_core::history::PerspectiveCrop::new(at, filter)
+            .ok_or("those four points do not enclose a rectangle")?;
+        let (w, h) = edit.size();
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(&mut view.doc, Box::new(edit));
+        view.mark_dirty(dirty);
+        view.invalidate();
+        let gpu = self.gpu.clone();
+        if let Some(view) = self.app.doc_mut() {
+            view.resize_targets(&gpu);
+        }
+        Ok(format!("straightened to {w}x{h}"))
     }
 
     fn cmd_profile(&mut self, cmd: &Command) -> Result<String, String> {

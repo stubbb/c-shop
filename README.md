@@ -106,6 +106,25 @@ point text and wrapping paragraph boxes, real or synthesised bold and italic,
 alignment, leading, tracking and anti-aliasing. Edited live on canvas with a
 caret; a whole typing session is a single undo step.
 
+**Geometry.** Free Transform moves four corners; **warp** and **puppet warp**
+bend what is between them, one as a mesh over the layer and one as pins put
+where they are wanted — the same moving-least-squares engine either way, with a
+rigid fit so that what is moved keeps its shape instead of stretching to reach.
+**Content-aware scale** changes a picture's proportions by carving out the
+least interesting seams rather than squashing everything equally, and routes
+them around whatever is selected. **Perspective crop** puts four corners on
+something rectangular in a photograph and undoes the projection that made it a
+quadrilateral.
+
+**Aligning frames.** Two photographs of the same scene differ by a movement;
+find enough corners that appear in both and the movement falls out. Harris
+corners, oriented binary descriptions, matching by how many bits differ, and
+RANSAC to throw away the matches that agree with nothing. Align a sequence and
+stack it, and the noise averages away while the picture does not — the picture
+is the same in every frame and the noise is not. Frames of *different* scenes
+are refused with a reason, which took explicit work: the arithmetic will
+happily answer "send everything to one point" if you let it.
+
 **Selecting.** Marquees, lassos and a magic wand, plus three that look harder
 at the picture. **Colour range** finds a colour wherever it appears rather than
 where it is joined to a click, and answers with partial coverage instead of a

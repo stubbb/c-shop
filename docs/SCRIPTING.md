@@ -100,6 +100,9 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `info` | Report the document's size, layer count and working colour space. |
 | `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
+| `align [shift\|similarity\|camera] [stack]` | Move every layer onto the bottom one by what they have in common; `stack` also averages them. |
+| `straighten X0 Y0 X1 Y1 X2 Y2 X3 Y3 [filter=]` | Put four points, top-left then clockwise, on something rectangular; the projection that made it a quadrilateral is undone. |
+| `resize W H content-aware [no-protect]` | Carve seams instead of resampling, so what is in the picture keeps its proportions. |
 | `select colour NAME\|#rrggbb [fuzziness= invert]` | Select a colour wherever it appears, or `shadows`, `midtones`, `highlights`, `reds`, `greens`, `blues`. |
 | `select refine [radius= smooth= feather= contrast= shift=]` | Fit the selection's edge to the picture's. |
 | `select to-path` | Trace the selection's outline as a path layer. |

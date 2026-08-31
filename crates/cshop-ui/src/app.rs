@@ -161,6 +161,8 @@ pub struct CShopApp {
     segment_job: Option<std::sync::mpsc::Receiver<SegmentOutcome>>,
     /// The full-resolution lens pass, while it runs. See [`CShopApp::poll_lens`].
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
+    /// A content-aware scale running on a worker thread.
+    carve_job: Option<CarveJob>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
     /// The depth model, while it looks at the picture.
@@ -240,6 +242,8 @@ pub struct CShopApp {
     pub transform: Option<ActiveTransform>,
     /// A crop rectangle being dragged.
     pub crop: Option<ActiveCrop>,
+    /// A warp in progress. See [`ActiveWarp`].
+    pub warp: Option<ActiveWarp>,
     /// The last filter applied, for Repeat Last Filter.
     pub last_filter: Option<cshop_core::filters::Filter>,
 
@@ -294,6 +298,7 @@ impl CShopApp {
             segment_before: None,
             segment_job: None,
             lens_job: None,
+            carve_job: None,
             denoise_job: None,
             upscale_job: None,
             separate_job: None,
@@ -328,6 +333,7 @@ impl CShopApp {
             drag: None,
             transform: None,
             crop: None,
+            warp: None,
             last_filter: None,
             window_commands: Vec::new(),
             is_maximized: false,
@@ -452,6 +458,7 @@ impl CShopApp {
         self.now = ctx.input(|i| i.time);
         self.poll_segment(&ctx);
         self.poll_lens(&ctx);
+        self.poll_carve(&ctx);
         self.poll_denoise(&ctx);
         self.poll_upscale(&ctx);
         self.poll_separate(&ctx);
@@ -1810,6 +1817,14 @@ impl CShopApp {
                 } else {
                     "Now 8 bits a channel".to_string()
                 });
+            }
+            Action::AlignLayers { motion } => self.align_layers(motion, false),
+            Action::StackLayers => self.align_layers(Default::default(), true),
+            Action::BeginWarp { puppet } => self.begin_warp(puppet),
+            Action::CommitWarp => self.commit_warp(),
+            Action::CancelWarp => self.cancel_warp(),
+            Action::ContentAwareScale { width, height, protect_selection } => {
+                self.start_content_aware_scale(width, height, protect_selection)
             }
             Action::ResizeImage { width, height, filter } => {
                 let gpu = self.gpu.clone();
@@ -4187,6 +4202,96 @@ impl CShopApp {
         self.lens_job = Some(rx);
     }
 
+    /// Start carving, on a worker thread.
+    ///
+    /// Every layer is carved with the same masks, so they come out registered
+    /// with one another — carving each against its own energy would move the
+    /// same object to different places on different layers.
+    fn start_content_aware_scale(&mut self, width: u32, height: u32, protect: bool) {
+        if self.carve_job.is_some() {
+            self.notify("A content-aware scale is already running");
+            return;
+        }
+        let Some(view) = self.doc() else { return };
+        if width == 0 || height == 0 {
+            self.fail("A picture has to have a size");
+            return;
+        }
+        let layers: Vec<(LayerId, PixelBuffer)> = view
+            .doc
+            .tree
+            .iter_all()
+            .into_iter()
+            .filter_map(|id| Some((id, view.doc.tree.get(id)?.pixels()?.clone())))
+            .collect();
+        if layers.is_empty() {
+            self.fail("There are no pixels to carve");
+            return;
+        }
+        let seams = width.abs_diff(view.doc.width) + height.abs_diff(view.doc.height);
+        let carve = cshop_core::carve::Carve {
+            protect: protect
+                .then(|| view.doc.selection.as_ref().map(|s| s.to_mask()))
+                .flatten(),
+            remove: None,
+        };
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = progress.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let out = layers
+                .into_iter()
+                .map(|(id, px)| {
+                    let carved = carve.resize_reporting(&px, width, height, Some(&counter));
+                    (id, carved)
+                })
+                .collect();
+            let _ = tx.send(out);
+        });
+        self.carve_job = Some(CarveJob {
+            done: rx,
+            seams_cut: progress,
+            seams_total: seams.max(1),
+            size: (width, height),
+        });
+        self.notify(format!("Carving {seams} seams…"));
+    }
+
+    /// Collect the carve when it finishes.
+    pub fn poll_carve(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.carve_job else { return };
+        let size = job.size;
+        match job.done.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+            Err(_) => {
+                self.carve_job = None;
+                self.fail("The content-aware scale stopped without finishing");
+            }
+            Ok(layers) => {
+                self.carve_job = None;
+                let gpu = self.gpu.clone();
+                let Some(view) = self.doc_mut() else { return };
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(cshop_core::history::CarvedResize::new(layers, size.0, size.1)),
+                );
+                view.mark_dirty(dirty);
+                view.resize_targets(&gpu);
+                view.invalidate();
+                view.zoom_initialised = false;
+            }
+        }
+    }
+
+    /// How far a content-aware scale has got, for the status bar.
+    pub fn carve_progress(&self) -> Option<f32> {
+        let job = self.carve_job.as_ref()?;
+        let done = job.seams_cut.load(std::sync::atomic::Ordering::Relaxed);
+        Some(done as f32 / job.seams_total.max(1) as f32)
+    }
+
     /// Collect the pass when it finishes, and keep the progress bar moving
     /// while it does not.
     pub fn poll_lens(&mut self, ctx: &egui::Context) {
@@ -5534,6 +5639,288 @@ impl CShopApp {
         view.invalidate();
     }
 
+    /// Move every layer onto the bottom one, and optionally average them.
+    ///
+    /// The bottom layer is the reference because it is the one that does not
+    /// move: something has to stay still or the whole stack drifts, and the
+    /// bottom of the stack is the one people put the first frame on.
+    ///
+    /// Takes about half a second per layer on a twelve-megapixel photograph,
+    /// which is done here rather than on a thread: it is an explicit,
+    /// infrequent operation, and a handful of frames is a moment.
+    fn align_layers(&mut self, motion: cshop_core::align::Motion, stack: bool) {
+        let Some(view) = self.doc() else { return };
+        let ids = view.doc.tree.iter_all();
+        let frames: Vec<(LayerId, PixelBuffer, (i32, i32))> = ids
+            .iter()
+            .filter_map(|&id| {
+                let l = view.doc.tree.get(id)?;
+                Some((id, l.pixels()?.clone(), l.offset))
+            })
+            .collect();
+        if frames.len() < 2 {
+            self.fail("Aligning needs at least two layers with pixels in them");
+            return;
+        }
+        let canvas = view.doc.bounds();
+        let (_, reference, _) = &frames[0];
+        let reference = reference.clone();
+
+        let align = cshop_core::align::Align { motion, ..Default::default() };
+        let mut moved: Vec<(LayerId, PixelBuffer, (i32, i32))> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        for (id, px, offset) in frames.iter().skip(1) {
+            match align.between(&reference, px) {
+                Ok(matrix) => {
+                    let reach = canvas.width().max(canvas.height()) as i32;
+                    match cshop_core::resample::transform(
+                        px,
+                        *offset,
+                        matrix,
+                        cshop_core::resample::Resampling::Bicubic,
+                        Some(canvas.inflate(reach)),
+                    ) {
+                        Some((out, at)) => moved.push((*id, out, at)),
+                        None => refused.push(format!(
+                            "{}: the movement takes it off the canvas",
+                            self.doc()
+                                .and_then(|v| v.doc.tree.get(*id).map(|l| l.name.clone()))
+                                .unwrap_or_default()
+                        )),
+                    }
+                }
+                Err(why) => refused.push(format!(
+                    "{}: {why}",
+                    self.doc()
+                        .and_then(|v| v.doc.tree.get(*id).map(|l| l.name.clone()))
+                        .unwrap_or_default()
+                )),
+            }
+        }
+
+        if moved.is_empty() {
+            // Say which layer and why, rather than "alignment failed".
+            self.fail(match refused.first() {
+                Some(first) => format!("Nothing could be aligned. {first}"),
+                None => "Nothing could be aligned".into(),
+            });
+            return;
+        }
+
+        let Some(view) = self.doc_mut() else { return };
+        let mut edits: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
+        for (id, px, at) in &moved {
+            let mask = view.doc.tree.get(*id).and_then(|l| l.mask.clone());
+            edits.push(Box::new(ReplaceLayerPixels::new(
+                *id,
+                px.clone(),
+                *at,
+                mask,
+                "Align Layers",
+            )));
+        }
+        for edit in edits {
+            let dirty = view.history.apply(&mut view.doc, edit);
+            view.mark_dirty(dirty);
+        }
+        view.invalidate();
+
+        if stack {
+            self.stack_aligned(&frames[0], &moved, canvas);
+        }
+
+        let done = moved.len();
+        if refused.is_empty() {
+            self.notify(format!("Aligned {done} layers"));
+        } else {
+            // A partial success is still a success, and the ones that did not
+            // work are named so it is clear which to look at.
+            self.notify(format!(
+                "Aligned {done}; {} would not — {}",
+                refused.len(),
+                refused.join("; ")
+            ));
+        }
+    }
+
+    /// Average the aligned frames into one new layer above them.
+    fn stack_aligned(
+        &mut self,
+        reference: &(LayerId, PixelBuffer, (i32, i32)),
+        moved: &[(LayerId, PixelBuffer, (i32, i32))],
+        canvas: cshop_core::geom::IRect,
+    ) {
+        // Every frame drawn into the canvas, so they line up before averaging:
+        // the aligned layers have different offsets and sizes, and averaging
+        // buffers that are not registered would average the wrong pixels.
+        let onto_canvas = |px: &PixelBuffer, at: (i32, i32)| {
+            let mut out = PixelBuffer::new(canvas.width(), canvas.height());
+            out.paste(px, at.0 - canvas.x0, at.1 - canvas.y0);
+            out
+        };
+        let mut frames = vec![onto_canvas(&reference.1, reference.2)];
+        frames.extend(moved.iter().map(|(_, px, at)| onto_canvas(px, *at)));
+
+        let Some(stacked) = cshop_core::align::mean(&frames) else {
+            self.fail("The frames could not be averaged");
+            return;
+        };
+        let Some(view) = self.doc_mut() else { return };
+        let id = view.doc.tree.alloc_id();
+        let mut layer = cshop_core::layer::Layer::new(
+            id,
+            format!("Stacked ({} frames)", frames.len()),
+            cshop_core::layer::LayerKind::raster(stacked),
+        );
+        layer.offset = (canvas.x0, canvas.y0);
+        let pos = new_layer_pos(view);
+        let dirty = view
+            .history
+            .apply(&mut view.doc, Box::new(cshop_core::history::AddLayer::new(layer, pos, "Stack Layers")));
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Start a warp on the active layer.
+    fn begin_warp(&mut self, puppet: bool) {
+        self.commit_text();
+        let Some(view) = self.doc() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        if layer.locks.blocks_pixels() {
+            self.fail("The layer is locked");
+            return;
+        }
+        let Some(source) = layer.pixels().cloned() else {
+            let why = self.why_not("Warping works on raster layers");
+            self.fail(why);
+            return;
+        };
+        let offset = layer.offset;
+        let bounds = cshop_core::geom::IRect::at(
+            offset.0,
+            offset.1,
+            source.width(),
+            source.height(),
+        );
+        let warp = if puppet {
+            // Pins on the corners to begin with, so the first pin someone
+            // drags moves that part and not the whole layer.
+            let mut w = cshop_core::warp::Warp { rigid: true, ..Default::default() };
+            for at in [
+                (bounds.x0, bounds.y0),
+                (bounds.x1, bounds.y0),
+                (bounds.x1, bounds.y1),
+                (bounds.x0, bounds.y1),
+            ] {
+                w.pin(Vec2::new(at.0 as f32, at.1 as f32));
+            }
+            w
+        } else {
+            cshop_core::warp::Warp::grid(bounds, 4, 4)
+        };
+        self.warp = Some(ActiveWarp {
+            layer: id,
+            warp,
+            source,
+            offset,
+            dragging: None,
+            puppet,
+        });
+        self.notify(if puppet {
+            "Click to add a pin, drag one to move it, Alt-click to remove one"
+        } else {
+            "Drag the mesh to bend the layer"
+        });
+    }
+
+    /// Re-render the warp into the layer, so the canvas shows it.
+    ///
+    /// Called when a drag finishes rather than while it moves: a third of a
+    /// second on a twelve-megapixel layer is nothing between gestures and far
+    /// too much between frames.
+    pub fn refresh_warp(&mut self) {
+        let Some(active) = &self.warp else { return };
+        if !active.warp.any() {
+            // Nothing moved: put the layer back rather than round-tripping it
+            // through a resample that would soften it for no reason.
+            let (id, source, offset) = (active.layer, active.source.clone(), active.offset);
+            let Some(view) = self.doc_mut() else { return };
+            if let Some(layer) = view.doc.tree.get_mut(id) {
+                layer.kind = cshop_core::layer::LayerKind::raster(source);
+                layer.offset = offset;
+            }
+            view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+            view.invalidate();
+            return;
+        }
+        let canvas = self.doc().map(|v| v.doc.bounds()).unwrap_or_default();
+        let reach = canvas.width().max(canvas.height()) as i32;
+        let rendered = active.warp.apply(
+            &active.source,
+            active.offset,
+            cshop_core::resample::Resampling::Bilinear,
+            Some(canvas.inflate(reach)),
+        );
+        let Some((pixels, at)) = rendered else {
+            self.fail("That warp collapses the layer");
+            return;
+        };
+        let id = active.layer;
+        let Some(view) = self.doc_mut() else { return };
+        if let Some(layer) = view.doc.tree.get_mut(id) {
+            layer.kind = cshop_core::layer::LayerKind::raster(pixels);
+            layer.offset = at;
+        }
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+    }
+
+    /// Keep the warp, as one undo step.
+    fn commit_warp(&mut self) {
+        let Some(active) = self.warp.take() else { return };
+        if !active.warp.any() {
+            // Nothing was moved, so nothing is worth recording.
+            let Some(view) = self.doc_mut() else { return };
+            if let Some(layer) = view.doc.tree.get_mut(active.layer) {
+                layer.kind = cshop_core::layer::LayerKind::raster(active.source);
+                layer.offset = active.offset;
+            }
+            view.invalidate();
+            return;
+        }
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(active.layer) else { return };
+        let Some(after) = layer.pixels().cloned() else { return };
+        let at = layer.offset;
+        let mask = layer.mask.clone();
+        // Put the original back, so the command's own "before" is the truth
+        // rather than the preview that is currently showing.
+        if let Some(layer) = view.doc.tree.get_mut(active.layer) {
+            layer.kind = cshop_core::layer::LayerKind::raster(active.source);
+            layer.offset = active.offset;
+        }
+        let label = if active.puppet { "Puppet Warp" } else { "Warp" };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(ReplaceLayerPixels::new(active.layer, after, at, mask, label)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Throw it away and put the layer back.
+    fn cancel_warp(&mut self) {
+        let Some(active) = self.warp.take() else { return };
+        let Some(view) = self.doc_mut() else { return };
+        if let Some(layer) = view.doc.tree.get_mut(active.layer) {
+            layer.kind = cshop_core::layer::LayerKind::raster(active.source);
+            layer.offset = active.offset;
+        }
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+    }
+
     /// Turn the path being drawn into a mask rather than a shape layer.
     ///
     /// The path is kept alongside the coverage it produces, so resizing the
@@ -5941,6 +6328,29 @@ impl CShopApp {
 
     fn commit_crop(&mut self) {
         let Some(crop) = self.crop.take() else { return };
+
+        // A quadrilateral crop straightens as well as cuts, so it resamples
+        // every layer rather than moving the canvas around them.
+        if let Some(corners) = crop.corners {
+            let gpu = self.gpu.clone();
+            let Some(edit) = cshop_core::history::PerspectiveCrop::new(
+                corners,
+                cshop_core::resample::Resampling::Bicubic,
+            ) else {
+                self.fail("Those four corners do not enclose a rectangle");
+                return;
+            };
+            let (w, h) = edit.size();
+            let Some(view) = self.doc_mut() else { return };
+            let dirty = view.history.apply(&mut view.doc, Box::new(edit));
+            view.mark_dirty(dirty);
+            view.resize_targets(&gpu);
+            view.invalidate();
+            view.zoom_initialised = false;
+            self.notify(format!("Straightened to {w}x{h}"));
+            return;
+        }
+
         let rect = crop.rect;
         if rect.is_empty() {
             return;
@@ -6298,6 +6708,35 @@ impl CShopApp {
         full.paste(pixels, layer.offset.0, layer.offset.1);
         Some(full)
     }
+}
+
+/// A content-aware scale on a worker thread: where the carved layers will
+/// arrive, how many seams are done, how many were asked for, and the size the
+/// document is heading for.
+struct CarveJob {
+    done: std::sync::mpsc::Receiver<Vec<(LayerId, PixelBuffer)>>,
+    seams_cut: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    seams_total: u32,
+    size: (u32, u32),
+}
+
+/// A warp in progress: the layer as it was, the control points, and what the
+/// canvas is currently showing.
+///
+/// The layer itself holds the preview while this is open — the same
+/// arrangement the denoise and relight windows use — so the compositor, the
+/// masks and the blend modes all show the warped layer without knowing there
+/// is a warp. `source` is what goes back if it is cancelled, and what the
+/// history entry is measured against if it is not.
+pub struct ActiveWarp {
+    pub layer: LayerId,
+    pub warp: cshop_core::warp::Warp,
+    /// The layer's pixels and offset before any of this.
+    source: PixelBuffer,
+    offset: (i32, i32),
+    pub dragging: Option<usize>,
+    /// Pins put where they are wanted, rather than a grid over the layer.
+    pub puppet: bool,
 }
 
 /// A path being drawn with the Pen tool.

@@ -316,11 +316,59 @@ pub struct ActiveCrop {
     drag_origin: Vec2,
     /// `None` for a free crop, otherwise width divided by height.
     pub aspect: Option<f32>,
+    /// Four corners, top-left then clockwise, when the crop is a quadrilateral
+    /// rather than a rectangle — put them on the corners of something that is
+    /// rectangular in the world and cropping straightens it.
+    pub corners: Option<[Vec2; 4]>,
+    /// Which corner the pointer took hold of.
+    pub dragging_corner: Option<usize>,
 }
 
 impl ActiveCrop {
     pub fn new(rect: IRect) -> Self {
-        Self { rect, dragging: None, start_rect: rect, drag_origin: Vec2::ZERO, aspect: None }
+        Self {
+            rect,
+            dragging: None,
+            start_rect: rect,
+            drag_origin: Vec2::ZERO,
+            aspect: None,
+            corners: None,
+            dragging_corner: None,
+        }
+    }
+
+    /// Whether this crop straightens as well as cuts.
+    pub fn is_perspective(&self) -> bool {
+        self.corners.is_some()
+    }
+
+    /// Switch between the two, seeding the corners from the rectangle so the
+    /// handles do not jump when the mode changes.
+    pub fn set_perspective(&mut self, on: bool) {
+        self.corners = on.then(|| {
+            let (x0, y0) = (self.rect.x0 as f32, self.rect.y0 as f32);
+            let (x1, y1) = (self.rect.x1 as f32, self.rect.y1 as f32);
+            [
+                Vec2::new(x0, y0),
+                Vec2::new(x1, y0),
+                Vec2::new(x1, y1),
+                Vec2::new(x0, y1),
+            ]
+        });
+        self.dragging = None;
+    }
+
+    /// Which corner is nearest, when this is a quadrilateral.
+    pub fn hit_corner(&self, point: Vec2, zoom: f32) -> Option<usize> {
+        let corners = self.corners?;
+        let grab = HANDLE_GRAB / zoom.max(0.01);
+        corners
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.distance(point)))
+            .filter(|(_, d)| *d <= grab)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
     }
 
     pub fn handle_position(&self, handle: Handle) -> Vec2 {

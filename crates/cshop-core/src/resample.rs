@@ -133,6 +133,12 @@ impl Premul {
 ///
 /// Positions outside the buffer contribute transparency, so an edge fades out
 /// rather than smearing its last row.
+/// One sample at a fractional position, for anything that maps pixels
+/// individually rather than through a matrix — a warp, for instance.
+pub fn sample_at(src: &PixelBuffer, x: f32, y: f32, filter: Resampling) -> Rgba8 {
+    sample(src, x, y, filter)
+}
+
 fn sample(src: &PixelBuffer, x: f32, y: f32, filter: Resampling) -> Rgba8 {
     if filter == Resampling::Nearest {
         return src.get(x.floor() as i32, y.floor() as i32);

@@ -553,6 +553,23 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                     app.push(Action::BeginTransform);
                     ui.close();
                 }
+                if item_enabled(ui, "Warp", "", has_doc)
+                    .on_hover_text("A mesh over the layer; drag it to bend the middle")
+                    .clicked()
+                {
+                    app.push(Action::BeginWarp { puppet: false });
+                    ui.close();
+                }
+                if item_enabled(ui, "Puppet Warp", "", has_doc)
+                    .on_hover_text(
+                        "Pins where you want them. What is pinned stays, what is between \
+                         them moves as rigidly as it can",
+                    )
+                    .clicked()
+                {
+                    app.push(Action::BeginWarp { puppet: true });
+                    ui.close();
+                }
                 ui.separator();
                 for preset in TransformPreset::ALL {
                     if item_enabled(ui, preset.name(), "", has_doc).clicked() {
@@ -714,6 +731,50 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::MergeDown);
                 ui.close();
             }
+            let several = app.doc().is_some_and(|d| d.doc.tree.len() >= 2);
+            ui.menu_button("Align Layers", |ui| {
+                ui.label(
+                    egui::RichText::new("Every layer moved onto the bottom one")
+                        .color(Palette::DARK.text_dim)
+                        .small(),
+                );
+                ui.separator();
+                for (name, motion, hint) in [
+                    (
+                        "Shift only",
+                        cshop_core::align::Motion::Translation,
+                        "Two numbers to fit, so the least that can go wrong. Right for a tripod.",
+                    ),
+                    (
+                        "Shift, turn and scale",
+                        cshop_core::align::Motion::Similarity,
+                        "What a hand-held sequence of the same scene usually needs.",
+                    ),
+                    (
+                        "Camera turned",
+                        cshop_core::align::Motion::Homography,
+                        "The full projective fit, for a panorama. It can distort as well as \
+                         move, so it is the wrong one for stacking.",
+                    ),
+                ] {
+                    if item_enabled(ui, name, "", several).on_hover_text(hint).clicked() {
+                        app.push(Action::AlignLayers { motion });
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if item_enabled(ui, "Align and Stack", "", several)
+                    .on_hover_text(
+                        "Align, then average into a new layer — the picture is the same in \
+                         every frame and the noise is not, so the noise averages away",
+                    )
+                    .clicked()
+                {
+                    app.push(Action::StackLayers);
+                    ui.close();
+                }
+            });
+            ui.separator();
             if item_enabled(ui, "Flatten Image", "", has_doc).clicked() {
                 app.push(Action::FlattenImage);
                 ui.close();
@@ -1141,7 +1202,12 @@ pub fn options_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
         ui.separator();
         ui.add_space(4.0);
 
-        // A live transform owns the options bar whatever tool is selected.
+        // A live transform or warp owns the options bar whatever tool is
+        // selected.
+        if app.warp.is_some() {
+            warp_options(app, ui);
+            return;
+        }
         if app.transform.is_some() {
             transform_options(app, ui);
             return;
@@ -1477,6 +1543,57 @@ pub fn options_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
     });
 }
 
+/// Controls for a warp in progress.
+fn warp_options(app: &mut CShopApp, ui: &mut egui::Ui) {
+    let p = Palette::DARK;
+    let puppet = app.warp.as_ref().is_some_and(|w| w.puppet);
+    ui.label(egui::RichText::new(if puppet { "Puppet Warp" } else { "Warp" }).strong());
+    ui.separator();
+
+    let mut changed = false;
+    if let Some(active) = &mut app.warp {
+        ui.label("Falloff:");
+        changed |= ui
+            .add(egui::Slider::new(&mut active.warp.falloff, 0.3..=3.0).fixed_decimals(1))
+            .on_hover_text("Higher keeps each point's effect closer to it")
+            .changed();
+        ui.add_space(6.0);
+        let mut rigid = active.warp.rigid;
+        if ui
+            .checkbox(&mut rigid, "Rigid")
+            .on_hover_text(
+                "Only rotate and move what is between the points. Off lets them stretch \
+                 to reach, which is quicker to pose and easier to make look wrong",
+            )
+            .changed()
+        {
+            active.warp.rigid = rigid;
+            changed = true;
+        }
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(if puppet {
+                "Click to add a pin · Alt-click to remove one · double-click to finish"
+            } else {
+                "Drag the mesh · double-click to finish"
+            })
+            .color(p.text_dim)
+            .small(),
+        );
+    }
+    if changed {
+        app.refresh_warp();
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui.button("Cancel").clicked() {
+            app.push(Action::CancelWarp);
+        }
+        if ui.button("Apply").clicked() {
+            app.push(Action::CommitWarp);
+        }
+    });
+}
+
 /// Readouts and controls for a Free Transform in progress.
 fn transform_options(app: &mut CShopApp, ui: &mut egui::Ui) {
     let p = Palette::DARK;
@@ -1529,6 +1646,37 @@ fn crop_options(app: &mut CShopApp, ui: &mut egui::Ui) {
     let p = Palette::DARK;
     ui.label(egui::RichText::new("Crop").strong());
     ui.separator();
+
+    // Perspective first, because it changes what every other control means:
+    // a quadrilateral has no aspect ratio to fix.
+    let mut perspective = app.crop.as_ref().is_some_and(|c| c.is_perspective());
+    if ui
+        .checkbox(&mut perspective, "Perspective")
+        .on_hover_text(
+            "Put the four corners on something rectangular in the photograph and \
+             cropping straightens it as well as cutting it",
+        )
+        .changed()
+    {
+        if app.crop.is_none() {
+            // Nothing to put corners on yet; start from the whole canvas.
+            let bounds = app.doc().map(|v| v.doc.bounds()).unwrap_or_default();
+            app.crop = Some(crate::transform_tool::ActiveCrop::new(bounds));
+        }
+        if let Some(crop) = &mut app.crop {
+            crop.set_perspective(perspective);
+        }
+    }
+    ui.separator();
+
+    if perspective {
+        ui.label(
+            egui::RichText::new("Drag the corners · double-click to straighten")
+                .color(p.text_dim)
+                .small(),
+        );
+        return;
+    }
 
     let mut aspect = app.crop.as_ref().and_then(|c| c.aspect);
     let label = match aspect {
@@ -2038,7 +2186,17 @@ pub fn document_tabs(app: &mut CShopApp, ui: &mut egui::Ui) {
 
 pub fn status_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
     let p = Palette::DARK;
+    // A carve takes seconds and looks like a hang without this.
+    let carving = app.carve_progress();
     ui.horizontal_centered(|ui| {
+        if let Some(done) = carving {
+            ui.add(
+                egui::ProgressBar::new(done)
+                    .desired_width(140.0)
+                    .text(format!("Carving {:.0}%", done * 100.0)),
+            );
+            ui.separator();
+        }
         match app.doc() {
             Some(view) => {
                 ui.label(format!("{:.1}%", view.zoom * 100.0));

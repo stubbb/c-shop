@@ -91,6 +91,7 @@ pub fn show(app: &mut CShopApp, ui: &mut egui::Ui) {
     draw_selection(app, ui, &painter, viewport);
     draw_transform_overlay(app, ui, &painter, viewport);
     draw_crop_overlay(app, ui, &painter, viewport);
+    draw_warp_overlay(app, &painter, viewport);
     draw_gradient_guide(app, &painter, viewport);
     draw_clone_anchor(app, ui, &painter, viewport);
     draw_text_caret(app, ui, &painter, viewport);
@@ -244,6 +245,36 @@ fn draw_crop_overlay(
     let Some(index) = app.active else { return };
     let Some(crop) = &app.crop else { return };
     let view = &app.docs[index];
+
+    // A quadrilateral crop draws its own outline and handles; the banded
+    // shading below only makes sense round a rectangle.
+    if let Some(corners) = crop.corners {
+        let pts: Vec<egui::Pos2> = corners
+            .iter()
+            .map(|c| view.doc_to_screen(viewport, egui::vec2(c.x, c.y)))
+            .collect();
+        for pair in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+            let (a, b) = (pts[pair.0], pts[pair.1]);
+            painter.line_segment([a, b], egui::Stroke::new(3.0, egui::Color32::from_black_alpha(150)));
+            painter.line_segment([a, b], egui::Stroke::new(1.0, egui::Color32::WHITE));
+        }
+        // The thirds, drawn across the quad rather than across a box, so they
+        // follow the perspective and are worth looking at.
+        for k in [1.0f32 / 3.0, 2.0 / 3.0] {
+            let along = |a: egui::Pos2, b: egui::Pos2| {
+                egui::pos2(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k)
+            };
+            let faint = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90));
+            painter.line_segment([along(pts[0], pts[3]), along(pts[1], pts[2])], faint);
+            painter.line_segment([along(pts[0], pts[1]), along(pts[3], pts[2])], faint);
+        }
+        for p in &pts {
+            painter.circle_filled(*p, 5.0, egui::Color32::from_black_alpha(150));
+            painter.circle_filled(*p, 3.5, egui::Color32::WHITE);
+        }
+        let _ = ui;
+        return;
+    }
 
     let canvas = view.canvas_rect(viewport);
     let keep = egui::Rect::from_min_max(
@@ -696,6 +727,12 @@ fn interact(
     }
 
     // A live transform or crop takes every pointer event before the tools do.
+    // A warp owns the canvas while it is open: clicks put pins and drags move
+    // control points, whatever tool happens to be selected.
+    if app.warp.is_some() {
+        warp_interact(app, ui, response, viewport);
+        return;
+    }
     if app.transform.is_some() {
         transform_interact(app, ui, response, viewport);
         return;
@@ -1221,6 +1258,27 @@ fn crop_interact(
     let _ = ui;
 
     match &mut app.crop {
+        // A perspective crop is dragged by its four corners and by nothing
+        // else: there are no edge handles, because an edge of a quadrilateral
+        // has no meaning to move.
+        Some(crop) if crop.is_perspective() => {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                crop.dragging_corner = crop.hit_corner(doc, zoom);
+            } else if response.dragged_by(egui::PointerButton::Primary) {
+                if let (Some(i), Some(corners)) = (crop.dragging_corner, crop.corners.as_mut()) {
+                    corners[i] = Vec2::new(
+                        doc.x.clamp(bounds.x0 as f32 - 4096.0, bounds.x1 as f32 + 4096.0),
+                        doc.y.clamp(bounds.y0 as f32 - 4096.0, bounds.y1 as f32 + 4096.0),
+                    );
+                }
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                crop.dragging_corner = None;
+            }
+            if response.double_clicked_by(egui::PointerButton::Primary) {
+                app.push(Action::CommitCrop);
+            }
+        }
         Some(crop) => {
             if response.drag_started_by(egui::PointerButton::Primary) {
                 match crop.hit(doc, zoom) {
@@ -1259,6 +1317,122 @@ fn crop_interact(
                 app.crop = Some(crop);
             }
         }
+    }
+}
+
+/// The control points, and the mesh between them when there is one.
+fn draw_warp_overlay(app: &CShopApp, painter: &egui::Painter, viewport: egui::Rect) {
+    let Some(index) = app.active else { return };
+    let Some(active) = &app.warp else { return };
+    let view = &app.docs[index];
+    let to_screen =
+        |p: Vec2| view.doc_to_screen(viewport, egui::vec2(p.x, p.y));
+
+    // A mesh is a grid, so it can be drawn as one; pins are not, so they are
+    // not joined up at all — a line between two pins would suggest a
+    // relationship that is not there.
+    if !active.puppet {
+        let n = active.warp.to.len();
+        let side = (n as f32).sqrt().round() as usize;
+        if side >= 2 && side * side == n {
+            let faint = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(110));
+            for j in 0..side {
+                for i in 0..side {
+                    let a = to_screen(active.warp.to[j * side + i]);
+                    if i + 1 < side {
+                        painter.line_segment([a, to_screen(active.warp.to[j * side + i + 1])], faint);
+                    }
+                    if j + 1 < side {
+                        painter.line_segment(
+                            [a, to_screen(active.warp.to[(j + 1) * side + i])],
+                            faint,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    for (i, p) in active.warp.to.iter().enumerate() {
+        let at = to_screen(*p);
+        let held = active.dragging == Some(i);
+        painter.circle_filled(at, if held { 7.0 } else { 6.0 }, egui::Color32::from_black_alpha(160));
+        painter.circle_filled(
+            at,
+            if held { 5.0 } else { 4.0 },
+            if held { Palette::DARK.accent } else { egui::Color32::WHITE },
+        );
+        // Where it started, when it has been moved, so it is clear what the
+        // warp is doing rather than only where it has got to.
+        let was = active.warp.from[i];
+        if was.distance(*p) > 1.0 {
+            painter.line_segment(
+                [to_screen(was), at],
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(70)),
+            );
+        }
+    }
+}
+
+/// Dragging control points, and adding or removing pins.
+fn warp_interact(
+    app: &mut CShopApp,
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    viewport: egui::Rect,
+) {
+    let Some(index) = app.active else { return };
+    let zoom = app.docs[index].zoom;
+    let Some(pointer) = response.interact_pointer_pos() else {
+        if app.warp.is_some() && ui.input(|i| i.pointer.primary_released()) {
+            app.refresh_warp();
+        }
+        return;
+    };
+    let at = {
+        let v = app.docs[index].screen_to_doc(viewport, pointer);
+        Vec2::new(v.x, v.y)
+    };
+    // The grab radius is in screen pixels, so zooming in does not make a
+    // handle harder to hit.
+    let reach = 10.0 / zoom.max(0.05);
+    let alt = ui.input(|i| i.modifiers.alt);
+
+    let mut rerender = false;
+    if let Some(active) = &mut app.warp {
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            active.dragging = active.warp.nearest(at, reach);
+        } else if response.dragged_by(egui::PointerButton::Primary) {
+            if let Some(i) = active.dragging {
+                active.warp.to[i] = at;
+            }
+        }
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
+            if active.dragging.is_some() {
+                rerender = true;
+            }
+            active.dragging = None;
+        }
+        // Clicking without dragging: a pin goes in, or the one under the
+        // pointer comes out. Only in puppet mode — a mesh has a fixed grid,
+        // and taking a corner out of it would leave a hole in the warp.
+        if active.puppet && response.clicked_by(egui::PointerButton::Primary) {
+            match (alt, active.warp.nearest(at, reach)) {
+                (true, Some(i)) => {
+                    active.warp.remove(i);
+                    rerender = true;
+                }
+                (false, None) => active.warp.pin(at),
+                _ => {}
+            }
+        }
+        if response.double_clicked_by(egui::PointerButton::Primary) {
+            app.push(Action::CommitWarp);
+            return;
+        }
+    }
+    if rerender {
+        app.refresh_warp();
     }
 }
 

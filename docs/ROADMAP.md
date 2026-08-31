@@ -102,19 +102,35 @@ someone can actually edit.
 
 ## Geometry
 
-**Warp and puppet warp.** Free transform handles the corners; nothing bends the
-middle.
+**Warp and puppet warp.** ~~Free transform handles the corners; nothing bends
+the middle.~~ Done, both on `Edit ▸ Transform`. One engine — moving least
+squares — with two ways of collecting its input: a mesh over the layer, or pins
+put where they are wanted. The rigid fit is what keeps an arm looking like an
+arm when it is moved, since an affine one will happily squash it to reach.
 
-**Content-aware scale.** Changing an image's proportions while leaving the
-things in it alone — seam carving, which pairs naturally with the work already
-done on finding what is in a picture.
+**Content-aware scale.** ~~Changing an image's proportions while leaving the
+things in it alone.~~ Done, as a checkbox in Image Size and `resize
+content-aware`. The selection protects what it covers, which is where the
+segmentation work pays off. It runs on a worker thread with a progress bar,
+because it takes seconds on a large photograph — down from three quarters of a
+minute, once the energy stopped being rebuilt for every seam.
 
-**Perspective crop.** Straightening a photographed rectangle in one gesture
-rather than by lens correction and then a crop.
+**Perspective crop.** ~~Straightening a photographed rectangle in one gesture.~~
+Done, as a checkbox on the Crop tool and `straighten`. Put the four corners on
+something rectangular and cropping undoes the projection that made it a
+quadrilateral.
 
-**Aligning several frames.** Stitching a panorama, or stacking frames for
-noise or focus. The feature detection this needs is a large piece of work, and
-the payoff is two features that nothing else here approaches.
+**Aligning several frames.** ~~Stitching a panorama, or stacking frames for
+noise or focus.~~ Done, on `Layer ▸ Align Layers` and `align`. Harris corners,
+oriented binary descriptions, matching with the ratio test, and RANSAC over a
+shift, a similarity or a full projective fit. Two photographs of different
+things are refused with a reason rather than aligned to whatever the arithmetic
+produced — a least-squares fit through matches that agree on nothing collapses
+to "send everything to one point", and that had to be caught explicitly.
+`Align and Stack` averages the result, which is how noise comes off a sequence.
+
+What is not here is blending a panorama: the frames are aligned and left as
+layers, so a seam between two exposures is still a seam.
 
 ## Files it cannot open
 

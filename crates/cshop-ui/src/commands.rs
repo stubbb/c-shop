@@ -385,6 +385,19 @@ pub enum Action {
     SetDepth(u8),
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
+    /// Move every layer onto the bottom one, by finding what they have in
+    /// common. See [`cshop_core::align`].
+    AlignLayers { motion: cshop_core::align::Motion },
+    /// Align, then average — which is how noise is removed by stacking.
+    StackLayers,
+
+    /// Start bending the active layer: a mesh over it, or pins in it.
+    BeginWarp { puppet: bool },
+    CommitWarp,
+    CancelWarp,
+    /// Resize by carving seams rather than by resampling, so what is in the
+    /// picture keeps its proportions. See [`cshop_core::carve`].
+    ContentAwareScale { width: u32, height: u32, protect_selection: bool },
     ResizeCanvas { width: u32, height: u32, anchor: Anchor },
     /// Crop the canvas to the current selection.
     CropToSelection,

@@ -15,7 +15,9 @@
 //! * **Coordinates** — integer document pixels. `IRect` maxima are exclusive.
 
 pub mod adjust;
+pub mod align;
 pub mod blend;
+pub mod carve;
 pub mod color;
 pub mod color_range;
 pub mod curve;
@@ -51,6 +53,7 @@ pub mod trace;
 pub mod transform;
 pub mod tree;
 pub mod wand;
+pub mod warp;
 
 pub use adjust::{AdjustKind, Adjustment, LevelsChannel};
 pub use blend::BlendMode;
