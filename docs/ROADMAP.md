@@ -134,13 +134,20 @@ layers, so a seam between two exposures is still a seam.
 
 ## Files it cannot open
 
-**Raw camera files.** Still the most serious omission: a photographic pipeline
-whose front door is missing. A camera database is the part that cannot be
-written, but it is also the part DNG does not need — a DNG carries its own
-colour matrix, black and white levels, white balance and CFA pattern, so a
-reader for *self-describing* raw is a real feature without a database behind
-it. That is the shape this should take when it is taken, and it is still the
-largest piece of work on this page.
+**Raw camera files.** ~~The front door of the photographic pipeline.~~ Done,
+for the raw files that describe themselves. A DNG carries its own colour
+matrix, black and white levels, white balance and filter pattern, so it needs
+no database of camera models — and that database is the part of raw support
+that cannot be written, only accumulated, one body at a time, forever. So DNG
+is read and the proprietary formats are refused with that explanation rather
+than opened and guessed at.
+
+A TIFF reader for the tags, a lossless-JPEG decoder for the data — process 14
+from the same standard as ordinary JPEG and almost nothing else in common: no
+transform, no quantisation, no loss — and then black subtraction, white
+balance, demosaicing against the green channel, and the camera's own matrix
+into sRGB. Sixteen bits out, since narrowing there would throw away the reason
+for shooting raw.
 
 **SVG and PDF.** ~~Vector in, vector out.~~ Done, in the directions each is
 worth doing. An SVG opens as shape layers and saves back as paths, so a round

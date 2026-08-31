@@ -124,6 +124,23 @@ rather than the small rectangle that changed. Both formats write back out
 whole; before this, opening one gave back its first frame and dropped the rest
 in silence.
 
+**Raw.** Files that describe themselves — DNG, and the raw formats
+DNG-shaped enough to carry the same tags — open as developed sixteen-bit
+pictures: black subtracted, the camera's own white balance and colour matrix
+applied, and the two colours each photosite did not measure interpolated
+against the green channel rather than on their own, which is what keeps colour
+fringes off the edges. The proprietary formats are refused with the reason:
+they need a database of camera models maintained by hand, one body at a time,
+and that database is the part of raw support that cannot be written, only
+accumulated.
+
+The compression is the interesting half. A DNG's sensor data is usually
+lossless JPEG, which is process 14 of the same standard as ordinary JPEG and
+has almost nothing else in common with it: no cosine transform, no
+quantisation, and no loss. Each sample is predicted from its neighbours and
+only the difference is coded — which is why a raw file is large and exact where
+a photograph is small and approximate.
+
 **Vector.** An SVG opens as shape layers and saves back as paths, so a round
 trip gives back editable geometry rather than a picture of it. Paths, rects,
 circles, ellipses, lines and polygons, transforms composing through nesting,

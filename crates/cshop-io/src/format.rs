@@ -54,7 +54,7 @@ impl ImageFormat {
     /// Extensions the Open dialog offers, lowercase and without the dot.
     pub const OPENABLE_EXTENSIONS: &'static [&'static str] = &[
         "cshop", "csd", "psd", "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp",
-        "tga", "ico", "svg", "apng",
+        "tga", "ico", "svg", "apng", "dng",
     ];
 
     pub fn from_extension(ext: &str) -> Option<ImageFormat> {
@@ -72,6 +72,9 @@ impl ImageFormat {
             "psd" => ImageFormat::Psd,
             "svg" => ImageFormat::Svg,
             "pdf" => ImageFormat::Pdf,
+            // A DNG is a TIFF as far as the extension table is concerned; the
+            // reader decides from the tags whether it is raw.
+            "dng" => ImageFormat::Tiff,
             _ => return None,
         })
     }

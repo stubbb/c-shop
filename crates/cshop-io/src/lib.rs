@@ -9,6 +9,7 @@
 
 pub mod frames;
 pub mod pdf;
+pub mod raw;
 pub mod svg;
 pub mod bytes;
 pub mod format;
@@ -92,6 +93,18 @@ pub fn decode_document_reporting(
     if bytes.starts_with(b"8BPS") {
         return psd::read(bytes).map(|d| (d, Colors::default()));
     }
+    // A raw file is developed on the way in, at sixteen bits: narrowing there
+    // would throw away the reason for shooting raw. The defaults are the
+    // camera's own — its white balance and its colour matrix — which is the
+    // picture the camera would have made.
+    if raw::is_raw(bytes, hint) {
+        let developed = raw::read(bytes)?.develop(raw::Develop::default());
+        return Ok((
+            document_from_deep(developed, "Raw"),
+            Colors { converted: true, ..Default::default() },
+        ));
+    }
+
     // Vector in, vector out: an SVG becomes shape layers, so what comes back
     // from a round trip is editable geometry rather than a picture of it.
     if svg::is_svg(bytes) {
@@ -141,6 +154,33 @@ pub fn decode_document_reporting(
     doc.selected_layers = doc.active.into_iter().collect();
     doc.modified = false;
     Ok((doc, colors))
+}
+
+/// A sixteen-bit picture as a one-layer document.
+fn document_from_deep(
+    deep: cshop_core::pixels::DeepBuffer,
+    name: &str,
+) -> cshop_core::document::Document {
+    let (w, h) = (deep.width(), deep.height());
+    let mut doc = cshop_core::document::Document::new(
+        "Untitled",
+        w.max(1),
+        h.max(1),
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+    let id = doc.tree.alloc_id();
+    let mut layer = cshop_core::layer::Layer::new(
+        id,
+        name,
+        cshop_core::layer::LayerKind::Raster(cshop_core::layer::Surface::Sixteen(deep)),
+    );
+    layer.is_background = true;
+    doc.tree.push(layer, None);
+    doc.active = doc.tree.root().last().copied();
+    doc.selected_layers = doc.active.into_iter().collect();
+    doc.modified = false;
+    doc
 }
 
 /// A drawing as a document: one shape layer per element.
