@@ -199,10 +199,6 @@ ends included.
 
 ![The style library](docs/style-showcase.jpg)
 
-| | | | |
-|---|---|---|---|
-| ![Before](docs/example-garden-before.jpg) | ![After](docs/example-garden-after.jpg) | ![Pencil sketch](docs/example-sketch-after.jpg) | ![Coloured pencil](docs/example-coloured-after.jpg) |
-
 ### Over a network
 
 The same harness serves over [MCP](https://modelcontextprotocol.io), so a
