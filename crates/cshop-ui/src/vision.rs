@@ -66,6 +66,27 @@ pub fn scratch() -> PathBuf {
     std::env::temp_dir().join(format!("cshop-vision-{}-{n}", std::process::id()))
 }
 
+/// Make a scratch directory that only its owner can look in.
+///
+/// The picture being worked on is written here on its way to the models, and
+/// the temporary directory is shared with every other account on the machine.
+/// Left at the default the directory is world-readable and its name is a
+/// process id, so anyone with a login could read what someone else was
+/// editing — and, by making the directory first, choose where it went.
+///
+/// On anything without Unix permissions this is an ordinary `create_dir_all`,
+/// which is the best that can be said for it.
+#[cfg(unix)]
+pub fn make_scratch(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+}
+
+#[cfg(not(unix))]
+pub fn make_scratch(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
 /// What to tell someone who has not installed it.
 pub const NOT_INSTALLED: &str = "the vision pack is not installed — run vision/setup.sh";
 

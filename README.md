@@ -445,7 +445,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-815 tests, and the interesting ones are not unit tests:
+823 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

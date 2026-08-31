@@ -2981,7 +2981,7 @@ impl CShopApp {
         let pixels = view.read_composite(&gpu);
         let (w, h) = (pixels.width(), pixels.height());
         let dir = crate::vision::scratch();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{e}"))?;
+        crate::vision::make_scratch(&dir).map_err(|e| format!("{e}"))?;
         let path = dir.join("source.png");
         cshop_io::save(&path, &pixels, 100).map_err(|e| format!("{e}"))?;
         Ok((path, w, h))
@@ -3020,7 +3020,7 @@ impl CShopApp {
         std::thread::spawn(move || {
             let dir = crate::vision::scratch();
             let result = (|| {
-                std::fs::create_dir_all(&dir)
+                crate::vision::make_scratch(&dir)
                     .map_err(|e| format!("could not use a scratch directory: {e}"))?;
                 let input = dir.join("source.png");
                 let out = dir.join("depth.png");
@@ -3175,7 +3175,7 @@ impl CShopApp {
         std::thread::spawn(move || {
             let dir = crate::vision::scratch();
             let result = (|| {
-                std::fs::create_dir_all(&dir)
+                crate::vision::make_scratch(&dir)
                     .map_err(|e| format!("could not use a scratch directory: {e}"))?;
                 let input = dir.join("source.png");
                 let mask_path = dir.join("mask.png");
@@ -3249,7 +3249,7 @@ impl CShopApp {
         std::thread::spawn(move || {
             let dir = crate::vision::scratch();
             let result = (|| {
-                std::fs::create_dir_all(&dir)
+                crate::vision::make_scratch(&dir)
                     .map_err(|e| format!("could not use a scratch directory: {e}"))?;
                 let input = dir.join("source.png");
                 let map = dir.join("labels.png");
@@ -3406,7 +3406,7 @@ impl CShopApp {
         std::thread::spawn(move || {
             let dir = crate::vision::scratch();
             let result = (|| {
-                std::fs::create_dir_all(&dir)
+                crate::vision::make_scratch(&dir)
                     .map_err(|e| format!("could not use a scratch directory: {e}"))?;
                 let mut out = Vec::new();
                 for (i, (id, pixels)) in rasters.iter().enumerate() {

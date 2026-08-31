@@ -1299,7 +1299,7 @@ impl Runner {
     fn vision_source(&mut self, dir: &Path) -> Result<(std::path::PathBuf, u32, u32), String> {
         let composite = self.composite()?;
         let (w, h) = (composite.width(), composite.height());
-        std::fs::create_dir_all(dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let path = dir.join("source.png");
         cshop_io::save(&path, &composite, 100)
             .map_err(|e| format!("could not write the image for the models: {e}"))?;
@@ -1329,7 +1329,7 @@ impl Runner {
         }
 
         let dir = self.vision_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let input = dir.join("source.png");
         let out = dir.join("depth.png");
         if let Err(e) = cshop_io::save(&input, &source, 100) {
@@ -1518,7 +1518,7 @@ impl Runner {
         }
 
         let dir = self.vision_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let input = dir.join("source.png");
         let mask_path = dir.join("mask.png");
         let output = dir.join("filled.png");
@@ -1610,7 +1610,7 @@ impl Runner {
             .ok_or("that layer has no pixels to separate")?;
 
         let dir = self.vision_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let input = dir.join("source.png");
         let map_path = dir.join("labels.png");
         cshop_io::save(&input, &source, 100)
@@ -1753,7 +1753,7 @@ impl Runner {
         }
 
         let dir = self.vision_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let progress = cshop_ui::vision::DenoiseProgress::default();
         let mut enlarged = Vec::new();
         let mut tiles = 0u32;
@@ -1865,7 +1865,7 @@ impl Runner {
 
         let patch = source.copy_rect(region);
         let dir = self.vision_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
         let input = dir.join("noisy.png");
         let output = dir.join("clean.png");
         cshop_io::save(&input, &patch, 100)

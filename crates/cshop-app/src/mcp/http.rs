@@ -23,6 +23,16 @@ const READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// pay for forty handshakes — but an unbounded loop is a way to pin a thread.
 const MAX_KEEPALIVE_REQUESTS: usize = 512;
 
+/// How many connections may be in flight at once.
+///
+/// Each one is an operating system thread, and a thread that is merely waiting
+/// still costs a stack and a slot in the kernel's tables. Without a ceiling,
+/// anyone who can reach the port can open sockets until the process cannot
+/// make threads any more — and with a two minute read timeout, they need not
+/// even send anything to hold one. Past the ceiling a connection is told so
+/// and closed, which is a better answer than the whole server stopping.
+const MAX_CONNECTIONS: usize = 64;
+
 pub struct Request {
     pub method: String,
     pub path: String,
@@ -133,8 +143,9 @@ where
     H: Fn(&Request) -> Response + Send + Sync + 'static,
 {
     let handle = std::sync::Arc::new(handle);
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for incoming in listener.incoming() {
-        let stream = match incoming {
+        let mut stream = match incoming {
             Ok(stream) => stream,
             // One refused connection is not a reason to stop serving.
             Err(e) => {
@@ -142,12 +153,54 @@ where
                 continue;
             }
         };
+
+        let Some(slot) = Slot::take(&live) else {
+            // Answered rather than dropped, so a client can tell the
+            // difference between a busy server and a broken one.
+            let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+            let _ = Response::text(503, "too many connections; try again")
+                .with_header("Connection", "close")
+                .write_to(&mut stream, false);
+            continue;
+        };
+
         let handle = handle.clone();
         std::thread::spawn(move || {
+            // Held for the life of the connection, and released even if this
+            // thread unwinds.
+            let _slot = slot;
             if let Err(e) = converse(stream, handle.as_ref()) {
                 log::debug!("connection ended: {e}");
             }
         });
+    }
+}
+
+/// One of the [`MAX_CONNECTIONS`] places, given back when it is dropped.
+struct Slot(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Slot {
+    fn take(live: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<Slot> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        // A compare-and-swap loop rather than fetch_add-then-check, so the
+        // count can never briefly read above the ceiling and two arrivals at
+        // once cannot both believe there was room.
+        let mut seen = live.load(Acquire);
+        loop {
+            if seen >= MAX_CONNECTIONS {
+                return None;
+            }
+            match live.compare_exchange_weak(seen, seen + 1, AcqRel, Acquire) {
+                Ok(_) => return Some(Slot(live.clone())),
+                Err(actual) => seen = actual,
+            }
+        }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 

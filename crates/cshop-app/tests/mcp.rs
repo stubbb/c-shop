@@ -470,3 +470,43 @@ fn the_reference_answers_for_every_topic_it_advertises() {
     }
     assert!(mcp::reference::describe("wibble").starts_with("no topic"));
 }
+
+/// A connection costs a thread, and a thread that is merely waiting still
+/// costs a stack. Past the ceiling the server says so and closes, rather than
+/// making threads until it cannot make any more.
+#[test]
+fn too_many_connections_are_refused_rather_than_served() {
+    use std::io::{Read, Write};
+
+    let Some(server) = start("connection-cap", None) else { return };
+
+    // Hold open more than it will serve at once, without sending anything: an
+    // idle connection is the cheapest way to occupy one, and with a two minute
+    // read timeout it stays occupied.
+    let mut held = Vec::new();
+    for _ in 0..80 {
+        match TcpStream::connect(("127.0.0.1", server.port)) {
+            Ok(s) => held.push(s),
+            Err(_) => break,
+        }
+    }
+    assert!(held.len() > 64, "the test needs to get past the ceiling to mean anything");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // One more. It should be answered and closed, not queued forever.
+    let mut extra = TcpStream::connect(("127.0.0.1", server.port)).expect("connect");
+    extra.set_read_timeout(Some(std::time::Duration::from_secs(5))).expect("timeout");
+    let _ = extra.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let mut said = String::new();
+    let _ = extra.read_to_string(&mut said);
+    assert!(
+        said.contains("503"),
+        "a server at capacity should say so: {said:?}"
+    );
+
+    // And when the crowd leaves, it serves again.
+    drop(held);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let answer = request(server.port, "GET /health HTTP/1.1", "");
+    assert_eq!(answer.status, 200, "it should recover once there is room");
+}
