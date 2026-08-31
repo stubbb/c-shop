@@ -24,6 +24,7 @@ pub mod effects;
 pub mod filters;
 pub mod font;
 pub mod shape;
+pub mod smart;
 pub mod text;
 pub mod geom;
 pub mod guides;

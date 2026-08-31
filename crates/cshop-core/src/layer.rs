@@ -201,6 +201,10 @@ pub enum LayerKind {
     Text(Box<TextLayer>),
     /// A re-editable vector shape. Like type, it carries its own raster.
     Shape(Box<ShapeLayer>),
+    /// A picture that remembers what it was made from, so its placement can
+    /// be changed as many times as you like without wearing it out. Carries
+    /// its own raster, as type and shapes do. See [`crate::smart`].
+    Smart(Box<crate::smart::SmartObject>),
 }
 
 /// A shape layer: its geometry and style, and what those look like.
@@ -314,6 +318,7 @@ impl LayerKind {
             LayerKind::Adjustment(_) => "Adjustment",
             LayerKind::Text(_) => "Type",
             LayerKind::Shape(_) => "Shape",
+            LayerKind::Smart(_) => "Smart Object",
         }
     }
 
@@ -420,6 +425,7 @@ impl Layer {
             LayerKind::Raster(s) => s.eight(),
             LayerKind::Text(t) => Some(&t.raster),
             LayerKind::Shape(s) => Some(&s.raster),
+            LayerKind::Smart(s) => Some(s.raster()),
             _ => None,
         }
     }
@@ -435,6 +441,21 @@ impl Layer {
     pub fn text_mut(&mut self) -> Option<&mut TextLayer> {
         match &mut self.kind {
             LayerKind::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The smart object, if this layer is one.
+    pub fn smart(&self) -> Option<&crate::smart::SmartObject> {
+        match &self.kind {
+            LayerKind::Smart(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn smart_mut(&mut self) -> Option<&mut crate::smart::SmartObject> {
+        match &mut self.kind {
+            LayerKind::Smart(s) => Some(s),
             _ => None,
         }
     }
@@ -508,6 +529,13 @@ impl Layer {
         matches!(self.kind, LayerKind::Text(_) | LayerKind::Shape(_))
     }
 
+    /// Layers that show a rendering of something they can re-render. All of
+    /// them can be turned into plain pixels, and none of them can be painted
+    /// on until they are.
+    pub fn is_rendered(&self) -> bool {
+        matches!(self.kind, LayerKind::Text(_) | LayerKind::Shape(_) | LayerKind::Smart(_))
+    }
+
     /// Only true raster layers are writable. Type has to be rasterised
     /// first, as in any layered editor, or an edit would be thrown away the
     /// next time the text was re-rendered.
@@ -562,6 +590,12 @@ impl Layer {
             LayerKind::Shape(s) => {
                 IRect::at(self.offset.0, self.offset.1, s.raster.width(), s.raster.height())
             }
+            LayerKind::Smart(s) => IRect::at(
+                self.offset.0,
+                self.offset.1,
+                s.raster().width(),
+                s.raster().height(),
+            ),
             // Groups, fills and adjustments have no intrinsic extent: a fill
             // and an adjustment both cover the whole canvas, and a group's
             // extent is the union of its children.

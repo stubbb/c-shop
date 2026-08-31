@@ -211,7 +211,10 @@ impl LayerTextures {
         match &layer.kind {
             // Type and shapes are uploaded from their cached raster, so the
             // GPU never needs to know they are anything but pixels.
-            LayerKind::Raster(_) | LayerKind::Text(_) | LayerKind::Shape(_) => {
+            LayerKind::Raster(_)
+            | LayerKind::Text(_)
+            | LayerKind::Shape(_)
+            | LayerKind::Smart(_) => {
                 // A layer with effects uploads the effects and its pixels
                 // composited together, sized to `render_bounds`. Everything
                 // from here on treats that as the layer's texture, so the

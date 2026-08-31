@@ -242,6 +242,8 @@ pub enum Action {
     CancelText,
     /// Turn the active type or shape layer into ordinary pixels.
     RasterizeLayer,
+    /// Wrap the active layer's pixels so its placement stops being an edit.
+    ConvertToSmartObject,
     /// Open the Layer Style dialog for the active layer.
     ShowLayerStyle,
     /// Apply a set of effects to a layer.

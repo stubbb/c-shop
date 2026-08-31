@@ -378,7 +378,10 @@ impl DocView {
         let image = match &layer.kind {
             // Type and shapes show their own rendering, which is more use
             // than a badge when several of them are stacked.
-            LayerKind::Raster(_) | LayerKind::Text(_) | LayerKind::Shape(_) => {
+            LayerKind::Raster(_)
+            | LayerKind::Text(_)
+            | LayerKind::Shape(_)
+            | LayerKind::Smart(_) => {
                 let px = layer.pixels()?;
                 // Keep the aspect ratio inside a square cell.
                 let (w, h) = (px.width().max(1), px.height().max(1));

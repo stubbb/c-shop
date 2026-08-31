@@ -49,11 +49,17 @@ rather than on every stroke.
 
 ## Being able to change your mind later
 
-**Smart objects.** A layer that remembers where its pixels came from and can
-re-render them — so a photograph placed and scaled down can be scaled back up
-without having lost anything, and a change to the source updates every place it
-was used. This is the single biggest structural difference between this editor
-and the ones it is measured against.
+**Smart objects.** ~~A layer that remembers where its pixels came from and can
+re-render them.~~ Done. `Layer ▸ Convert to Smart Object`; after that a
+transform composes onto the placement and the picture is re-rendered from the
+source, so the twentieth is as good as the first and a placement costs the
+history nothing. Saved with the source and the placement rather than the
+rendering, which can be worked out.
+
+What is not there yet is the *linked* half: one source shared between several
+layers, so changing it updates every place it was used. That needs a
+document-level store with references rather than a layer that owns its own
+picture, which is a bigger change than the rest of this was.
 
 **Filters as layer attachments.** Adjustments can already be non-destructive
 layers; filters cannot. A blur that stays editable, on a layer, with its own

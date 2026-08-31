@@ -398,3 +398,44 @@ fn a_guide_count_that_lies_is_not_believed() {
     let back = cshop_io::project::read(&bytes).expect("it should still open");
     assert!(back.guides.len() <= 1, "it read {} of them", back.guides.len());
 }
+
+/// A smart object saves its source and its placement, not its rendering: the
+/// rendering can be worked out exactly and would double the file.
+#[test]
+fn a_smart_object_survives_a_save_and_reopen() {
+    use cshop_core::layer::{Layer, LayerKind};
+    use cshop_core::resample::Resampling;
+    use cshop_core::smart::SmartObject;
+    use cshop_core::transform::Transform;
+
+    let mut source = cshop_core::pixels::PixelBuffer::new(48, 32);
+    for y in 0..32 {
+        for x in 0..48 {
+            let on = (x / 2 + y / 2) % 2 == 0;
+            source.set(x, y, if on { Rgba8::WHITE } else { Rgba8::BLACK });
+        }
+    }
+    let mut smart = SmartObject::new(source.clone());
+    smart.place(Transform::scale(0.5, 0.5), Resampling::Bilinear);
+
+    let mut doc = Document::new("smart", 100, 100, Background::Transparent);
+    let id = doc.tree.alloc_id();
+    doc.tree.push(Layer::new(id, "Placed", LayerKind::Smart(Box::new(smart))), None);
+
+    let back = round_trip(&doc);
+    let layer = back
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|i| back.tree.get(i))
+        .find(|l| l.name == "Placed")
+        .expect("the layer should have come back");
+    let reopened = layer.smart().expect("it should still be a smart object");
+
+    assert_eq!(reopened.source().pixels(), source.pixels(), "the source, sample for sample");
+    assert_eq!(reopened.raster().width(), 24, "re-rendered at the placement it had");
+    // And still reversible, which is the whole point of keeping the source.
+    let mut again = reopened.clone();
+    again.place(Transform::IDENTITY, Resampling::Bilinear);
+    assert_eq!(again.raster().pixels(), source.pixels());
+}

@@ -106,6 +106,14 @@ point text and wrapping paragraph boxes, real or synthesised bold and italic,
 alignment, leading, tracking and anti-aliasing. Edited live on canvas with a
 caret; a whole typing session is a single undo step.
 
+**Smart objects.** A layer that keeps the picture it was made from. Scale a
+raster layer to a quarter and back and you have a quarter of a picture
+stretched over the original space; a smart object treats the placement as a
+setting rather than an edit and re-renders from the original every time, so
+changing your mind twenty times costs exactly what changing it once does — and
+costs the history nothing, since a placement is nine numbers. Saved as the
+source and the placement.
+
 **Layer effects.** Drop shadow, outer glow, bevel and emboss (inner, outer,
 emboss and pillow), inner shadow, inner glow, satin, colour overlay, gradient
 overlay, pattern overlay and stroke — each with its own blend mode, opacity,

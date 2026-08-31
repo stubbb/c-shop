@@ -226,6 +226,18 @@ fn write_layer(w: &mut Writer, doc: &Document, layer: &Layer) {
             w.u8(5);
             write_shape(w, s.content());
         }
+        // The source and the placement; the raster is re-rendered on load,
+        // because keeping it would double the file for something that can be
+        // worked out exactly.
+        LayerKind::Smart(sm) => {
+            w.u8(7);
+            write_pixels(w, sm.source());
+            for row in sm.placement().m {
+                for v in row {
+                    w.f32(v);
+                }
+            }
+        }
     }
 
     match &layer.mask {
@@ -756,6 +768,26 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
             let px = cshop_core::pixels::DeepBuffer::from_pixels(width, height, data)
                 .ok_or_else(|| IoError::Malformed("a layer's size and pixels disagree".into()))?;
             LayerKind::Raster(cshop_core::layer::Surface::Sixteen(px))
+        }
+        7 => {
+            let source = read_pixels(r)?;
+            let mut m = [[0.0f32; 3]; 3];
+            for row in m.iter_mut() {
+                for v in row.iter_mut() {
+                    *v = r.f32()?;
+                }
+            }
+            if !m.iter().flatten().all(|v| v.is_finite()) {
+                return Err(IoError::Malformed(
+                    "a smart object's placement is not a number".into(),
+                ));
+            }
+            let mut smart = cshop_core::smart::SmartObject::new(source);
+            smart.place(
+                cshop_core::transform::Transform { m },
+                cshop_core::resample::Resampling::Bilinear,
+            );
+            LayerKind::Smart(Box::new(smart))
         }
         other => {
             return Err(IoError::Malformed(format!("unknown layer kind {other}")));

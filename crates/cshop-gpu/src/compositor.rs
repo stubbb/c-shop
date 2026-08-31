@@ -704,7 +704,10 @@ impl Plan {
                 // Type and shapes carry their own raster, so they draw
                 // exactly like one. Effects make the drawn area larger than
                 // the layer's own pixels, and the uploaded texture matches.
-                LayerKind::Raster(_) | LayerKind::Text(_) | LayerKind::Shape(_) => {
+                LayerKind::Raster(_)
+                | LayerKind::Text(_)
+                | LayerKind::Shape(_)
+                | LayerKind::Smart(_) => {
                     let bounds = layer.render_bounds();
                     // Skip layers that fall entirely outside the dirty region.
                     if !bounds.intersects(&region) && !next_clips {

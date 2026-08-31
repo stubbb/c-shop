@@ -747,6 +747,92 @@ impl Command for ReplacePixels {
 
 /// Replace a layer's pixels and position wholesale — the result of a
 /// transform, a crop, or anything else that changes a layer's geometry.
+/// Give a smart object a new placement.
+///
+/// The counterpart of [`ReplaceLayerPixels`] for a layer that does not need
+/// its pixels replaced: the placement is a setting, so a transform on a smart
+/// object records the setting and re-renders from the source. Undo puts the
+/// old setting back and re-renders again, which is why this holds no pixels
+/// at all and costs the history nothing.
+#[derive(Debug)]
+pub struct PlaceSmart {
+    id: LayerId,
+    to: (crate::transform::Transform, (i32, i32)),
+    before: Option<(crate::transform::Transform, (i32, i32))>,
+    /// A linked mask still has to be resampled; it has no source to re-render
+    /// from.
+    after_mask: Option<Option<LayerMask>>,
+    before_mask: Option<Option<LayerMask>>,
+    filter: crate::resample::Resampling,
+    label: String,
+}
+
+impl PlaceSmart {
+    pub fn new(
+        id: LayerId,
+        placement: crate::transform::Transform,
+        offset: (i32, i32),
+        mask: Option<LayerMask>,
+        filter: crate::resample::Resampling,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            to: (placement, offset),
+            before: None,
+            after_mask: Some(mask),
+            before_mask: None,
+            filter,
+            label: label.into(),
+        }
+    }
+
+    fn put(&self, doc: &mut Document, to: (crate::transform::Transform, (i32, i32))) -> Dirty {
+        let bounds = doc.bounds();
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        layer.offset = to.1;
+        if let Some(smart) = layer.smart_mut() {
+            smart.place(to.0, self.filter);
+        }
+        Dirty { layers: vec![self.id], rect: bounds, structure: true }
+    }
+}
+
+impl Command for PlaceSmart {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        // A placement is nine numbers. The mask, if one came along, is not.
+        self.before_mask.as_ref().and_then(|m| m.as_ref()).map_or(0, mask_bytes)
+            + self.after_mask.as_ref().and_then(|m| m.as_ref()).map_or(0, mask_bytes)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.before.is_none() {
+            let Some(layer) = doc.tree.get(self.id) else { return Dirty::NONE };
+            let Some(smart) = layer.smart() else { return Dirty::NONE };
+            self.before = Some((smart.placement(), layer.offset));
+            self.before_mask = Some(layer.mask.clone());
+        }
+        let dirty = self.put(doc, self.to);
+        if let (Some(mask), Some(layer)) = (&self.after_mask, doc.tree.get_mut(self.id)) {
+            layer.mask = mask.clone();
+        }
+        dirty
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(before) = self.before else { return Dirty::NONE };
+        let dirty = self.put(doc, before);
+        if let (Some(mask), Some(layer)) = (&self.before_mask, doc.tree.get_mut(self.id)) {
+            layer.mask = mask.clone();
+        }
+        dirty
+    }
+}
+
 #[derive(Debug)]
 pub struct ReplaceLayerPixels {
     id: LayerId,
@@ -1331,6 +1417,64 @@ fn resize_mask(mask: &MaskBuffer, width: u32, height: u32) -> MaskBuffer {
         }
     }
     out
+}
+
+/// Swap one layer kind for another, keeping everything else about the layer.
+///
+/// The general form of [`RasterizeLayer`], for the direction that goes the
+/// other way: wrapping pixels in a smart object, where the picture on screen
+/// does not change and only what can be done to it next does.
+#[derive(Debug)]
+pub struct ReplaceLayerKind {
+    id: LayerId,
+    to: Option<crate::layer::LayerKind>,
+    was: Option<crate::layer::LayerKind>,
+    label: String,
+}
+
+impl ReplaceLayerKind {
+    pub fn new(id: LayerId, to: crate::layer::LayerKind, label: impl Into<String>) -> Self {
+        Self { id, to: Some(to), was: None, label: label.into() }
+    }
+
+    fn swap(&mut self, doc: &mut Document, into: bool) -> Dirty {
+        let slot = if into { &mut self.to } else { &mut self.was };
+        let Some(next) = slot.take() else { return Dirty::NONE };
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        let previous = std::mem::replace(&mut layer.kind, next);
+        if into {
+            self.was = Some(previous);
+        } else {
+            self.to = Some(previous);
+        }
+        Dirty::structural(layer.bounds())
+    }
+}
+
+impl Command for ReplaceLayerKind {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        let held = |k: &Option<crate::layer::LayerKind>| match k {
+            Some(crate::layer::LayerKind::Smart(s)) => {
+                let (w, h) = s.source_size();
+                w as u64 * h as u64 * 4
+            }
+            Some(crate::layer::LayerKind::Raster(s)) => s.bytes(),
+            _ => 0,
+        };
+        held(&self.to) + held(&self.was)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        self.swap(doc, true)
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        self.swap(doc, false)
+    }
 }
 
 /// Turn a vector layer — type or a shape — into ordinary pixels.

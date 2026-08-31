@@ -684,7 +684,18 @@ fn layer_row(
     let p = Palette::DARK;
     let mut out = RowResult::default();
 
-    let (name, visible, is_group, group_expanded, is_active, clipping, has_mask, locked, mask_on) = {
+    let (
+        name,
+        visible,
+        is_group,
+        group_expanded,
+        is_active,
+        clipping,
+        has_mask,
+        locked,
+        mask_on,
+        is_smart,
+    ) = {
         let view = &app.docs[doc_index];
         let Some(l) = view.doc.tree.get(id) else { return out };
         (
@@ -697,6 +708,7 @@ fn layer_row(
             l.mask.is_some(),
             l.locks.any(),
             l.mask.as_ref().is_some_and(|m| m.enabled),
+            l.smart().is_some(),
         )
     };
     // Effects get an "fx" mark and, when the group is open, a line each — the
@@ -891,6 +903,19 @@ fn layer_row(
     );
 
     let mut badge_x = rect.max.x - 6.0;
+    // A smart object looks like any other layer in the panel and behaves
+    // unlike one — it cannot be painted on, and its transforms are free — so
+    // it says which it is.
+    if is_smart {
+        let g = painter.layout_no_wrap(
+            "◇".to_string(),
+            egui::FontId::proportional(12.0),
+            p.accent,
+        );
+        badge_x -= g.size().x + 4.0;
+        painter.galley(egui::pos2(badge_x, rect.center().y - g.size().y / 2.0), g, p.accent);
+        badge_x -= 2.0;
+    }
     // An "fx" mark rather than an icon: it is what the effects are called
     // everywhere else in the interface, and it reads at this size.
     if !effect_names.is_empty() {

@@ -634,12 +634,40 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             ui.separator();
-            let active = app.doc().and_then(|v| v.doc.active.and_then(|id| v.doc.tree.get(id)));
-            let label = match active.map(|l| l.text().is_some()) {
-                Some(true) => "Rasterize Type",
-                _ => "Rasterize Shape",
+            // Read what the two items need before either can push an action,
+            // since pushing borrows the app and the layer came out of it.
+            let (has_pixels, is_smart, rendered, label) = match app
+                .doc()
+                .and_then(|v| v.doc.active.and_then(|id| v.doc.tree.get(id)))
+            {
+                Some(l) => (
+                    l.pixels().is_some(),
+                    l.smart().is_some(),
+                    l.is_rendered(),
+                    match &l.kind {
+                        cshop_core::layer::LayerKind::Text(_) => "Rasterize Type",
+                        cshop_core::layer::LayerKind::Smart(_) => "Rasterize Smart Object",
+                        _ => "Rasterize Shape",
+                    },
+                ),
+                None => (false, false, false, "Rasterize Shape"),
             };
-            if item_enabled(ui, label, "", active.is_some_and(|l| l.is_vector())).clicked() {
+            if item_enabled(
+                ui,
+                "Convert to Smart Object",
+                "",
+                has_pixels && !is_smart,
+            )
+            .on_hover_text(
+                "Keeps the picture it was made from, so scaling and rotating \
+                 can be changed as often as you like without wearing it out",
+            )
+            .clicked()
+            {
+                app.push(Action::ConvertToSmartObject);
+                ui.close();
+            }
+            if item_enabled(ui, label, "", rendered).clicked() {
                 app.push(Action::RasterizeLayer);
                 ui.close();
             }

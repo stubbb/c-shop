@@ -1292,6 +1292,7 @@ impl CShopApp {
             Action::CommitText => self.commit_text(),
             Action::CancelText => self.cancel_text(),
             Action::RasterizeLayer => self.rasterize_layer(),
+            Action::ConvertToSmartObject => self.convert_to_smart_object(),
             Action::ShowLayerStyle => {
                 let Some(view) = self.doc() else { return };
                 let Some(id) = view.doc.active else { return };
@@ -2670,9 +2671,27 @@ impl CShopApp {
             }
             // --- painting the layer's pixels -------------------------------
             EditTarget::Pixels => {
+                // Type, shape and smart layers all *show* a raster, and
+                // `pixels()` hands it over, but what it hands over is a
+                // rendering of something else: painting on it would be thrown
+                // away the next time that something was rendered. Without this
+                // the stroke was accepted and then quietly did nothing, which
+                // looks exactly like a broken brush.
+                if layer.is_rendered() {
+                    let what = match &layer.kind {
+                        cshop_core::layer::LayerKind::Text(_) => "A type layer",
+                        cshop_core::layer::LayerKind::Smart(_) => "A smart object",
+                        _ => "A shape layer",
+                    };
+                    self.fail(format!(
+                        "{what} shows a rendering of something else, so it cannot be \
+                         painted on. Rasterise it first, from the Layer menu."
+                    ));
+                    return;
+                }
                 let Some(px) = layer.pixels() else {
                     let why = self.why_not("Only raster layers can be painted on");
-            self.fail(why);
+                    self.fail(why);
                     return;
                 };
                 // Deliberately not `px.clone()`. On a large canvas that copied
@@ -4605,18 +4624,52 @@ impl CShopApp {
         let Some(view) = self.doc_mut() else { return };
         let Some(id) = view.doc.active else { return };
         let Some(layer) = view.doc.tree.get(id) else { return };
-        if !layer.is_vector() {
-            self.notify("Only type and shape layers can be rasterised");
+        if !layer.is_rendered() {
+            self.notify("Only type, shape and smart layers can be rasterised");
             return;
         }
         let label = match &layer.kind {
             cshop_core::layer::LayerKind::Text(_) => "Rasterize Type",
+            cshop_core::layer::LayerKind::Smart(_) => "Rasterize Smart Object",
             _ => "Rasterize Shape",
         };
         let Some(pixels) = layer.pixels().cloned() else { return };
         let dirty = view.history.apply(
             &mut view.doc,
             Box::new(cshop_core::history::RasterizeLayer::new(id, pixels, label)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Wrap the active raster layer so that placing it stops costing anything.
+    ///
+    /// The pixels it has now become the source, so nothing changes on screen.
+    /// What changes is everything afterwards: scaling, rotating and skewing
+    /// are re-rendered from this picture rather than from the last rendering,
+    /// so they no longer accumulate.
+    fn convert_to_smart_object(&mut self) {
+        self.commit_text();
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        if layer.smart().is_some() {
+            self.notify("That layer is already a smart object");
+            return;
+        }
+        let Some(pixels) = layer.pixels().cloned() else {
+            let why = self.why_not("Only layers with pixels can become smart objects");
+            self.fail(why);
+            return;
+        };
+        let smart = cshop_core::smart::SmartObject::new(pixels);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceLayerKind::new(
+                id,
+                cshop_core::layer::LayerKind::Smart(Box::new(smart)),
+                "Convert to Smart Object",
+            )),
         );
         view.mark_dirty(dirty);
         view.invalidate();
@@ -5413,6 +5466,29 @@ impl CShopApp {
             })
         });
 
+        // A smart object is not resampled. The transform composes onto its
+        // placement and the picture is re-rendered from the source, so a
+        // twentieth transform is exactly as good as the first — which is the
+        // entire reason the kind exists.
+        if let Some((placement, moved)) = self.smart_placement_after(&active) {
+            let Some(view) = self.doc_mut() else { return };
+            let dirty = view.history.apply(
+                &mut view.doc,
+                Box::new(cshop_core::history::PlaceSmart::new(
+                    active.layer,
+                    placement,
+                    moved,
+                    mask,
+                    active.filter,
+                    "Free Transform",
+                )),
+            );
+            view.mark_dirty(dirty);
+            view.invalidate();
+            return;
+        }
+
+        let Some(view) = self.doc_mut() else { return };
         let dirty = view.history.apply(
             &mut view.doc,
             Box::new(ReplaceLayerPixels::new(
@@ -5426,6 +5502,55 @@ impl CShopApp {
         view.mark_dirty(dirty);
         view.invalidate();
         let _ = gpu;
+    }
+
+    /// Where a smart object's placement and offset end up after a transform,
+    /// or `None` when the layer is not one.
+    ///
+    /// The layer's own offset carries translation, so the placement holds only
+    /// the linear part: the new one is the transform's linear part applied to
+    /// the old. The offset then has to be worked out so the source's centre
+    /// lands where the transform sends it, because re-rendering at a new
+    /// placement changes the size of the raster and so where its top-left is.
+    fn smart_placement_after(
+        &self,
+        active: &crate::transform_tool::ActiveTransform,
+    ) -> Option<(cshop_core::transform::Transform, (i32, i32))> {
+        use cshop_core::geom::Vec2;
+        use cshop_core::transform::Transform;
+
+        let view = self.doc()?;
+        let layer = view.doc.tree.get(active.layer)?;
+        let smart = layer.smart()?;
+        let m = active.matrix()?;
+        let old = smart.placement();
+
+        let mut next = Transform::IDENTITY;
+        for i in 0..2 {
+            for j in 0..2 {
+                next.m[i][j] = (0..2).map(|k| m.m[i][k] * old.m[k][j]).sum();
+            }
+        }
+
+        // Where the source's centre is now, and where the transform sends it.
+        let (sw, sh) = smart.source_size();
+        let centre = Vec2::new(sw as f32 / 2.0, sh as f32 / 2.0);
+        let raster = layer.pixels()?;
+        let here = Vec2::new(
+            layer.offset.0 as f32 + raster.width() as f32 / 2.0,
+            layer.offset.1 as f32 + raster.height() as f32 / 2.0,
+        );
+        let there = m.apply(here);
+
+        // The new raster's size, which decides where its top-left goes.
+        let mut probe = smart.clone();
+        probe.place(next, active.filter);
+        let (nw, nh) = (probe.raster().width() as f32, probe.raster().height() as f32);
+        let _ = centre;
+        Some((
+            next,
+            ((there.x - nw / 2.0).round() as i32, (there.y - nh / 2.0).round() as i32),
+        ))
     }
 
     /// Rotate or flip the active layer by a fixed amount.
