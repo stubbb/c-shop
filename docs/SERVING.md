@@ -147,6 +147,21 @@ localhost without one would hand that to anyone who can reach the port.
 Either pass --token SECRET, or bind to 127.0.0.1.
 ```
 
+Set the token in the environment rather than on the command line:
+
+```sh
+export CSHOP_TOKEN="$(openssl rand -hex 24)"
+cshop --serve 0.0.0.0:7333 --workspace ~/pictures
+```
+
+A command line is world-readable through `/proc`, so `--token` puts the secret
+where every account on the machine can read it for as long as the server runs.
+An environment block is readable only by its owner. The flag still works and
+still wins, but it says why it is the wrong door.
+
+The editor removes `CSHOP_TOKEN` from its own environment once it has read it,
+so the model sidecar — which would otherwise inherit it — never sees it.
+
 With a token, `Authorization: Bearer SECRET` is required on `/mcp`, compared in
 constant time. `/health` stays open so a monitor need not hold the secret.
 
@@ -173,7 +188,8 @@ cshop --serve 0.0.0.0:7333 --token "$(openssl rand -hex 32)" --workspace /srv/pi
 ```
 --serve [ADDR]          host:port, a bare port, or nothing (127.0.0.1:7333)
 --workspace DIR         the only directory scripts may touch (default: cwd)
---token SECRET          require Authorization: Bearer SECRET
+--token SECRET          require Authorization: Bearer SECRET; prefer
+                        the CSHOP_TOKEN environment variable
 --allow-origin ORIGIN   permit a browser origin besides localhost
 ```
 

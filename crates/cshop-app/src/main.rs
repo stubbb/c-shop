@@ -27,7 +27,10 @@ SERVE OPTIONS:
     --workspace DIR                 the only directory scripts may touch
                                     (default: the working directory)
     --token SECRET                  require `Authorization: Bearer SECRET`;
-                                    mandatory when ADDR is not loopback
+                                    mandatory when ADDR is not loopback.
+                                    Prefer the CSHOP_TOKEN environment
+                                    variable: an argument is visible to
+                                    every process on the machine
     --allow-origin ORIGIN           permit a browser origin besides localhost
 
 SCREENSHOT OPTIONS:
@@ -104,6 +107,8 @@ fn main() {
     let mut serve: Option<String> = None;
     let mut workspace: Option<String> = None;
     let mut token: Option<String> = None;
+    // Only to warn about it: see `token_for_serving`.
+    let mut token_came_from_argv = false;
     let mut allow_origins: Vec<String> = Vec::new();
     let mut drag: Option<(f32, f32, f32, f32)> = None;
     let mut demo_curves = false;
@@ -155,6 +160,7 @@ fn main() {
             "--token" => {
                 i += 1;
                 token = args.get(i).cloned();
+                token_came_from_argv = true;
             }
             "--allow-origin" => {
                 i += 1;
@@ -248,7 +254,7 @@ fn main() {
             workspace: workspace
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-            token,
+            token: mcp::server::token_for_serving(token, token_came_from_argv),
             allow_origins,
         };
         if let Err(e) = mcp::server::serve(config) {

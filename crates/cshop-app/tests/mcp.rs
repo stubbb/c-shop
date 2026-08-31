@@ -510,3 +510,53 @@ fn too_many_connections_are_refused_rather_than_served() {
     let answer = request(server.port, "GET /health HTTP/1.1", "");
     assert_eq!(answer.status, 200, "it should recover once there is room");
 }
+
+/// Where the token comes in, and where it must not end up.
+///
+/// A command line is world-readable through `/proc`; an environment is not.
+/// But an environment is *inherited*, and this process starts the model
+/// sidecar — so having read the token it takes it back out, and the check that
+/// matters is what a child can see.
+#[test]
+fn the_token_comes_from_the_environment_and_does_not_travel_further() {
+    use std::process::Command;
+
+    let child_sees = || -> String {
+        Command::new("env")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+
+    std::env::set_var("CSHOP_TOKEN", "from-the-environment");
+    assert!(
+        child_sees().contains("CSHOP_TOKEN=from-the-environment"),
+        "the test is only meaningful if a child would otherwise inherit it"
+    );
+
+    let token = mcp::server::token_for_serving(None, false);
+    assert_eq!(token.as_deref(), Some("from-the-environment"));
+    assert!(
+        std::env::var("CSHOP_TOKEN").is_err(),
+        "it should be taken out of the environment once read"
+    );
+    assert!(
+        !child_sees().contains("CSHOP_TOKEN"),
+        "and so must not reach anything this process starts"
+    );
+
+    // An empty one is not a token; it is someone leaving the variable unset in
+    // a way that a shell turns into an empty string.
+    std::env::set_var("CSHOP_TOKEN", "");
+    assert_eq!(mcp::server::token_for_serving(None, false), None);
+
+    // The flag still works, and still wins, because a flag that stops working
+    // is worse than one that is merely discouraged.
+    std::env::set_var("CSHOP_TOKEN", "from-the-environment");
+    let token = mcp::server::token_for_serving(Some("from-the-flag".into()), true);
+    assert_eq!(token.as_deref(), Some("from-the-flag"));
+    assert!(
+        std::env::var("CSHOP_TOKEN").is_err(),
+        "and the environment is cleared either way, so a stale one cannot follow"
+    );
+}

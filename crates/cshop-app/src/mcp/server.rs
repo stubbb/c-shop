@@ -88,6 +88,35 @@ pub fn serve(config: Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Where the bearer token comes from.
+///
+/// The environment first, because a command line is not private: on Linux
+/// `/proc/<pid>/cmdline` is world-readable, so `--token` puts the secret where
+/// every account on the machine can read it for as long as the server runs.
+/// An environment block is readable only by its owner.
+///
+/// It is then removed from this process's environment, so that the model
+/// sidecar — which inherits it — never sees it either. Nothing else needs it
+/// once it has been read.
+///
+/// `--token` still works, because a flag that stops working is worse than one
+/// that is merely discouraged, but it says why it is the wrong door.
+pub fn token_for_serving(from_argv: Option<String>, was_given: bool) -> Option<String> {
+    if was_given {
+        log::warn!(
+            "--token puts the secret in this process's command line, which any \
+             account on this machine can read; set CSHOP_TOKEN instead"
+        );
+        // Still take the environment out of the way, so a stale one cannot
+        // reach the sidecar.
+        std::env::remove_var("CSHOP_TOKEN");
+        return from_argv;
+    }
+    let from_env = std::env::var("CSHOP_TOKEN").ok().filter(|t| !t.is_empty());
+    std::env::remove_var("CSHOP_TOKEN");
+    from_env
+}
+
 fn is_loopback(addr: &SocketAddr) -> bool {
     match addr.ip() {
         IpAddr::V4(ip) => ip.is_loopback(),

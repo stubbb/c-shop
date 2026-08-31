@@ -135,7 +135,7 @@ volumes:
 
 | Variable | Default | |
 |---|---|---|
-| `CSHOP_TOKEN` | generated, logged | Bearer token required on `/mcp`. |
+| `CSHOP_TOKEN` | generated, logged | Bearer token required on `/mcp`. Read from the environment, never passed as an argument — a command line is world-readable through `/proc` — and removed from the environment once read, so nothing the editor starts inherits it. |
 | `CSHOP_ADDR` | `0.0.0.0:7333` | Where to bind inside the container. |
 | `CSHOP_WORKSPACE` | `/workspace` | The only directory scripts may touch. |
 | `CSHOP_ALLOW_ORIGINS` | — | Comma-separated browser origins to permit. |

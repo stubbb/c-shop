@@ -48,7 +48,12 @@ if [ -z "${CSHOP_TOKEN:-}" ]; then
     echo "-----------------------------------------------------------------"
 fi
 
-set -- --serve "$ADDR" --workspace "$WORKSPACE" --token "$CSHOP_TOKEN"
+# The token travels in the environment, never in the argument list: a command
+# line is world-readable through /proc, and an environment block is not. The
+# editor reads CSHOP_TOKEN itself and takes it back out of the environment
+# before anything it starts could inherit it.
+export CSHOP_TOKEN
+set -- --serve "$ADDR" --workspace "$WORKSPACE"
 
 # Comma-separated, because one environment variable travels through compose and
 # orchestrators more easily than a repeated flag.
