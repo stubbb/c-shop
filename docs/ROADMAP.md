@@ -183,21 +183,42 @@ back out, whole.
 
 Each of these is mostly composition of pieces that already exist.
 
-**Replacing a sky.** The labeller already finds the sky, the inpainter already
-fills what is removed, and the colour work already knows how to match one
-picture's light to another's. What is missing is the single command that does
-all three and the judgement about the horizon.
+**Replacing a sky.** ~~The pieces exist; the command that joins them does
+not.~~ Done, on `Image ▸ Replace Sky` and `sky`. The judgement about the
+horizon turned out to be three judgements: where it is (the lowest row that is
+*mostly* sky, not the lowest row containing any — a gap between two buildings
+is not a horizon), which way to soften the join (into the sky, since sky on a
+branch reads as sky seen through it and a branch in the sky reads as a
+mistake), and how far to grow the mask first (a label boundary falls just
+inside the sky, and what is left behind is the pale fringe that announces a
+replacement from across a room).
 
-**Retouching a face.** A face detector, then the denoiser at low strength
-inside the mask — smoothing skin without smoothing eyes and hair.
+**Retouching a face.** ~~A detector, then smoothing inside the mask.~~ Done, on
+`Image ▸ Retouch Skin` and `retouch`. The surface blur turned out to be exactly
+the right tool and was already here: its threshold is the distinction between
+texture and feature, which is the whole problem. Some of the texture goes back
+afterwards, because skin with no grain at all is what "retouched" looks like
+from across a room. The detector finds people rather than faces, so the head is
+taken as a share of the box — a share that depends on how much of the body is
+in frame.
 
-**Colouring a photograph that has no colour.** There is no usable exported
-model for this that I could find; it would need one to be converted first.
+**Colouring a photograph that has no colour.** Still not here, and still for
+the same reason: there is no usable exported model, and this build has no
+network to fetch one with even if there were. It waits on a conversion, not on
+effort.
 
-**Effects that use the depth.** Fog that thickens with distance, a shallow
-depth of field applied after the fact, a parallax nudge. The depth is already
-computed and already available as a mask; these are ordinary filters that read
-it.
+**Effects that use the depth.** ~~Fog, a shallow depth of field, a parallax
+nudge.~~ Done, on `Image ▸ Depth Effects…` and `haze`, `focus`, `parallax` —
+three effects sharing one depth map, because working the depth out is the
+expensive part.
+
+Parallax had to be turned inside out. Asked forwards — where does each pixel
+go — rounding sends two neighbours to the same place and skips the one between,
+so a solid object comes out with a comb of one-pixel holes through it. On a
+photograph that showed as streaks along every depth cliff, which is how it was
+found. Asked backwards — which pixel ends up here — every pixel is filled
+exactly once by construction, and where two land in the same place the nearer
+one wins, which is what occlusion is.
 
 ## Under the floor
 

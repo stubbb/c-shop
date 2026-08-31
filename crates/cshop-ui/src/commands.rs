@@ -385,6 +385,19 @@ pub enum Action {
     SetDepth(u8),
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
+    /// Find the sky and put a different one in.
+    ReplaceSky,
+    /// Smooth skin without smoothing eyes and hair.
+    RetouchSkin,
+    /// Open the window for effects that read the depth.
+    ShowDepthFx,
+    /// Re-render what it is showing.
+    PreviewDepthFx,
+    /// Keep it.
+    KeepDepthFx,
+    /// Throw it away and put the layer back.
+    CancelDepthFx,
+
     /// Show one frame of the animation.
     ShowFrame(usize),
     /// Start or stop playing it.

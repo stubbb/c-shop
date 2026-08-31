@@ -15,6 +15,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod context_menus;
 pub mod denoise_ui;
+pub mod depth_ui;
 pub mod dialogs;
 pub mod doc_view;
 pub mod filter_ui;

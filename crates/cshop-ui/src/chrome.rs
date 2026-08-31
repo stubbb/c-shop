@@ -457,6 +457,36 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ShowRelight);
                 ui.close();
             }
+            if item_enabled(ui, "Replace Sky", "", has_doc)
+                .on_hover_text(
+                    "Finds the sky, puts a new one in, and carries its light into the \
+                     foreground — otherwise it is a grey day with a blue sky pasted on",
+                )
+                .clicked()
+            {
+                app.push(Action::ReplaceSky);
+                ui.close();
+            }
+            if item_enabled(ui, "Retouch Skin", "", has_doc)
+                .on_hover_text(
+                    "Smooths skin and not eyes or hair, inside the selection or over \
+                     whatever faces are found",
+                )
+                .clicked()
+            {
+                app.push(Action::RetouchSkin);
+                ui.close();
+            }
+            if item_enabled(ui, "Depth Effects…", "", has_doc)
+                .on_hover_text(
+                    "Haze that thickens with distance, a shallow depth of field applied \
+                     after the fact, and a shift of viewpoint — all from the same depth",
+                )
+                .clicked()
+            {
+                app.push(Action::ShowDepthFx);
+                ui.close();
+            }
             if item_enabled(ui, "Separate by Content…", "", has_doc).clicked() {
                 app.push(Action::ShowSeparate);
                 ui.close();

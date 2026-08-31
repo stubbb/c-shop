@@ -124,6 +124,22 @@ rather than the small rectangle that changed. Both formats write back out
 whole; before this, opening one gave back its first frame and dropped the rest
 in silence.
 
+**Depth.** The depth model's answer drives three effects that are impossible
+without it and ordinary with it: haze that thickens with distance, a shallow
+depth of field applied to a photograph that was not taken with one, and a shift
+of viewpoint. They share one depth map, because working it out is the expensive
+part.
+
+**Replacing a sky, and retouching skin.** Both are compositions of pieces that
+were already here, and both turned out to be mostly judgement rather than
+machinery. A replaced sky needs its horizon found where the sky *mostly* stops,
+its join softened into the sky rather than into the trees, its mask grown
+before it is softened, and the foreground given some of the new sky's colour —
+without that last one it is a grey day with a blue sky pasted on. Skin
+smoothing needs the surface blur, whose threshold is exactly the distinction
+between texture and feature, and needs some of the texture put back, because
+skin with no grain at all is what "retouched" looks like from across a room.
+
 **Raw.** Files that describe themselves — DNG, and the raw formats
 DNG-shaped enough to carry the same tags — open as developed sixteen-bit
 pictures: black subtracted, the camera's own white balance and colour matrix

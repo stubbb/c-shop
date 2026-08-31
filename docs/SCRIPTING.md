@@ -100,6 +100,11 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `info` | Report the document's size, layer count and working colour space. |
 | `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
+| `haze [density= start= falloff= color=]` | Atmosphere that thickens with distance. Needs the [vision pack](VISION.md). |
+| `focus [at= range= blur= far-only]` | A shallow depth of field, applied after the fact. |
+| `parallax [SHIFT] [vertical]` | A shift of viewpoint: near things move further than far ones. |
+| `sky [PATH] [grow= feather= relight= offset= scale= zenith= horizon=]` | Find the sky and put a different one in. Without a path it builds a gradient. |
+| `retouch [radius= threshold= amount= texture= all]` | Smooth skin and not eyes or hair, inside the selection or over the faces found. |
 | `align [shift\|similarity\|camera] [stack]` | Move every layer onto the bottom one by what they have in common; `stack` also averages them. |
 | `straighten X0 Y0 X1 Y1 X2 Y2 X3 Y3 [filter=]` | Put four points, top-left then clockwise, on something rectangular; the projection that made it a quadrilateral is undone. |
 | `resize W H content-aware [no-protect]` | Carve seams instead of resampling, so what is in the picture keeps its proportions. |

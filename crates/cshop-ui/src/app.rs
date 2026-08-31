@@ -163,6 +163,8 @@ pub struct CShopApp {
     lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
     /// A content-aware scale running on a worker thread.
     carve_job: Option<CarveJob>,
+    /// A model-driven whole-layer edit running on a worker thread.
+    model_job: Option<ModelJob>,
     /// The denoising run, while it works its way through the tiles.
     denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
     /// The depth model, while it looks at the picture.
@@ -302,6 +304,7 @@ impl CShopApp {
             segment_job: None,
             lens_job: None,
             carve_job: None,
+            model_job: None,
             denoise_job: None,
             upscale_job: None,
             separate_job: None,
@@ -465,6 +468,7 @@ impl CShopApp {
         self.poll_lens(&ctx);
         self.poll_carve(&ctx);
         self.poll_playback(&ctx);
+        self.poll_model_edit(&ctx);
         self.poll_denoise(&ctx);
         self.poll_upscale(&ctx);
         self.poll_separate(&ctx);
@@ -535,6 +539,7 @@ impl CShopApp {
             Dialog::ImageSize(d) => d.title(),
             Dialog::Rename(_) => "Rename Layer",
             Dialog::Segment(d) => d.title(),
+            Dialog::DepthFx(d) => d.title(),
             Dialog::ColorRange(_) => "Colour Range",
             Dialog::RefineEdge(_) => "Refine Edge",
             Dialog::Fill(_) => "Fill",
@@ -601,6 +606,7 @@ impl CShopApp {
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
                 Dialog::Filter(d) => close = d.ui(ui, &mut actions),
+                Dialog::DepthFx(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorRange(d) => close = d.ui(ui, &mut actions),
                 Dialog::RefineEdge(d) => close = d.ui(ui, &mut actions),
                 Dialog::About => {
@@ -1824,6 +1830,13 @@ impl CShopApp {
                     "Now 8 bits a channel".to_string()
                 });
             }
+            Action::ReplaceSky => self.replace_sky(),
+            Action::RetouchSkin => self.retouch_skin(),
+            Action::ShowDepthFx => self.show_depth_fx(),
+            Action::PreviewDepthFx => self.preview_depth_fx(),
+            Action::KeepDepthFx => self.keep_depth_fx(),
+            Action::CancelDepthFx => self.cancel_depth_fx(),
+
             Action::ShowFrame(n) => {
                 self.playing = false;
                 let Some(view) = self.doc_mut() else { return };
@@ -3672,6 +3685,15 @@ impl CShopApp {
                     self.finish_depth_mask(id, invert, map);
                     return;
                 }
+                // A third consumer of the same answer: the effects that read
+                // the depth rather than light with it.
+                if let Dialog::DepthFx(d) = &mut self.dialog {
+                    d.depth = Some(std::sync::Arc::new(map));
+                    d.busy = false;
+                    d.status = "Ready.".into();
+                    self.dispatch(Action::PreviewDepthFx);
+                    return;
+                }
                 let lit = match &mut self.dialog {
                     Dialog::Relight(d) => {
                         d.depth = Some(std::sync::Arc::new(map));
@@ -3687,6 +3709,273 @@ impl CShopApp {
                 }
             }
         }
+    }
+
+    /// Run a whole-layer edit that needs a model, on a worker thread.
+    ///
+    /// The models take between a third of a second and a second, which is too
+    /// long to stop the interface for and too short to want a window with a
+    /// progress bar. So: a toast on the way in, a toast on the way out, and
+    /// one undo step.
+    fn start_model_edit(
+        &mut self,
+        label: &'static str,
+        saying: &str,
+        work: impl FnOnce(PixelBuffer) -> Result<PixelBuffer, String> + Send + 'static,
+    ) {
+        if self.model_job.is_some() {
+            self.notify("Something is already running");
+            return;
+        }
+        let Some(view) = self.doc() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(source) = layer.pixels().cloned() else {
+            let why = self.why_not("That needs a raster layer");
+            self.fail(why);
+            return;
+        };
+        if !crate::vision::is_available() {
+            self.fail(crate::vision::NOT_INSTALLED);
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work(source));
+        });
+        self.model_job = Some(ModelJob { layer: id, label, done: rx });
+        self.notify(saying.to_string());
+    }
+
+    /// Collect a model-driven edit when it finishes.
+    pub fn poll_model_edit(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.model_job else { return };
+        let (id, label) = (job.layer, job.label);
+        match job.done.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
+            Err(_) => {
+                self.model_job = None;
+                self.fail("That stopped without finishing");
+            }
+            Ok(Err(why)) => {
+                self.model_job = None;
+                self.fail(why);
+            }
+            Ok(Ok(pixels)) => {
+                self.model_job = None;
+                let Some(view) = self.doc_mut() else { return };
+                let Some(layer) = view.doc.tree.get(id) else { return };
+                let rect = layer.bounds();
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(ReplacePixels::new(id, rect, pixels, label)),
+                );
+                view.mark_dirty(dirty);
+                view.invalidate();
+                self.notify(format!("{label} done"));
+            }
+        }
+    }
+
+    /// Find the sky and put a different one in.
+    fn replace_sky(&mut self) {
+        self.start_model_edit("Replace Sky", "Looking for the sky…", |source| {
+            let dir = crate::vision::scratch();
+            let result = (|| {
+                crate::vision::make_scratch(&dir)
+                    .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                let input = dir.join("source.png");
+                let map_path = dir.join("labels.png");
+                cshop_io::save(&input, &source, 100)
+                    .map_err(|e| format!("could not write the image for the model: {e}"))?;
+                let answer = crate::vision::classify(&input, &map_path)?;
+                let map = cshop_io::load(&answer.map)
+                    .map_err(|e| format!("could not read the map back: {e}"))?;
+                let region = answer
+                    .regions
+                    .iter()
+                    .find(|r| r.class.eq_ignore_ascii_case("sky"))
+                    .ok_or_else(|| {
+                        let names: Vec<String> =
+                            answer.regions.iter().take(6).map(|r| r.class.clone()).collect();
+                        format!(
+                            "There is no sky in this picture. It holds: {}",
+                            if names.is_empty() {
+                                "nothing recognised".into()
+                            } else {
+                                names.join(", ")
+                            }
+                        )
+                    })?;
+                let (w, h) = (source.width(), source.height());
+                let mut mask = cshop_core::mask::MaskBuffer::hide_all(w, h);
+                for y in 0..h as i32 {
+                    for x in 0..w as i32 {
+                        let sx = x * map.width() as i32 / w.max(1) as i32;
+                        let sy = y * map.height() as i32 / h.max(1) as i32;
+                        if map.get(sx, sy).r == region.id {
+                            mask.set(x, y, 255);
+                        }
+                    }
+                }
+                let new_sky = cshop_core::sky::gradient(
+                    w,
+                    h,
+                    Rgba8::opaque(48, 96, 190),
+                    Rgba8::opaque(196, 214, 238),
+                );
+                Ok(cshop_core::sky::replace(
+                    &source,
+                    &mask,
+                    &new_sky,
+                    cshop_core::sky::SkyReplace::default(),
+                ))
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            result
+        });
+    }
+
+    /// Smooth skin without smoothing eyes and hair.
+    fn retouch_skin(&mut self) {
+        let selection = self.doc().and_then(|v| v.doc.selection.as_ref().map(|s| s.to_mask()));
+        self.start_model_edit("Retouch Skin", "Looking for faces…", move |source| {
+            use cshop_core::skin::{head_of, SkinSmooth};
+            let (w, h) = (source.width(), source.height());
+            // A selection says where; without one, the detector does.
+            let mask = match selection {
+                Some(m) => Some(m),
+                None => {
+                    let dir = crate::vision::scratch();
+                    let found = (|| {
+                        crate::vision::make_scratch(&dir)
+                            .map_err(|e| format!("could not use a scratch directory: {e}"))?;
+                        let input = dir.join("source.png");
+                        cshop_io::save(&input, &source, 100)
+                            .map_err(|e| format!("could not write the image: {e}"))?;
+                        crate::vision::detect(&input, 0.3, "person")
+                    })();
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let people = found?;
+                    if people.is_empty() {
+                        return Err(
+                            "No people found. Select the skin to smooth first."
+                                .to_string(),
+                        );
+                    }
+                    let mut mask = cshop_core::mask::MaskBuffer::hide_all(w, h);
+                    for person in &people {
+                        let (bw, bh) = (person.width(), person.height());
+                        let head_h = bh * head_of(bw, bh);
+                        let (cx, cy) =
+                            (person.box_[0] + bw / 2.0, person.box_[1] + head_h / 2.0);
+                        let (rx, ry) = (bw * 0.5, head_h * 0.5);
+                        for y in 0..h as i32 {
+                            for x in 0..w as i32 {
+                                let dx = (x as f32 - cx) / rx.max(1.0);
+                                let dy = (y as f32 - cy) / ry.max(1.0);
+                                let d = (dx * dx + dy * dy).sqrt();
+                                let v = (((1.0 - (d - 0.75) / 0.25).clamp(0.0, 1.0)) * 255.0) as u8;
+                                if v > mask.get(x, y) {
+                                    mask.set(x, y, v);
+                                }
+                            }
+                        }
+                    }
+                    Some(mask)
+                }
+            };
+            Ok(SkinSmooth::default().apply(&source, mask.as_ref()))
+        });
+    }
+
+    /// Open the window for the effects that read the depth, and ask for it.
+    fn show_depth_fx(&mut self) {
+        let Some(view) = self.doc() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(before) = layer.pixels().cloned() else {
+            let why = self.why_not("Depth effects apply to raster layers");
+            self.fail(why);
+            return;
+        };
+        let dialog = crate::depth_ui::DepthFxDialog::new(id, before.clone());
+        let ask = !dialog.unavailable;
+        self.dialog = Dialog::DepthFx(Box::new(dialog));
+        if ask {
+            self.start_depth(before);
+        }
+    }
+
+    /// Show what the settings produce, straight on the canvas.
+    fn preview_depth_fx(&mut self) {
+        let Dialog::DepthFx(d) = &self.dialog else { return };
+        let (id, rendered) = (d.layer, d.rendered());
+        let Some(pixels) = rendered else { return };
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get_mut(id) else { return };
+        let bounds = layer.bounds();
+        if let Some(px) = layer.pixels_mut() {
+            *px = pixels;
+        }
+        view.mark_dirty(cshop_core::document::Dirty::pixels(id, bounds));
+        view.invalidate();
+        if let Dialog::DepthFx(d) = &mut self.dialog {
+            d.showing = true;
+        }
+    }
+
+    /// Keep what is showing, as one entry.
+    fn keep_depth_fx(&mut self) {
+        let Dialog::DepthFx(d) = &self.dialog else { return };
+        let (id, before) = (d.layer, d.before.clone());
+        let Some(after) = d.rendered() else {
+            self.cancel_depth_fx();
+            return;
+        };
+        if after.pixels() == before.pixels() {
+            self.cancel_depth_fx();
+            return;
+        }
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let offset = layer.offset;
+        // Put the original back first, so the entry's "before" is the truth
+        // rather than the preview that is currently showing.
+        if let Some(px) = view.doc.tree.get_mut(id).and_then(|l| l.pixels_mut()) {
+            *px = before;
+        }
+        let rect = cshop_core::geom::IRect::at(
+            offset.0,
+            offset.1,
+            after.width(),
+            after.height(),
+        );
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(ReplacePixels::new(id, rect, after, "Depth Effects")),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Throw it away and put the layer back.
+    fn cancel_depth_fx(&mut self) {
+        let Dialog::DepthFx(d) = &self.dialog else { return };
+        if !d.showing {
+            return;
+        }
+        let (id, before) = (d.layer, d.before.clone());
+        let Some(view) = self.doc_mut() else { return };
+        let Some(layer) = view.doc.tree.get_mut(id) else { return };
+        let bounds = layer.bounds();
+        if let Some(px) = layer.pixels_mut() {
+            *px = before;
+        }
+        view.mark_dirty(cshop_core::document::Dirty::pixels(id, bounds));
+        view.invalidate();
     }
 
     /// Show a lighting straight on the canvas, without a history entry.
@@ -6890,6 +7179,14 @@ impl CShopApp {
     }
 }
 
+/// A whole-layer edit that needs a model, while it runs: which layer it
+/// applies to, what to call the undo step, and where the answer will arrive.
+struct ModelJob {
+    layer: LayerId,
+    label: &'static str,
+    done: std::sync::mpsc::Receiver<Result<PixelBuffer, String>>,
+}
+
 /// A content-aware scale on a worker thread: where the carved layers will
 /// arrive, how many seams are done, how many were asked for, and the size the
 /// document is heading for.
@@ -6989,6 +7286,7 @@ fn window_key(dialog: &Dialog) -> Option<&'static str> {
         Dialog::None => return None,
         Dialog::LayerStyle(_) => "window-layer-style",
         Dialog::Segment(_) => "window-segment",
+        Dialog::DepthFx(_) => "window-depth-fx",
         Dialog::ColorRange(_) => "window-color-range",
         Dialog::RefineEdge(_) => "window-refine-edge",
         Dialog::Filter(_) => "window-filter",

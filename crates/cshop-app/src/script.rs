@@ -762,8 +762,13 @@ impl Runner {
             "denoise" => self.cmd_denoise(cmd),
             "upscale" => self.cmd_upscale(cmd),
             "separate" => self.cmd_separate(cmd),
+            "sky" => self.cmd_sky(cmd),
+            "retouch" => self.cmd_retouch(cmd),
             "inpaint" => self.cmd_inpaint(cmd),
             "relight" => self.cmd_relight(cmd),
+            "haze" | "fog" => self.cmd_depth_fx(cmd, "fog"),
+            "focus" => self.cmd_depth_fx(cmd, "focus"),
+            "parallax" => self.cmd_depth_fx(cmd, "parallax"),
             "depth" => self.cmd_depth(cmd),
             "guide" => self.cmd_guide(cmd),
             "straighten" => self.cmd_straighten(cmd),
@@ -772,7 +777,8 @@ impl Runner {
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
                  order, info, profile, mode, lens, denoise, upscale, separate, \
-                 inpaint, depth, relight, guide, straighten, align, export, save"
+                 inpaint, depth, relight, haze, focus, parallax, sky, retouch, \
+                 guide, straighten, align, export, save"
             )),
         }
     }
@@ -1496,6 +1502,83 @@ impl Runner {
     }
 
     /// Light the picture again from a guess at its shape.
+    /// The three effects that read the depth rather than light with it.
+    ///
+    /// One command each rather than one with a mode, because they take
+    /// different settings and a script reads better saying what it wants.
+    fn cmd_depth_fx(&mut self, cmd: &Command, which: &str) -> Result<String, String> {
+        use cshop_core::depth_fx::{Focus, Fog, Parallax};
+        self.need_doc()?;
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer")?;
+        let map = self.depth_of(id)?;
+        let before = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels")?;
+
+        let (after, said) = match which {
+            "fog" => {
+                let fog = Fog {
+                    colour: cmd.color("color")?.unwrap_or(Fog::default().colour),
+                    density: cmd.f32("density")?.unwrap_or(0.6).clamp(0.0, 1.0),
+                    start: cmd.f32("start")?.unwrap_or(0.15).clamp(0.0, 1.0),
+                    falloff: cmd.f32("falloff")?.unwrap_or(1.6).clamp(0.05, 8.0),
+                };
+                (fog.apply(&before, &map), format!("hazed at {:.2}", fog.density))
+            }
+            "focus" => {
+                let focus = Focus {
+                    at: cmd.f32("at")?.unwrap_or(0.7).clamp(0.0, 1.0),
+                    range: cmd.f32("range")?.unwrap_or(0.15).clamp(0.0, 1.0),
+                    blur: cmd.f32("blur")?.unwrap_or(12.0).clamp(0.0, 200.0),
+                    both_ways: !cmd.flag("far-only"),
+                };
+                (
+                    focus.apply(&before, &map),
+                    format!("focused at {:.2} with {:.0} px of blur", focus.at, focus.blur),
+                )
+            }
+            _ => {
+                let shift = Parallax {
+                    shift: cmd
+                        .f32("shift")?
+                        .or_else(|| cmd.args.first().and_then(|a| a.parse().ok()))
+                        .unwrap_or(12.0)
+                        .clamp(-400.0, 400.0),
+                    vertical: cmd.flag("vertical"),
+                };
+                (
+                    shift.apply(&before, &map),
+                    format!("shifted the viewpoint by {:.0} px", shift.shift),
+                )
+            }
+        };
+
+        let rect = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id).map(|l| l.bounds()))
+            .unwrap_or_default();
+        let label = match which {
+            "fog" => "Haze",
+            "focus" => "Depth of Field",
+            _ => "Parallax",
+        };
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplacePixels::new(id, rect, after, label)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(said)
+    }
+
     fn cmd_relight(&mut self, cmd: &Command) -> Result<String, String> {
         use cshop_core::relight::Relight;
         self.need_doc()?;
@@ -1681,6 +1764,206 @@ impl Runner {
     /// its edges follow the shape of a thing without hugging it; `feather=`
     /// exists because a soft edge is the honest way to show a boundary that is
     /// not certain, and `segment` is there for when a real cut-out is wanted.
+    /// `retouch [radius= threshold= amount= texture= all]` — smooth skin
+    /// without smoothing eyes and hair.
+    ///
+    /// Where to smooth comes from what is already there: the selection if one
+    /// is made, otherwise the heads of whatever people the detector finds.
+    /// `all` smooths the whole layer, which is what to ask for when the
+    /// picture is a face and nothing else.
+    fn cmd_retouch(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::skin::{self, SkinSmooth};
+        self.need_doc()?;
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels")?;
+        let (w, h) = (source.width(), source.height());
+
+        let how = SkinSmooth {
+            radius: cmd.f32("radius")?.unwrap_or(6.0).clamp(0.0, 64.0),
+            threshold: cmd.f32("threshold")?.unwrap_or(0.08).clamp(0.0, 1.0),
+            amount: cmd.f32("amount")?.unwrap_or(0.7).clamp(0.0, 1.0),
+            texture: cmd.f32("texture")?.unwrap_or(0.25).clamp(0.0, 1.0),
+        };
+
+        let (mask, said) = if cmd.flag("all") {
+            (None, "the whole layer".to_string())
+        } else if let Some(selection) =
+            self.app.doc().and_then(|v| v.doc.selection.as_ref().map(|s| s.to_mask()))
+        {
+            (Some(selection), "the selection".to_string())
+        } else {
+            // No selection: find the people, and take the head of each.
+            let dir = self.vision_dir();
+            cshop_ui::vision::make_scratch(&dir)
+                .map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+            let input = dir.join("source.png");
+            cshop_io::save(&input, &source, 100)
+                .map_err(|e| format!("could not write the image for the model: {e}"))?;
+            let found = cshop_ui::vision::detect(&input, 0.3, "person");
+            let _ = std::fs::remove_dir_all(&dir);
+            let people = found?;
+            if people.is_empty() {
+                return Err(
+                    "no people found. Select the skin to smooth, or pass `all` to smooth \
+                     the whole layer."
+                        .into(),
+                );
+            }
+            let mut mask = cshop_core::mask::MaskBuffer::hide_all(w, h);
+            for person in &people {
+                let (bw, bh) = (person.width(), person.height());
+                let share = skin::head_of(bw, bh);
+                let head_h = bh * share;
+                // A soft-edged ellipse over the head, since a rectangle's
+                // corners would smooth the background beside it.
+                let (cx, cy) = (person.box_[0] + bw / 2.0, person.box_[1] + head_h / 2.0);
+                let (rx, ry) = (bw * 0.5, head_h * 0.5);
+                for y in 0..h as i32 {
+                    for x in 0..w as i32 {
+                        let dx = (x as f32 - cx) / rx.max(1.0);
+                        let dy = (y as f32 - cy) / ry.max(1.0);
+                        let d = (dx * dx + dy * dy).sqrt();
+                        let k = (1.0 - (d - 0.75) / 0.25).clamp(0.0, 1.0);
+                        let v = (k * 255.0) as u8;
+                        if v > mask.get(x, y) {
+                            mask.set(x, y, v);
+                        }
+                    }
+                }
+            }
+            (
+                Some(mask),
+                format!("{} face{}", people.len(), if people.len() == 1 { "" } else { "s" }),
+            )
+        };
+
+        let after = how.apply(&source, mask.as_ref());
+        let rect = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id).map(|l| l.bounds()))
+            .unwrap_or_default();
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplacePixels::new(id, rect, after, "Retouch Skin")),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!("smoothed {said} at {:.0}%", how.amount * 100.0))
+    }
+
+    /// `sky [PATH] [feather= relight= offset= scale= zenith= horizon=]` —
+    /// find the sky and put a different one in.
+    ///
+    /// Three pieces that already exist, joined: the labeller finds it, the
+    /// compositing puts the new one in, and the colour work carries its light
+    /// into the foreground. Without a path it builds a gradient, which is what
+    /// a flat white overcast usually needs.
+    fn cmd_sky(&mut self, cmd: &Command) -> Result<String, String> {
+        use cshop_core::sky::{self, SkyReplace};
+        self.need_doc()?;
+        let id = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.active)
+            .ok_or("there is no active layer")?;
+        let source = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id)?.pixels().cloned())
+            .ok_or("that layer has no pixels")?;
+
+        // Where the sky is, from the labeller.
+        let dir = self.vision_dir();
+        cshop_ui::vision::make_scratch(&dir)
+            .map_err(|e| format!("could not use {}: {e}", dir.display()))?;
+        let input = dir.join("source.png");
+        let map_path = dir.join("labels.png");
+        cshop_io::save(&input, &source, 100)
+            .map_err(|e| format!("could not write the image for the model: {e}"))?;
+        let answer = cshop_ui::vision::classify(&input, &map_path).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&dir);
+        })?;
+        let map = cshop_io::load(&answer.map).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&dir);
+            format!("could not read the map back: {e}")
+        })?;
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let Some(region) = answer.regions.iter().find(|r| r.class.eq_ignore_ascii_case("sky"))
+        else {
+            let names: Vec<String> = answer.regions.iter().take(6).map(|r| r.class.clone()).collect();
+            return Err(format!(
+                "there is no sky in this picture. It holds: {}",
+                if names.is_empty() { "nothing recognised".into() } else { names.join(", ") }
+            ));
+        };
+
+        // The label map's pixels are class numbers, so the sky's mask is
+        // wherever the map says that class.
+        let mut mask = cshop_core::mask::MaskBuffer::hide_all(source.width(), source.height());
+        for y in 0..source.height() as i32 {
+            for x in 0..source.width() as i32 {
+                let sx = x * map.width() as i32 / source.width().max(1) as i32;
+                let sy = y * map.height() as i32 / source.height().max(1) as i32;
+                if map.get(sx, sy).r == region.id {
+                    mask.set(x, y, 255);
+                }
+            }
+        }
+
+        let new_sky = match cmd.args.first() {
+            Some(path) => {
+                let path = self.path(path)?;
+                cshop_io::load(&path)
+                    .map_err(|e| format!("could not read {}: {e}", path.display()))?
+            }
+            None => sky::gradient(
+                source.width(),
+                source.height(),
+                cmd.color("zenith")?.unwrap_or(cshop_core::color::Rgba8::opaque(48, 96, 190)),
+                cmd.color("horizon")?.unwrap_or(cshop_core::color::Rgba8::opaque(196, 214, 238)),
+            ),
+        };
+
+        let how = SkyReplace {
+            grow: cmd.f32("grow")?.unwrap_or(2.0).clamp(0.0, 64.0),
+            feather: cmd.f32("feather")?.unwrap_or(2.0).clamp(0.0, 64.0),
+            relight: cmd.f32("relight")?.unwrap_or(0.35).clamp(0.0, 1.0),
+            offset: cmd.f32("offset")?.unwrap_or(0.0).clamp(-1.0, 1.0),
+            scale: cmd.f32("scale")?.unwrap_or(1.0).clamp(0.1, 10.0),
+        };
+        let after = sky::replace(&source, &mask, &new_sky, how);
+        let line = sky::horizon(&mask);
+
+        let rect = self
+            .app
+            .doc()
+            .and_then(|v| v.doc.tree.get(id).map(|l| l.bounds()))
+            .unwrap_or_default();
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplacePixels::new(id, rect, after, "Replace Sky")),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(format!(
+            "replaced the sky ({:.0}% of the picture, horizon at {:.0}%)",
+            region.coverage * 100.0,
+            line * 100.0
+        ))
+    }
+
     fn cmd_separate(&mut self, cmd: &Command) -> Result<String, String> {
         self.need_doc()?;
         let min = cmd.f32("min")?.unwrap_or(0.02).clamp(0.0, 1.0);

@@ -36,6 +36,9 @@ pub enum Dialog {
     Separate(Box<crate::separate_ui::SeparateDialog>),
     /// Boxed: it holds the picture and a depth map the size of it.
     Relight(Box<crate::relight_ui::RelightDialog>),
+    /// The same, for the three effects that read the depth rather than light
+    /// with it.
+    DepthFx(Box<crate::depth_ui::DepthFxDialog>),
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),
