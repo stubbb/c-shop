@@ -176,12 +176,6 @@ impl BlendMode {
             .find(|m| m.psd_key() == key)
     }
 
-    /// `true` when the mode mixes whole colours rather than each channel
-    /// independently. Useful because these cannot be applied per-channel.
-    pub fn is_non_separable(self) -> bool {
-        use BlendMode::*;
-        matches!(self, Hue | Saturation | Color | Luminosity | DarkerColor | LighterColor)
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -168,12 +168,6 @@ pub enum Surface {
 }
 
 impl Surface {
-    /// Eight-bit pixels as a surface. Named rather than written out at every
-    /// call site, because that is what almost every caller has.
-    pub fn from_eight(pixels: PixelBuffer) -> Surface {
-        Surface::Eight(pixels)
-    }
-
     pub fn width(&self) -> u32 {
         match self {
             Surface::Eight(p) => p.width(),
@@ -488,15 +482,6 @@ impl Layer {
         }
     }
 
-    /// `true` when the layer would leave the composite unchanged, so the
-    /// compositor can drop its pass.
-    pub fn is_no_op(&self) -> bool {
-        match &self.kind {
-            LayerKind::Adjustment(a) => a.is_identity(),
-            _ => false,
-        }
-    }
-
     pub fn pixels(&self) -> Option<&PixelBuffer> {
         match &self.kind {
             LayerKind::Raster(s) => s.eight(),
@@ -677,13 +662,6 @@ impl Layer {
         match &self.kind {
             LayerKind::Group { children } => children,
             _ => &[],
-        }
-    }
-
-    pub fn children_mut(&mut self) -> Option<&mut Vec<LayerId>> {
-        match &mut self.kind {
-            LayerKind::Group { children } => Some(children),
-            _ => None,
         }
     }
 

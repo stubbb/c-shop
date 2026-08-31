@@ -48,6 +48,19 @@ pub struct Relight {
     pub relief: f32,
     /// The colour of the lamp.
     pub color: Rgba8,
+    /// Never let a pixel come out darker than it went in.
+    ///
+    /// The lamp is a multiplier, so the unlit side is *whatever ambient says*
+    /// — below one it falls away, which is how the shading gets its contrast
+    /// and also how a relight quietly loses the shadow detail a photograph
+    /// was carrying. With this set the multiplier is floored at one: the lamp
+    /// adds where it reaches and does nothing where it does not.
+    ///
+    /// It changes what `ambient` means rather than disabling it. Below one it
+    /// becomes a threshold — the lamp has to beat `1 - ambient` before it
+    /// shows at all — so the light lands only on what most faces it and the
+    /// rest of the picture is left exactly as it was.
+    pub lighten_only: bool,
     /// How far to soften the shape before lighting it, as a fraction of the
     /// picture's shorter side.
     ///
@@ -68,6 +81,7 @@ impl Default for Relight {
             ambient: 1.0,
             relief: 1.0,
             color: Rgba8::WHITE,
+            lighten_only: false,
             softness: 0.02,
         }
     }
@@ -75,8 +89,11 @@ impl Default for Relight {
 
 impl Relight {
     /// True when this would return the picture unchanged.
+    ///
+    /// With `lighten_only` an ambient below one no longer darkens anything,
+    /// so a lamp of no strength has nothing left to do whatever ambient says.
     pub fn is_identity(&self) -> bool {
-        self.intensity == 0.0 && self.ambient >= 1.0
+        self.intensity == 0.0 && (self.ambient >= 1.0 || self.lighten_only)
     }
 
     /// The direction the light comes *from*, in the frame's own axes: x to the
@@ -252,7 +269,10 @@ pub fn apply(src: &PixelBuffer, depth: &DepthMap, lamp: Relight) -> PixelBuffer 
             // one — the surfaces keep their own colour and only their
             // brightness answers to the light.
             let gain = |ch: f32| {
-                (lamp.ambient + lamp.intensity * lambert * ch).max(0.0)
+                let g = lamp.ambient + lamp.intensity * lambert * ch;
+                // Floored at one rather than at zero: the difference between
+                // "a lamp that only adds" and "a lamp that may take away".
+                if lamp.lighten_only { g.max(1.0) } else { g.max(0.0) }
             };
             *px = Rgba::new(
                 c.r * gain(tint.r),

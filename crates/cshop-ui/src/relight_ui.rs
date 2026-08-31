@@ -222,9 +222,22 @@ impl RelightDialog {
                     .add(egui::Slider::new(&mut self.lamp.ambient, 0.0..=1.5).fixed_decimals(2))
                     .on_hover_text(
                         "What survives where the lamp does not reach. At 1 this only ever \
-                         adds light; below it, the unlit side falls away.",
+                         adds light; below it, the unlit side falls away — unless Lighten \
+                         only is set, where it becomes a threshold instead.",
                     )
                     .drag_stopped();
+                ui.end_row();
+
+                ui.label("Lighten only");
+                moved |= ui
+                    .checkbox(&mut self.lamp.lighten_only, "")
+                    .on_hover_text(
+                        "Never let a pixel come out darker than it went in. The lamp adds \
+                         where it reaches and does nothing where it does not, so the \
+                         shadows the photograph already had survive. Ambient then reads as \
+                         a threshold: below 1 the light lands only on what most faces it.",
+                    )
+                    .changed();
                 ui.end_row();
 
                 ui.label("Relief");

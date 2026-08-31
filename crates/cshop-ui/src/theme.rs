@@ -155,13 +155,6 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
-/// Panel frame with no rounding, for flat docks.
-pub fn panel_frame() -> egui::Frame {
-    egui::Frame::NONE
-        .fill(Palette::DARK.panel)
-        .inner_margin(egui::Margin::symmetric(6, 6))
-}
-
 /// Frame for the menu bar and the tool options bar.
 pub fn bar_frame() -> egui::Frame {
     egui::Frame::NONE

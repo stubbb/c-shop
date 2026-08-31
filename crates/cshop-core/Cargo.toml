@@ -10,7 +10,6 @@ moxcms = { workspace = true }
 bytemuck = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }
-thiserror = { workspace = true }
 ahash = { workspace = true }
 ab_glyph = { workspace = true }
 ttf-parser = { workspace = true }

@@ -198,12 +198,6 @@ impl Filter {
         !matches!(self, Filter::AverageBlur | Filter::FindEdges | Filter::Solarize)
     }
 
-    /// Whether the filter ignores its input entirely, so a preview cannot be
-    /// judged from a crop of the layer.
-    pub fn is_generative(&self) -> bool {
-        matches!(self, Filter::Clouds { difference: false, .. } | Filter::Fibers { .. })
-    }
-
     /// Every filter at its default settings, in menu order.
     pub fn all_defaults() -> Vec<Filter> {
         vec![

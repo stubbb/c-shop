@@ -344,11 +344,6 @@ fn finish(mask: MaskBuffer, covered: Option<IRect>, antialias: bool) -> Selectio
     selection
 }
 
-/// Bounding box of a wand result, for the caller to report or zoom to.
-pub fn result_bounds(selection: &Selection) -> IRect {
-    selection.bounds()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

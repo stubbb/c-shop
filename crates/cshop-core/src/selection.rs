@@ -278,12 +278,6 @@ impl Selection {
         &mut self.mask
     }
 
-    /// Where the stored window sits in the document, for callers holding
-    /// [`Selection::mask_mut`].
-    pub fn window_origin(&self) -> (i32, i32) {
-        (self.window.x0, self.window.y0)
-    }
-
     /// Bytes of coverage actually held, which is the window rather than the
     /// document.
     pub fn memory_bytes(&self) -> u64 {

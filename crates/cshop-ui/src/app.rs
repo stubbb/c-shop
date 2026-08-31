@@ -18,7 +18,7 @@ use cshop_core::history::{
     ReplaceLayerPixels, ReplaceMaskPixels, ReplacePixels, ResizeCanvas, ResizeImage,
     SetAdjustment, SetLayerProperty, SetSelection,
 };
-use cshop_core::layer::{Layer, LayerId, LayerKind, LayerMask};
+use cshop_core::layer::{Layer, LayerId, LayerMask};
 use cshop_core::mask::MaskBuffer;
 use cshop_core::paint::{Brush, Clip, PaintMode, Stroke, StrokeSource};
 use cshop_core::snapshot::Snapshot;
@@ -530,7 +530,7 @@ impl CShopApp {
 
         egui::Panel::top("titlebar")
             .frame(egui::Frame::NONE.fill(Palette::DARK.titlebar))
-            .exact_size(30.0)
+            .exact_size(chrome::TITLE_BAR_HEIGHT)
             .show(ui, |ui| chrome::title_bar(self, ui));
 
         egui::Panel::top("optionsbar")
@@ -5599,9 +5599,17 @@ impl CShopApp {
         let Some(view) = self.doc_mut() else { return };
         let Some(id) = view.doc.active else { return };
         let name = view.doc.tree.get(id).map(|l| l.name.clone()).unwrap_or_default();
-        let Some(pixels) = view.doc.tree.get(id).and_then(|l| l.smart()).and_then(|s| {
-            view.doc.sources.pixels(s.source()).cloned()
-        }) else {
+        // The copy is put in the store here so the command below can be built
+        // naming it, but the *repointing* is left to that command — it records
+        // which source the layer was on as it does it, and a layer already
+        // moved would have it record the wrong one.
+        let Some(pixels) = view
+            .doc
+            .tree
+            .get(id)
+            .and_then(|l| l.smart())
+            .and_then(|smart| view.doc.sources.pixels(smart.source()).cloned())
+        else {
             return;
         };
         let fresh = view.doc.sources.add(pixels.clone(), name.clone());
@@ -5790,11 +5798,6 @@ impl CShopApp {
 
 fn layer_local(doc_point: cshop_core::geom::Vec2, offset: (i32, i32)) -> cshop_core::geom::Vec2 {
     cshop_core::geom::Vec2::new(doc_point.x - offset.0 as f32, doc_point.y - offset.1 as f32)
-}
-
-/// Layer kinds that can be painted on.
-pub fn is_paintable(kind: &LayerKind) -> bool {
-    matches!(kind, LayerKind::Raster(_))
 }
 
 /// A selection gesture the user is part-way through.

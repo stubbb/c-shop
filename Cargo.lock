@@ -507,7 +507,6 @@ dependencies = [
  "log",
  "moxcms",
  "rayon",
- "thiserror 2.0.20",
  "ttf-parser",
 ]
 
@@ -536,7 +535,6 @@ dependencies = [
  "image",
  "log",
  "miniz_oxide",
- "moxcms",
  "png",
  "thiserror 2.0.20",
  "tiff",

@@ -247,7 +247,9 @@ Two consequences worth knowing:
 **A smart object can no longer render itself.** It needs the store to find its
 picture, and the store and the layer are two fields of the same document, so
 the operations that re-render live on `Document`, which can lend out both at
-once. That is the whole of the awkwardness and it is confined to four methods.
+once. That is the whole of the awkwardness, and it is confined to the three
+that re-render: placing, refreshing, and replacing a source everywhere it is
+used.
 
 **Nothing is ever collected.** Deleting the last layer that used a picture
 leaves it in the store, because undo will want it back until that delete falls

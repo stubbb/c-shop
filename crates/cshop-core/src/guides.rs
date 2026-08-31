@@ -84,13 +84,6 @@ impl SnapLines {
         }
     }
 
-    pub fn add_rect(&mut self, rect: IRect) {
-        self.vertical.push(rect.x0 as f32);
-        self.vertical.push(rect.x1 as f32);
-        self.horizontal.push(rect.y0 as f32);
-        self.horizontal.push(rect.y1 as f32);
-    }
-
     pub fn is_empty(&self) -> bool {
         self.vertical.is_empty() && self.horizontal.is_empty()
     }

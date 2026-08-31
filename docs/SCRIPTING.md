@@ -79,7 +79,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
 | `depth [mask] [invert]` | How far away everything is, as a layer to look at or as a mask on the layer it was measured from. Needs the [vision pack](VISION.md). |
-| `relight [azimuth= elevation= intensity= ambient= relief= softness= color=]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
+| `relight [azimuth= elevation= intensity= ambient= relief= softness= color=] [lighten-only]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
 | `inpaint` | Make the selection disappear, inventing what was behind it. Needs the [vision pack](VISION.md). |
 | `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
 | `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
@@ -279,6 +279,18 @@ cut-out edges. `ambient` is what survives where the lamp does not reach — at 1
 only add light, below it the unlit side falls away. `relief` is how much shape
 to read into the depth; the depth has no unit, so that is a choice rather than
 a measurement.
+
+`lighten-only` guarantees that no pixel comes out darker than it went in. That
+matters because the contrast in a relight comes from dropping `ambient`, and
+dropping `ambient` is also how a photograph quietly loses the shadow detail it
+was carrying — on a picture of foliage, half a million pixels crushed to black.
+Under the flag `ambient` stops being a darkener and becomes a *threshold*: the
+lamp has to beat `1 - ambient` before it shows at all, so the light lands only
+on what most faces it and everything else is left exactly as it was.
+
+```
+relight azimuth=20 elevation=25 intensity=1.0 ambient=0.45 relief=1.2 lighten-only
+```
 
 The depth is worked out once per layer and kept, so a script that tries three
 lightings pays for the model once. `depth` on its own puts the map into the

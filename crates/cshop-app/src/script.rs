@@ -1597,11 +1597,16 @@ impl Runner {
         if let Some(c) = cmd.color("color")? {
             lamp.color = c;
         }
+        lamp.lighten_only = cmd.flag("lighten-only");
         if lamp.is_identity() {
-            return Err(
+            return Err(if lamp.lighten_only {
+                "relight lighten-only needs intensity= above zero; with nothing to add, \
+                 a lamp that never darkens has nothing to do"
+                    .to_string()
+            } else {
                 "relight needs something to do: intensity= above zero, or ambient= below one"
-                    .to_string(),
-            );
+                    .to_string()
+            });
         }
 
         let id = self

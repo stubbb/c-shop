@@ -195,11 +195,6 @@ pub fn read(bytes: &[u8]) -> Result<Raw, IoError> {
     })
 }
 
-/// Read a raw file and develop it into a picture.
-pub fn read_developed(bytes: &[u8], how: Develop) -> Result<PixelBuffer, IoError> {
-    Ok(read(bytes)?.develop(how).to_eight())
-}
-
 impl Raw {
     /// The sensor's reading at one photosite, black subtracted and scaled so
     /// that white is one.

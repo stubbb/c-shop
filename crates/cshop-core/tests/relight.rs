@@ -262,3 +262,115 @@ fn softening_by_nothing_changes_nothing() {
     assert_eq!(depth.smoothed(0).data, depth.data);
     assert_eq!(depth.softening_radius(0.0), 0);
 }
+
+// --- lighten only ----------------------------------------------------------
+
+/// The whole claim: with it set, nothing comes out darker than it went in.
+#[test]
+fn lighten_only_never_takes_light_away() {
+    // A ramp facing left, lit from the right, so the near half of the picture
+    // is turned away from the lamp — which is where darkening would happen.
+    let src = flat(64, 48);
+    let depth = ramp_x(64, 48);
+    let settings = Relight {
+        azimuth: 180.0,
+        elevation: 30.0,
+        intensity: 0.8,
+        // Well below one, which is what makes the unlit side fall away.
+        ambient: 0.5,
+        relief: 1.5,
+        ..Default::default()
+    };
+
+    let falls_away = apply(&src, &depth, settings);
+    let adds_only = apply(&src, &depth, Relight { lighten_only: true, ..settings });
+
+    let mut darkened = 0;
+    let mut darkened_under_the_flag = 0;
+    for y in 0..48 {
+        for x in 0..64 {
+            let was = luma(&src, x, y);
+            if luma(&falls_away, x, y) < was - 0.5 {
+                darkened += 1;
+            }
+            if luma(&adds_only, x, y) < was - 0.5 {
+                darkened_under_the_flag += 1;
+            }
+        }
+    }
+    assert!(
+        darkened > 500,
+        "the ordinary lamp should have darkened plenty to compare against, got {darkened}"
+    );
+    assert_eq!(
+        darkened_under_the_flag, 0,
+        "lighten only darkened {darkened_under_the_flag} pixels"
+    );
+}
+
+/// It must still *light* things, or "never darkens" is satisfied by doing
+/// nothing at all.
+#[test]
+fn lighten_only_still_lights_what_faces_the_lamp() {
+    let src = flat(64, 48);
+    let depth = ramp_x(64, 48);
+    let lamp = Relight {
+        azimuth: 0.0,
+        elevation: 20.0,
+        intensity: 1.0,
+        ambient: 1.0,
+        relief: 1.5,
+        lighten_only: true,
+        ..Default::default()
+    };
+    let lit = apply(&src, &depth, lamp);
+    let brightest = (0..64).map(|x| luma(&lit, x, 24)).fold(0.0f32, f32::max);
+    assert!(
+        brightest > luma(&src, 0, 24) + 8.0,
+        "nothing was lit: brightest {brightest} against {}",
+        luma(&src, 0, 24)
+    );
+}
+
+/// Below one, ambient stops being a darkener and becomes a threshold: the
+/// lamp has to beat it before anything shows. So a lower ambient lights less
+/// of the picture, and what it does light it lights no less brightly.
+#[test]
+fn under_the_flag_ambient_narrows_the_light_rather_than_darkening() {
+    let src = flat(64, 48);
+    // A hill rather than a ramp: a constant slope faces the lamp equally
+    // everywhere, so it is either all lit or none of it and a threshold has
+    // nothing to bite on.
+    let depth = {
+        let data: Vec<f32> = (0..48)
+            .flat_map(|_| {
+                (0..64).map(move |x| {
+                    (x as f32 / 63.0 * std::f32::consts::PI).sin()
+                })
+            })
+            .collect();
+        DepthMap::from_values(64, 48, data).unwrap()
+    };
+    let lamp = |ambient: f32| Relight {
+        azimuth: 0.0,
+        elevation: 20.0,
+        intensity: 1.0,
+        ambient,
+        relief: 1.5,
+        lighten_only: true,
+        ..Default::default()
+    };
+    let touched = |px: &PixelBuffer| {
+        (0..64).filter(|&x| luma(px, x, 24) > luma(&src, x, 24) + 0.5).count()
+    };
+
+    let wide = apply(&src, &depth, lamp(1.0));
+    let narrow = apply(&src, &depth, lamp(0.7));
+    assert!(
+        touched(&narrow) < touched(&wide),
+        "a lower ambient should light less of the row, got {} against {}",
+        touched(&narrow),
+        touched(&wide)
+    );
+    assert!(touched(&narrow) > 0, "and not none of it");
+}

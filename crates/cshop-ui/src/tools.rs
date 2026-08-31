@@ -197,12 +197,6 @@ impl Tool {
         )
     }
 
-    /// Whether this tool repairs by taking texture from elsewhere and tone
-    /// from where it lands. See [`cshop_core::heal`].
-    pub fn heals(self) -> bool {
-        matches!(self, Tool::HealingBrush | Tool::SpotHealing)
-    }
-
     /// Tools that change the pixels they pass over rather than covering them.
     /// They read the brush's size, hardness and spacing but ignore its colour.
     pub fn retouches(self) -> Option<cshop_core::retouch::RetouchKind> {

@@ -40,7 +40,7 @@
 //! store to find its picture — so the operations that re-render live on
 //! [`crate::document::Document`], which can lend out the store and the layer at
 //! the same time. That is the whole of the awkwardness, and it is confined to
-//! four methods.
+//! the three that re-render.
 
 use crate::geom::Vec2;
 use crate::pixels::PixelBuffer;
@@ -183,12 +183,6 @@ impl SmartObject {
     /// The size of the picture behind the placement.
     pub fn source_size(&self, store: &SourceStore) -> (u32, u32) {
         store.pixels(self.source).map_or((1, 1), |p| (p.width(), p.height()))
-    }
-
-    /// True when the placement is doing nothing, so the layer is showing its
-    /// source at full size.
-    pub fn is_untouched(&self) -> bool {
-        self.placement == Transform::IDENTITY
     }
 
     /// Rebuild from the source at a new placement.

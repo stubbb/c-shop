@@ -618,18 +618,6 @@ impl DocView {
         Some(handle)
     }
 
-    /// Document region a screen rect covers, for partial recomposites.
-    pub fn visible_doc_rect(&self, viewport: egui::Rect) -> IRect {
-        let tl = self.screen_to_doc(viewport, viewport.min);
-        let br = self.screen_to_doc(viewport, viewport.max);
-        IRect::from_points(
-            tl.x.floor() as i32,
-            tl.y.floor() as i32,
-            br.x.ceil() as i32,
-            br.y.ceil() as i32,
-        )
-        .intersect(&self.doc.bounds())
-    }
 }
 
 /// The grid a colour table starts from: every combination, evenly spaced.

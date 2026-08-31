@@ -377,17 +377,6 @@ impl Tip {
         Some(Tip { coverage: out })
     }
 
-    /// A tip from a picture's own transparency — what a cut-out shape gives.
-    pub fn from_alpha(px: &PixelBuffer) -> Option<Tip> {
-        let mut m = MaskBuffer::hide_all(px.width(), px.height());
-        for y in 0..px.height() as i32 {
-            for x in 0..px.width() as i32 {
-                m.set(x, y, px.get(x, y).a);
-            }
-        }
-        Tip::new(m)
-    }
-
     pub fn size(&self) -> (u32, u32) {
         (self.coverage.width(), self.coverage.height())
     }
@@ -484,14 +473,6 @@ impl Stroke {
 
     pub fn brush(&self) -> Brush {
         self.brush
-    }
-
-    /// Move a clone stroke's source. Used when the Clone Stamp is not aligned,
-    /// so each new stroke starts again from the sampled point.
-    pub fn set_clone_offset(&mut self, offset: (i32, i32)) {
-        if let StrokeSource::Clone { offset: current, .. } = &mut self.source {
-            *current = offset;
-        }
     }
 
     pub fn is_empty(&self) -> bool {

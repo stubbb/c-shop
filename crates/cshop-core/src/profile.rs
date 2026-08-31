@@ -396,29 +396,6 @@ impl Profile {
         Ok(inks)
     }
 
-    /// Grey samples in this profile to pixels in `dst`.
-    pub fn grey_to_rgba8(
-        &self,
-        dst: &Profile,
-        grey: &[u8],
-        intent: RenderingIntent,
-    ) -> Result<Vec<Rgba8>, ProfileError> {
-        if self.space() != Space::Gray || dst.space() != Space::Rgb {
-            return Err(ProfileError::Unsupported(self.space()));
-        }
-        let t = self
-            .parsed
-            .create_transform_8bit(
-                moxcms::Layout::Gray,
-                &dst.parsed,
-                moxcms::Layout::Rgb,
-                Self::options(intent),
-            )
-            .map_err(|e| ProfileError::Transform(e.to_string()))?;
-        let mut rgb = vec![0u8; grey.len() * 3];
-        t.transform(grey, &mut rgb).map_err(|e| ProfileError::Transform(e.to_string()))?;
-        Ok(rgb.chunks_exact(3).map(|c| Rgba8::new(c[0], c[1], c[2], 255)).collect())
-    }
 }
 
 // --- the same four, sixteen bits deep -------------------------------------
@@ -520,24 +497,4 @@ impl Profile {
         t.transform(&rgb, &mut inks).map_err(|e| ProfileError::Transform(e.to_string()))?;
         Ok(inks)
     }
-}
-
-/// The name to show for a rendering intent, and the one a script writes.
-pub fn intent_name(i: RenderingIntent) -> &'static str {
-    match i {
-        RenderingIntent::Perceptual => "perceptual",
-        RenderingIntent::RelativeColorimetric => "relative",
-        RenderingIntent::Saturation => "saturation",
-        RenderingIntent::AbsoluteColorimetric => "absolute",
-    }
-}
-
-pub fn intent_from_name(s: &str) -> Option<RenderingIntent> {
-    Some(match s.to_ascii_lowercase().as_str() {
-        "perceptual" => RenderingIntent::Perceptual,
-        "relative" | "relative-colorimetric" => RenderingIntent::RelativeColorimetric,
-        "saturation" => RenderingIntent::Saturation,
-        "absolute" | "absolute-colorimetric" => RenderingIntent::AbsoluteColorimetric,
-        _ => return None,
-    })
 }

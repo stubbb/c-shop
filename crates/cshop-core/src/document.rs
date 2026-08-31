@@ -293,45 +293,12 @@ impl Document {
         (px.width() == self.width && px.height() == self.height).then_some(px)
     }
 
-    /// Wrap a decoded image as a single-layer document.
-    pub fn from_image(name: impl Into<String>, pixels: PixelBuffer) -> Self {
-        let (width, height) = (pixels.width().max(1), pixels.height().max(1));
-        let mut tree = LayerTree::new();
-        let id = tree.alloc_id();
-        let mut layer = Layer::raster(id, "Background", pixels);
-        layer.is_background = true;
-        layer.locks.position = true;
-        tree.push(layer, None);
-
-        Self {
-            id: DocumentId::fresh(),
-            name: name.into(),
-            width,
-            height,
-            dpi: 72.0,
-            profile: Profile::srgb(),
-            tree,
-            active: Some(id),
-            selected_layers: vec![id],
-            selection: None,
-            path: None,
-            modified: false,
-            channels: Vec::new(),
-            edit_target: EditTarget::Pixels,
-            last_selection: None,
-            guides: Vec::new(),
-            states: Vec::new(),
-            timeline: None,
-            sources: Default::default(),
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Smart objects
     //
     // A smart object holds an identifier rather than a picture, so it cannot
-    // re-render itself. These are the four places that lend it the store and
-    // the layer at the same time, which is a thing only the document can do.
+    // re-render itself. These are the places that lend it the store and the
+    // layer at the same time, which is a thing only the document can do.
     // -----------------------------------------------------------------------
 
     /// Re-render one smart layer at a new placement.
@@ -394,19 +361,6 @@ impl Document {
             self.refresh_smart(id, filter);
         }
         Some(was)
-    }
-
-    /// Give one layer its own copy of the picture it was sharing.
-    ///
-    /// The rendering does not change — it is the same picture — so nothing is
-    /// re-rendered and nothing on screen moves. What changes is the future:
-    /// the next edit to either copy leaves the other alone.
-    pub fn make_source_unique(&mut self, id: LayerId, name: impl Into<String>) -> Option<crate::smart::SourceId> {
-        let was = self.tree.get(id)?.smart()?.source();
-        let pixels = self.sources.pixels(was)?.clone();
-        let fresh = self.sources.add(pixels, name);
-        self.tree.get_mut(id)?.smart_mut()?.set_source(fresh);
-        Some(fresh)
     }
 
     /// The pictures some layer is actually placing.
@@ -514,13 +468,6 @@ impl Document {
 
     pub fn active_layer(&self) -> Option<&Layer> {
         self.active.and_then(|id| self.tree.get(id))
-    }
-
-    pub fn active_layer_mut(&mut self) -> Option<&mut Layer> {
-        match self.active {
-            Some(id) => self.tree.get_mut(id),
-            None => None,
-        }
     }
 
     /// Select a single layer, replacing any multi-selection.
