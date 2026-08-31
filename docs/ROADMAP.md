@@ -61,15 +61,23 @@ layers, so changing it updates every place it was used. That needs a
 document-level store with references rather than a layer that owns its own
 picture, which is a bigger change than the rest of this was.
 
-**Filters as layer attachments.** Adjustments can already be non-destructive
-layers; filters cannot. A blur that stays editable, on a layer, with its own
-mask, is the same idea applied to the other half of the program.
+**Filters as layer attachments.** ~~Adjustments can already be non-destructive
+layers; filters cannot.~~ Done. A stack of them per layer, each with its own
+switch and opacity, a shared mask, and a Smart Filters panel beside the layer
+they are on. The layer's own pixels are never touched, so changing a radius is
+changing a number.
 
-**Vector masks.** Paths exist, shapes exist, masks exist; a path *as* a mask
-does not. Mostly a matter of wiring three things that are all already built.
+**Vector masks.** ~~Paths exist, shapes exist, masks exist; a path *as* a mask
+does not.~~ Done. A mask can keep the path it was drawn from, so resizing the
+document draws it again at the new size rather than resampling the last drawing
+of it — which is measurably the difference between an edge that stays crisp and
+one that spreads.
 
-**Layer states.** Remembering a set of visibilities, positions and styles by
-name, so two versions of a design can live in one document.
+**Layer states.** ~~Remembering a set of visibilities, positions and styles by
+name.~~ Done. A state records what each layer is *doing*, not what it contains,
+so an edit made after a state was saved is still there when the state comes
+back — which is the whole reason to keep two versions in one document rather
+than in two.
 
 ## Selecting and masking
 

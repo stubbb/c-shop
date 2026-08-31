@@ -608,6 +608,9 @@ fn read_layers(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
                         offset: (mrect.x0, mrect.y0),
                         enabled,
                         linked: true,
+                        // PSD keeps vector masks separately from the raster
+                        // one; this reader takes only the raster.
+                        path: None,
                     });
                 }
                 let parent = *stack.last().unwrap_or(&None);

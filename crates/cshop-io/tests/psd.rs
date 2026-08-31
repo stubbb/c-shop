@@ -29,7 +29,7 @@ fn doc_with_layers() -> (Document, PixelBuffer) {
     top.clipping = true;
     let mut mask = MaskBuffer::new(20, 16, 200);
     mask.set(1, 1, 0);
-    top.mask = Some(LayerMask { data: mask, offset: (10, 8), enabled: false, linked: true });
+    top.mask = Some(LayerMask { data: mask, offset: (10, 8), enabled: false, linked: true, path: None });
     doc.tree.push(top, None);
 
     let composite = PixelBuffer::filled(64, 48, Rgba8::opaque(30, 60, 90));

@@ -47,7 +47,7 @@ impl LayerLocks {
 }
 
 /// A raster layer mask: greyscale coverage that multiplies the layer's alpha.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerMask {
     pub data: MaskBuffer,
     pub offset: (i32, i32),
@@ -55,15 +55,87 @@ pub struct LayerMask {
     pub enabled: bool,
     /// Linked masks move together with the layer's pixels.
     pub linked: bool,
+    /// The path this mask was made from, when it was made from one.
+    ///
+    /// A vector mask is not a second kind of mask. It is this kind with its
+    /// shape kept, so `data` can be thrown away and drawn again at any size
+    /// and the edge stays exact instead of accumulating the softness of every
+    /// resample. Everything downstream reads `data` and needs to know nothing
+    /// about it.
+    pub path: Option<Box<crate::path::PathShape>>,
+}
+
+/// How finely a path is subdivided when it is drawn as a mask. Half a pixel
+/// is finer than the antialiasing can show.
+const MASK_FLATNESS: f32 = 0.5;
+
+/// Draw a path's interior as mask coverage.
+///
+/// The whole of a vector mask: the path is a description, this is what the
+/// compositor reads, and the description is kept so this can be thrown away
+/// and drawn again. Redrawing at a new size gives an exact edge, where
+/// resampling a rasterised mask would soften it a little more each time.
+pub fn mask_from_path(
+    path: &crate::path::PathShape,
+    width: u32,
+    height: u32,
+    invert: bool,
+) -> MaskBuffer {
+    let flat = path.flatten(MASK_FLATNESS);
+    let mut out = MaskBuffer::hide_all(width, height);
+    if flat.is_empty() {
+        return out;
+    }
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            // Sampled at the pixel's centre, and the coverage taken from the
+            // signed distance, which antialiases the edge for free.
+            let d = flat.fill_distance(crate::geom::Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+            let inside = (0.5 - d).clamp(0.0, 1.0);
+            let v = if invert { 1.0 - inside } else { inside };
+            out.set(x, y, (v * 255.0 + 0.5) as u8);
+        }
+    }
+    out
 }
 
 impl LayerMask {
+    /// A mask drawn from a path, keeping the path.
+    pub fn from_path(
+        path: crate::path::PathShape,
+        width: u32,
+        height: u32,
+        invert: bool,
+    ) -> LayerMask {
+        LayerMask {
+            data: mask_from_path(&path, width, height, invert),
+            offset: (0, 0),
+            enabled: true,
+            linked: true,
+            path: Some(Box::new(path)),
+        }
+    }
+
+    /// Draw the path again at this size, when there is one.
+    pub fn redraw(&mut self, width: u32, height: u32) {
+        if let Some(path) = &self.path {
+            self.data = mask_from_path(path, width, height, false);
+            self.offset = (0, 0);
+        }
+    }
+
+    /// Whether this mask is a drawing of a path rather than painted pixels.
+    pub fn is_vector(&self) -> bool {
+        self.path.is_some()
+    }
+
     pub fn reveal_all(width: u32, height: u32) -> Self {
         Self {
             data: MaskBuffer::reveal_all(width, height),
             offset: (0, 0),
             enabled: true,
             linked: true,
+            path: None,
         }
     }
 
@@ -73,6 +145,7 @@ impl LayerMask {
             offset: (0, 0),
             enabled: true,
             linked: true,
+            path: None,
         }
     }
 
@@ -354,6 +427,9 @@ pub struct Layer {
     pub is_background: bool,
     /// Effects drawn around the layer's own pixels.
     pub effects: crate::effects::LayerEffects,
+    /// Filters evaluated on the way to the screen rather than burned in. See
+    /// [`crate::smart_filters`].
+    pub filters: crate::smart_filters::SmartFilters,
 }
 
 impl Layer {
@@ -375,6 +451,7 @@ impl Layer {
             expanded: true,
             is_background: false,
             effects: crate::effects::LayerEffects::default(),
+            filters: crate::smart_filters::SmartFilters::default(),
         }
     }
 
@@ -503,11 +580,43 @@ impl Layer {
     /// is done on the layer's opaque extent rather than its whole buffer —
     /// which for the layers people put effects on is usually a small part of
     /// it.
+    /// The layer's pixels with its filter stack run over them, or `None` when
+    /// the stack is empty or switched off.
+    ///
+    /// Filters come before effects, which is the order that makes sense: a
+    /// drop shadow is cast by the layer as it looks, and a layer with a blur
+    /// on it looks blurred.
+    pub fn filtered_pixels(&self, ctx: &crate::filters::FilterContext) -> Option<PixelBuffer> {
+        self.filters.render(self.pixels()?, ctx)
+    }
+
+    /// Whether anything at all stands between the layer's own pixels and what
+    /// the compositor should draw.
+    pub fn has_filters(&self) -> bool {
+        self.filters.any() && self.pixels().is_some()
+    }
+
     pub fn render_with_effects(&self) -> Option<(PixelBuffer, IRect)> {
+        self.render_composed(&crate::filters::FilterContext::default())
+    }
+
+    /// The layer as the compositor should draw it, filters and effects both.
+    pub fn render_composed(
+        &self,
+        ctx: &crate::filters::FilterContext,
+    ) -> Option<(PixelBuffer, IRect)> {
+        let filtered = self.filtered_pixels(ctx);
         if !self.has_effects() {
-            return None;
+            // Filters alone still change what the compositor should draw, and
+            // they do not move it: the rect is the layer's own.
+            let px = filtered?;
+            let rect = IRect::at(self.offset.0, self.offset.1, px.width(), px.height());
+            return Some((px, rect));
         }
-        let px = self.pixels()?;
+        let px = match &filtered {
+            Some(p) => p,
+            None => self.pixels()?,
+        };
         let ink = px.opaque_bounds();
         if ink.is_empty() {
             return None;

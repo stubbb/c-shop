@@ -208,7 +208,7 @@ fn masks_scale_coverage() {
     for (x, v) in [0u8, 85, 170, 255].into_iter().enumerate() {
         mask.set(x as i32, 0, v);
     }
-    layer.mask = Some(LayerMask { data: mask, offset: (0, 0), enabled: true, linked: true });
+    layer.mask = Some(LayerMask { data: mask, offset: (0, 0), enabled: true, linked: true, path: None });
     doc.tree.push(layer, None);
 
     let out = h.run(&doc);
@@ -238,6 +238,7 @@ fn a_mask_smaller_than_its_layer_hides_the_remainder() {
         offset: (0, 0),
         enabled: true,
         linked: true,
+        path: None,
     });
     doc.tree.push(layer, None);
 
@@ -740,7 +741,7 @@ fn an_adjustment_mask_limits_where_it_applies() {
     let mut mask = MaskBuffer::hide_all(4, 1);
     mask.set(0, 0, 255);
     mask.set(1, 0, 255);
-    layer.mask = Some(LayerMask { data: mask, offset: (0, 0), enabled: true, linked: true });
+    layer.mask = Some(LayerMask { data: mask, offset: (0, 0), enabled: true, linked: true, path: None });
     doc.tree.push(layer, None);
 
     let out = h.run(&doc);

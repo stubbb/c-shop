@@ -38,12 +38,166 @@ pub fn dock(app: &mut CShopApp, ui: &mut egui::Ui) {
             }) {
                 section(ui, "Properties", true, |ui| properties_panel(app, ui));
             }
+            // The stack sits next to the layer it is on, not behind a dialog:
+            // its whole point is that you can see what is applied and change
+            // your mind, and a stack you have to go looking for is a stack
+            // people forget is there.
+            if app
+                .doc()
+                .is_some_and(|d| d.doc.active_layer().is_some_and(|l| !l.filters.slots.is_empty()))
+            {
+                section(ui, "Smart Filters", true, |ui| smart_filters_panel(app, ui));
+            }
+            section(ui, "Layer States", false, |ui| layer_states_panel(app, ui));
             section(ui, "Color", true, |ui| color_panel(app, ui));
             section(ui, "History", true, |ui| history_panel(app, ui));
             section(ui, "Channels", false, |ui| channels_panel(app, ui));
         });
 
     section_fill(ui, "Layers", |ui| layers_panel(app, ui));
+}
+
+// ---------------------------------------------------------------------------
+// Layer states
+// ---------------------------------------------------------------------------
+
+/// Named sets of what the layers are doing, so two versions of a design can
+/// live in one document.
+fn layer_states_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
+    let p = Palette::DARK;
+    let Some(view) = app.doc() else {
+        ui.label(egui::RichText::new("No document").color(p.text_dim).italics());
+        return;
+    };
+    // Which one is showing, if any: a state records settings, so the answer is
+    // simply whether the layers currently match it.
+    let rows: Vec<(String, bool)> =
+        view.doc.states.iter().map(|s| (s.name.clone(), s.matches(&view.doc.tree))).collect();
+
+    let mut queued: Vec<Action> = Vec::new();
+    if rows.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "Save what the layers are doing now, then change them and save again.",
+            )
+            .color(p.text_dim)
+            .small(),
+        );
+    }
+    for (i, (name, showing)) in rows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let text = if *showing {
+                egui::RichText::new(name).color(p.accent)
+            } else {
+                egui::RichText::new(name)
+            };
+            if ui
+                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                .on_hover_text("Show this one")
+                .clicked()
+            {
+                queued.push(Action::ApplyLayerState(i));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕").on_hover_text("Forget it").clicked() {
+                    queued.push(Action::DeleteLayerState(i));
+                }
+                if ui
+                    .small_button("⟳")
+                    .on_hover_text("Replace it with what the layers are doing now")
+                    .clicked()
+                {
+                    queued.push(Action::UpdateLayerState(i));
+                }
+            });
+        });
+    }
+    ui.add_space(4.0);
+    if ui.button("Save current state").clicked() {
+        queued.push(Action::SaveLayerState(String::new()));
+    }
+
+    for action in queued {
+        app.push(action);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Smart filters
+// ---------------------------------------------------------------------------
+
+/// The active layer's filter stack, bottom-first as it is applied.
+fn smart_filters_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
+    let p = Palette::DARK;
+    let Some(view) = app.doc() else { return };
+    let Some(layer) = view.doc.active_layer() else { return };
+    let stack_on = layer.filters.enabled;
+    let rows: Vec<(String, bool, f32)> = layer
+        .filters
+        .slots
+        .iter()
+        .map(|s| (s.filter.name().to_string(), s.enabled, s.opacity))
+        .collect();
+
+    let mut queued: Vec<Action> = Vec::new();
+    ui.horizontal(|ui| {
+        let mut on = stack_on;
+        if ui.checkbox(&mut on, "").changed() {
+            queued.push(Action::ToggleAttachedFilters);
+        }
+        ui.label(
+            egui::RichText::new(if stack_on { "Applied" } else { "Switched off" })
+                .color(p.text_dim)
+                .small(),
+        );
+        if ui
+            .small_button("Apply")
+            .on_hover_text("Run the stack into the pixels; after this it stops being editable")
+            .clicked()
+        {
+            queued.push(Action::ApplyAttachedFilters);
+        }
+    });
+    ui.add_space(2.0);
+
+    // Bottom-first, which is the order they run in.
+    for (i, (name, on, opacity)) in rows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut enabled = *on;
+            if ui.checkbox(&mut enabled, "").changed() {
+                queued.push(Action::ToggleAttachedFilter(i));
+            }
+            let text = if stack_on && *on {
+                egui::RichText::new(name)
+            } else {
+                egui::RichText::new(name).color(p.text_dim)
+            };
+            if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
+                queued.push(Action::EditAttachedFilter(i));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                    queued.push(Action::RemoveAttachedFilter(i));
+                }
+                let mut k = *opacity;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut k)
+                            .range(0.0..=1.0)
+                            .speed(0.01)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                    .changed()
+                {
+                    queued.push(Action::SetAttachedFilterOpacity(i, k));
+                }
+            });
+        });
+    }
+
+    for action in queued {
+        app.push(action);
+    }
 }
 
 // ---------------------------------------------------------------------------

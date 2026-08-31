@@ -33,6 +33,8 @@ use cshop_core::color::Rgba8;
 use cshop_core::curve::Curve;
 use cshop_core::document::Document;
 use cshop_core::effects::*;
+use cshop_core::filters::Filter;
+use cshop_core::smart_filters::{FilterSlot, SmartFilters};
 use cshop_core::layer::{FillStyle, Layer, LayerId, LayerKind, LayerLocks, LayerMask};
 use cshop_core::mask::MaskBuffer;
 use cshop_core::pixels::PixelBuffer;
@@ -54,6 +56,7 @@ const CHUNK_PROFILE: &[u8; 4] = b"ICCP";
 /// Guides, when there are any. Its own chunk for the same reason as the
 /// profile: a project written before they existed still opens.
 const CHUNK_GUIDES: &[u8; 4] = b"GIDE";
+const CHUNK_STATES: &[u8; 4] = b"LSTA";
 const CHUNK_END: &[u8; 4] = b"END ";
 
 /// Deflate level. Pixel data dominates the file and is highly compressible;
@@ -98,6 +101,28 @@ pub fn write(doc: &Document) -> Vec<u8> {
             g.f32(guide.at);
         }
         chunk(&mut w, CHUNK_GUIDES, &g.bytes);
+    }
+
+    // After the layers would be tidier, but a state is settings and the reader
+    // resolves it by id rather than by position, so it does not matter — and
+    // keeping the small chunks together keeps the head of the file readable.
+    for state in &doc.states {
+        let mut c = Writer::new();
+        c.string(&state.name);
+        c.u32(state.layers.len() as u32);
+        for l in &state.layers {
+            c.u64(l.id.0);
+            c.bool(l.visible);
+            c.i32(l.offset.0);
+            c.i32(l.offset.1);
+            c.f32(l.opacity);
+            c.f32(l.fill_opacity);
+            c.u16(l.blend_mode as u16);
+            c.bool(l.clipping);
+            c.bool(l.mask_enabled);
+            write_effects(&mut c, &l.effects);
+        }
+        chunk(&mut w, CHUNK_STATES, &c.bytes);
     }
 
     // Depth-first, parents first, so the reader can attach children as it goes.
@@ -249,10 +274,358 @@ fn write_layer(w: &mut Writer, doc: &Document, layer: &Layer) {
             w.bool(m.enabled);
             w.bool(m.linked);
             write_mask(w, &m.data);
+            // The path a vector mask was drawn from, so the edge stays exact
+            // rather than being the last rasterisation of it.
+            match &m.path {
+                None => w.bool(false),
+                Some(path) => {
+                    w.bool(true);
+                    write_path(w, path);
+                }
+            }
         }
     }
 
     write_effects(w, &layer.effects);
+    write_smart_filters(w, &layer.filters);
+}
+
+/// One filter and its settings.
+///
+/// Written as a tag and its fields, the same shape as an adjustment. The tags
+/// are fixed for good: a file written today must still read on a build that
+/// has since gained more filters, and a build that has not heard of a tag
+/// refuses the file rather than reading a radius as a seed.
+fn write_filter(w: &mut Writer, f: &Filter) {
+    match f {
+        Filter::GaussianBlur { radius } => {
+            w.u8(0);
+            w.f32(*radius);
+        }
+        Filter::BoxBlur { radius } => {
+            w.u8(1);
+            w.f32(*radius);
+        }
+        Filter::MotionBlur { angle, distance } => {
+            w.u8(2);
+            w.f32(*angle);
+            w.f32(*distance);
+        }
+        Filter::RadialBlur { amount, spin, centre } => {
+            w.u8(3);
+            w.f32(*amount);
+            w.bool(*spin);
+            w.f32(centre.0);
+            w.f32(centre.1);
+        }
+        Filter::SurfaceBlur { radius, threshold } => {
+            w.u8(4);
+            w.f32(*radius);
+            w.f32(*threshold);
+        }
+        Filter::AverageBlur => w.u8(5),
+        Filter::Sharpen { amount } => {
+            w.u8(6);
+            w.f32(*amount);
+        }
+        Filter::UnsharpMask { amount, radius, threshold } => {
+            w.u8(7);
+            w.f32(*amount);
+            w.f32(*radius);
+            w.f32(*threshold);
+        }
+        Filter::AddNoise { amount, monochromatic, gaussian, seed } => {
+            w.u8(8);
+            w.f32(*amount);
+            w.bool(*monochromatic);
+            w.bool(*gaussian);
+            w.u64(*seed);
+        }
+        Filter::Median { radius } => {
+            w.u8(9);
+            w.u32(*radius);
+        }
+        Filter::DustAndScratches { radius, threshold } => {
+            w.u8(10);
+            w.u32(*radius);
+            w.f32(*threshold);
+        }
+        Filter::Twirl { angle } => {
+            w.u8(11);
+            w.f32(*angle);
+        }
+        Filter::Pinch { amount } => {
+            w.u8(12);
+            w.f32(*amount);
+        }
+        Filter::Spherize { amount } => {
+            w.u8(13);
+            w.f32(*amount);
+        }
+        Filter::Wave { amplitude, wavelength, vertical } => {
+            w.u8(14);
+            w.f32(*amplitude);
+            w.f32(*wavelength);
+            w.bool(*vertical);
+        }
+        Filter::PolarCoordinates { to_polar } => {
+            w.u8(15);
+            w.bool(*to_polar);
+        }
+        Filter::Mosaic { size } => {
+            w.u8(16);
+            w.u32(*size);
+        }
+        Filter::Crystallize { size, seed } => {
+            w.u8(17);
+            w.u32(*size);
+            w.u64(*seed);
+        }
+        Filter::Fragment { distance } => {
+            w.u8(18);
+            w.i32(*distance);
+        }
+        Filter::Clouds { scale, seed, difference } => {
+            w.u8(19);
+            w.f32(*scale);
+            w.u64(*seed);
+            w.bool(*difference);
+        }
+        Filter::Fibers { strength, length, seed } => {
+            w.u8(20);
+            w.f32(*strength);
+            w.f32(*length);
+            w.u64(*seed);
+        }
+        Filter::FindEdges => w.u8(21),
+        Filter::Emboss { angle, height, amount } => {
+            w.u8(22);
+            w.f32(*angle);
+            w.f32(*height);
+            w.f32(*amount);
+        }
+        Filter::Solarize => w.u8(23),
+        Filter::Diffuse { amount, seed } => {
+            w.u8(24);
+            w.u32(*amount);
+            w.u64(*seed);
+        }
+        Filter::HighPass { radius } => {
+            w.u8(25);
+            w.f32(*radius);
+        }
+        Filter::Offset { dx, dy, wrap } => {
+            w.u8(26);
+            w.i32(*dx);
+            w.i32(*dy);
+            w.bool(*wrap);
+        }
+        Filter::Maximum { radius } => {
+            w.u8(27);
+            w.u32(*radius);
+        }
+        Filter::Minimum { radius } => {
+            w.u8(28);
+            w.u32(*radius);
+        }
+        Filter::Custom { kernel, divisor, offset } => {
+            w.u8(29);
+            for v in kernel {
+                w.f32(*v);
+            }
+            w.f32(*divisor);
+            w.f32(*offset);
+        }
+    }
+}
+
+fn read_filter(r: &mut Reader<'_>) -> Result<Filter, IoError> {
+    Ok(match r.u8()? {
+        0 => {
+            let radius = r.f32()?;
+            Filter::GaussianBlur { radius }
+        }
+        1 => {
+            let radius = r.f32()?;
+            Filter::BoxBlur { radius }
+        }
+        2 => {
+            let angle = r.f32()?;
+            let distance = r.f32()?;
+            Filter::MotionBlur { angle, distance }
+        }
+        3 => {
+            let amount = r.f32()?;
+            let spin = r.bool()?;
+            let centre = (r.f32()?, r.f32()?);
+            Filter::RadialBlur { amount, spin, centre }
+        }
+        4 => {
+            let radius = r.f32()?;
+            let threshold = r.f32()?;
+            Filter::SurfaceBlur { radius, threshold }
+        }
+        5 => Filter::AverageBlur,
+        6 => {
+            let amount = r.f32()?;
+            Filter::Sharpen { amount }
+        }
+        7 => {
+            let amount = r.f32()?;
+            let radius = r.f32()?;
+            let threshold = r.f32()?;
+            Filter::UnsharpMask { amount, radius, threshold }
+        }
+        8 => {
+            let amount = r.f32()?;
+            let monochromatic = r.bool()?;
+            let gaussian = r.bool()?;
+            let seed = r.u64()?;
+            Filter::AddNoise { amount, monochromatic, gaussian, seed }
+        }
+        9 => {
+            let radius = r.u32()?;
+            Filter::Median { radius }
+        }
+        10 => {
+            let radius = r.u32()?;
+            let threshold = r.f32()?;
+            Filter::DustAndScratches { radius, threshold }
+        }
+        11 => {
+            let angle = r.f32()?;
+            Filter::Twirl { angle }
+        }
+        12 => {
+            let amount = r.f32()?;
+            Filter::Pinch { amount }
+        }
+        13 => {
+            let amount = r.f32()?;
+            Filter::Spherize { amount }
+        }
+        14 => {
+            let amplitude = r.f32()?;
+            let wavelength = r.f32()?;
+            let vertical = r.bool()?;
+            Filter::Wave { amplitude, wavelength, vertical }
+        }
+        15 => {
+            let to_polar = r.bool()?;
+            Filter::PolarCoordinates { to_polar }
+        }
+        16 => {
+            let size = r.u32()?;
+            Filter::Mosaic { size }
+        }
+        17 => {
+            let size = r.u32()?;
+            let seed = r.u64()?;
+            Filter::Crystallize { size, seed }
+        }
+        18 => {
+            let distance = r.i32()?;
+            Filter::Fragment { distance }
+        }
+        19 => {
+            let scale = r.f32()?;
+            let seed = r.u64()?;
+            let difference = r.bool()?;
+            Filter::Clouds { scale, seed, difference }
+        }
+        20 => {
+            let strength = r.f32()?;
+            let length = r.f32()?;
+            let seed = r.u64()?;
+            Filter::Fibers { strength, length, seed }
+        }
+        21 => Filter::FindEdges,
+        22 => {
+            let angle = r.f32()?;
+            let height = r.f32()?;
+            let amount = r.f32()?;
+            Filter::Emboss { angle, height, amount }
+        }
+        23 => Filter::Solarize,
+        24 => {
+            let amount = r.u32()?;
+            let seed = r.u64()?;
+            Filter::Diffuse { amount, seed }
+        }
+        25 => {
+            let radius = r.f32()?;
+            Filter::HighPass { radius }
+        }
+        26 => {
+            let dx = r.i32()?;
+            let dy = r.i32()?;
+            let wrap = r.bool()?;
+            Filter::Offset { dx, dy, wrap }
+        }
+        27 => {
+            let radius = r.u32()?;
+            Filter::Maximum { radius }
+        }
+        28 => {
+            let radius = r.u32()?;
+            Filter::Minimum { radius }
+        }
+        29 => {
+            let mut kernel = [0.0f32; 25];
+            for v in kernel.iter_mut() {
+                *v = r.f32()?;
+            }
+            let divisor = r.f32()?;
+            let offset = r.f32()?;
+            Filter::Custom { kernel, divisor, offset }
+        }
+        other => {
+            return Err(IoError::Malformed(format!("unknown filter {other}")));
+        }
+    })
+}
+
+/// A layer's attached filter stack.
+///
+/// Written after the effects, so a file from before smart filters existed
+/// simply has nothing here and reads as a layer with an empty stack.
+fn write_smart_filters(w: &mut Writer, f: &SmartFilters) {
+    w.bool(f.enabled);
+    w.u32(f.slots.len() as u32);
+    for slot in &f.slots {
+        write_filter(w, &slot.filter);
+        w.bool(slot.enabled);
+        w.f32(slot.opacity);
+    }
+    match &f.mask {
+        None => w.bool(false),
+        Some(m) => {
+            w.bool(true);
+            write_mask(w, m);
+        }
+    }
+}
+
+fn read_smart_filters(r: &mut Reader<'_>) -> Result<SmartFilters, IoError> {
+    let enabled = r.bool()?;
+    let count = r.u32()?;
+    // A count is four bytes and a slot is at least six, so a hostile file
+    // cannot ask for a billion of them before it runs out of bytes to back
+    // them with. Bound it anyway rather than reserve on a stranger's word.
+    if count > 4096 {
+        return Err(IoError::Malformed(format!("{count} filters on one layer")));
+    }
+    let mut slots = Vec::with_capacity(count.min(64) as usize);
+    for _ in 0..count {
+        let filter = read_filter(r)?;
+        slots.push(FilterSlot {
+            filter,
+            enabled: r.bool()?,
+            opacity: r.f32()?.clamp(0.0, 1.0),
+        });
+    }
+    let mask = if r.bool()? { Some(read_mask(r)?) } else { None };
+    Ok(SmartFilters { enabled, slots, mask })
 }
 
 fn write_curve(w: &mut Writer, c: &Curve) {
@@ -392,25 +765,7 @@ fn write_shape(w: &mut Writer, c: &ShapeContent) {
         // reader that stops early cannot mistake one part for another.
         ShapeKind::Path(path) => {
             w.u8(4);
-            w.u32(path.parts.len() as u32);
-            for part in &path.parts {
-                w.u8(part.op as u8);
-                w.u32(part.subpaths.len() as u32);
-                for sub in &part.subpaths {
-                    w.bool(sub.closed);
-                    w.u32(sub.anchors.len() as u32);
-                    for a in &sub.anchors {
-                        w.f32s(&[
-                            a.at.x,
-                            a.at.y,
-                            a.in_handle.x,
-                            a.in_handle.y,
-                            a.out_handle.x,
-                            a.out_handle.y,
-                        ]);
-                    }
-                }
-            }
+            write_path(w, path);
         }
     }
     w.f32(c.size.0);
@@ -611,6 +966,42 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
                     }
                 }
             }
+            CHUNK_STATES => {
+                let name = r.string()?;
+                let count = r.u32()?;
+                // A setting is at least twenty-four bytes, so a count larger than
+                // the chunk could hold is a lie.
+                let most = (len / 24).max(1);
+                if count as usize > most {
+                    return Err(IoError::Malformed(format!(
+                        "a layer state claims {count} layers in {len} bytes"
+                    )));
+                }
+                let mut layers = Vec::with_capacity(count.min(4096) as usize);
+                for _ in 0..count {
+                    let id = cshop_core::layer::LayerId(r.u64()?);
+                    let visible = r.bool()?;
+                    let offset = (r.i32()?, r.i32()?);
+                    let opacity = r.f32()?.clamp(0.0, 1.0);
+                    let fill_opacity = r.f32()?.clamp(0.0, 1.0);
+                    let blend_mode = blend_from(r.u16()?);
+                    let clipping = r.bool()?;
+                    let mask_enabled = r.bool()?;
+                    let effects = read_effects(&mut r)?;
+                    layers.push(cshop_core::states::LayerSetting {
+                        id,
+                        visible,
+                        offset,
+                        opacity,
+                        fill_opacity,
+                        blend_mode,
+                        clipping,
+                        effects,
+                        mask_enabled,
+                    });
+                }
+                doc.states.push(cshop_core::states::LayerState { name, layers });
+            }
             CHUNK_END => break,
             // Written by a newer build: skipped rather than refused, which is
             // what the chunked layout is for.
@@ -799,11 +1190,15 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
         let enabled = r.bool()?;
         let linked = r.bool()?;
         let data = read_mask(r)?;
-        Some(LayerMask { data, offset, enabled, linked })
+        let path = if r.is_empty() || !r.bool()? { None } else { Some(Box::new(read_path(r)?)) };
+        Some(LayerMask { data, offset, enabled, linked, path })
     } else {
         None
     };
     let effects = read_effects(r)?;
+    // Files written before smart filters existed end here, and a layer with
+    // no stack is what they meant.
+    let filters = if r.is_empty() { SmartFilters::default() } else { read_smart_filters(r)? };
 
     let mut layer = Layer::new(id, name, kind);
     layer.visible = flags & 1 != 0;
@@ -822,6 +1217,7 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
     layer.offset = offset;
     layer.mask = mask;
     layer.effects = effects;
+    layer.filters = filters;
 
     // Parents are written before their children, so the parent is already in
     // the tree. A dangling one lands at the root rather than being dropped.
@@ -956,6 +1352,75 @@ fn read_text(r: &mut Reader<'_>) -> Result<TextContent, IoError> {
     })
 }
 
+/// A path's geometry: parts, their boolean operations, and their anchors.
+///
+/// Pulled out of the shape codec because a vector mask keeps a path too, and
+/// two readers of the same bytes is how the two drift apart.
+fn write_path(w: &mut Writer, path: &cshop_core::path::PathShape) {
+    w.u32(path.parts.len() as u32);
+    for part in &path.parts {
+        w.u8(part.op as u8);
+        w.u32(part.subpaths.len() as u32);
+        for sub in &part.subpaths {
+            w.bool(sub.closed);
+            w.u32(sub.anchors.len() as u32);
+            for a in &sub.anchors {
+                w.f32s(&[
+                    a.at.x,
+                    a.at.y,
+                    a.in_handle.x,
+                    a.in_handle.y,
+                    a.out_handle.x,
+                    a.out_handle.y,
+                ]);
+            }
+        }
+    }
+}
+
+fn read_path(r: &mut Reader<'_>) -> Result<cshop_core::path::PathShape, IoError> {
+    use cshop_core::geom::Vec2;
+    use cshop_core::path::{Anchor, BoolOp, PathPart, PathShape, SubPath};
+    let parts = r.u32()? as usize;
+    // Bounded against a corrupt count claiming millions of parts.
+    if parts > 4096 {
+        return Err(IoError::Malformed(format!("{parts} path parts")));
+    }
+    let mut out = Vec::with_capacity(parts.min(64));
+    for _ in 0..parts {
+        let op = match r.u8()? {
+            1 => BoolOp::Subtract,
+            2 => BoolOp::Intersect,
+            3 => BoolOp::Exclude,
+            _ => BoolOp::Union,
+        };
+        let subs = r.u32()? as usize;
+        if subs > 65_536 {
+            return Err(IoError::Malformed(format!("{subs} subpaths")));
+        }
+        let mut subpaths = Vec::with_capacity(subs.min(256));
+        for _ in 0..subs {
+            let closed = r.bool()?;
+            let n = r.u32()? as usize;
+            if n > 1_000_000 {
+                return Err(IoError::Malformed(format!("{n} anchors")));
+            }
+            let mut anchors = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                let v: [f32; 6] = r.f32s()?;
+                anchors.push(Anchor {
+                    at: Vec2::new(v[0], v[1]),
+                    in_handle: Vec2::new(v[2], v[3]),
+                    out_handle: Vec2::new(v[4], v[5]),
+                });
+            }
+            subpaths.push(SubPath { anchors, closed });
+        }
+        out.push(PathPart { subpaths, op });
+    }
+    Ok(PathShape { parts: out })
+}
+
 fn read_shape(r: &mut Reader<'_>) -> Result<ShapeContent, IoError> {
     let kind = match r.u8()? {
         0 => ShapeKind::Rectangle { radius: r.f32()? },
@@ -965,48 +1430,7 @@ fn read_shape(r: &mut Reader<'_>) -> Result<ShapeContent, IoError> {
             let v: [f32; 5] = r.f32s()?;
             ShapeKind::Line { thickness: v[0], from: (v[1], v[2]), to: (v[3], v[4]) }
         }
-        4 => {
-            use cshop_core::geom::Vec2;
-            use cshop_core::path::{Anchor, BoolOp, PathPart, PathShape, SubPath};
-            let parts = r.u32()? as usize;
-            // Bounded against a corrupt count claiming millions of parts.
-            if parts > 4096 {
-                return Err(IoError::Malformed(format!("{parts} path parts")));
-            }
-            let mut out = Vec::with_capacity(parts);
-            for _ in 0..parts {
-                let op = match r.u8()? {
-                    1 => BoolOp::Subtract,
-                    2 => BoolOp::Intersect,
-                    3 => BoolOp::Exclude,
-                    _ => BoolOp::Union,
-                };
-                let subs = r.u32()? as usize;
-                if subs > 65_536 {
-                    return Err(IoError::Malformed(format!("{subs} subpaths")));
-                }
-                let mut subpaths = Vec::with_capacity(subs);
-                for _ in 0..subs {
-                    let closed = r.bool()?;
-                    let n = r.u32()? as usize;
-                    if n > 1_000_000 {
-                        return Err(IoError::Malformed(format!("{n} anchors")));
-                    }
-                    let mut anchors = Vec::with_capacity(n);
-                    for _ in 0..n {
-                        let v: [f32; 6] = r.f32s()?;
-                        anchors.push(Anchor {
-                            at: Vec2::new(v[0], v[1]),
-                            in_handle: Vec2::new(v[2], v[3]),
-                            out_handle: Vec2::new(v[4], v[5]),
-                        });
-                    }
-                    subpaths.push(SubPath { anchors, closed });
-                }
-                out.push(PathPart { subpaths, op });
-            }
-            ShapeKind::Path(PathShape { parts: out })
-        }
+        4 => ShapeKind::Path(read_path(r)?),
         other => return Err(IoError::Malformed(format!("unknown shape {other}"))),
     };
     let size = (r.f32()?, r.f32()?);

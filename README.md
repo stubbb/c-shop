@@ -114,6 +114,21 @@ changing your mind twenty times costs exactly what changing it once does — and
 costs the history nothing, since a placement is nine numbers. Saved as the
 source and the placement.
 
+**Smart filters.** A filter attached to a layer instead of run into it: a stack
+of them, each with a switch and an opacity, with a shared mask deciding where
+they land. The layer's own pixels are never touched, so "slightly less blur" is
+a number rather than an undo, and taking a filter off leaves no trace of it.
+
+**Vector masks.** A mask can keep the path it was drawn from. That matters when
+the document is resized: a painted mask is a picture of an edge and softens a
+little each time it is resampled, while a path is a description and is simply
+drawn again.
+
+**Layer states.** Named sets of what every layer is doing — visible or not,
+where, at what opacity, in what blend mode, with which effects. Two versions of
+a design live in one document, and an edit made to the picture belongs to both,
+because a state remembers settings rather than pixels.
+
 **Layer effects.** Drop shadow, outer glow, bevel and emboss (inner, outer,
 emboss and pillow), inner shadow, inner glow, satin, colour overlay, gradient
 overlay, pattern overlay and stroke — each with its own blend mode, opacity,

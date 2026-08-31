@@ -388,7 +388,7 @@ pub fn build_selection_demo(app: &mut CShopApp) {
             mask_data.set(x as i32, y, (t.clamp(0.0, 1.0) * 255.0) as u8);
         }
     }
-    band.mask = Some(LayerMask { data: mask_data, offset: (0, 360), enabled: true, linked: true });
+    band.mask = Some(LayerMask { data: mask_data, offset: (0, 360), enabled: true, linked: true, path: None });
     doc.tree.push(band, None);
 
     // A second layer with hard edges, to show a plain thumbnail beside it.
@@ -511,7 +511,7 @@ pub fn build_demo(app: &mut CShopApp) {
             mask.set(x as i32, y as i32, (t.clamp(0.0, 1.0) * 255.0) as u8);
         }
     }
-    band_layer.mask = Some(LayerMask { data: mask, offset: (0, 470), enabled: true, linked: true });
+    band_layer.mask = Some(LayerMask { data: mask, offset: (0, 470), enabled: true, linked: true, path: None });
     doc.tree.push(band_layer, Some(group_id));
 
     // Clipped to the band above it, so it only shows where the band is.

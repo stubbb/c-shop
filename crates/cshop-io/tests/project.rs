@@ -31,7 +31,7 @@ fn rich_document() -> Document {
     layer.locks.position = true;
     let mut mask = MaskBuffer::new(20, 20, 128);
     mask.set(3, 3, 255);
-    layer.mask = Some(LayerMask { data: mask, offset: (2, 3), enabled: false, linked: false });
+    layer.mask = Some(LayerMask { data: mask, offset: (2, 3), enabled: false, linked: false, path: None });
     layer.effects = LayerEffects {
         enabled: true,
         global_light_angle: 47.0,
@@ -438,4 +438,187 @@ fn a_smart_object_survives_a_save_and_reopen() {
     let mut again = reopened.clone();
     again.place(Transform::IDENTITY, Resampling::Bilinear);
     assert_eq!(again.raster().pixels(), source.pixels());
+}
+
+/// A filter stack is settings, so it has to come back as settings — a file
+/// that saved the blurred pixels instead would have missed the point.
+#[test]
+fn an_attached_filter_stack_survives_a_save_and_reopen() {
+    use cshop_core::filters::Filter;
+    use cshop_core::layer::{Layer, LayerKind};
+    use cshop_core::mask::MaskBuffer;
+    use cshop_core::smart_filters::{FilterSlot, SmartFilters};
+
+    let mut doc = Document::new("stacked", 64, 64, Background::Transparent);
+    let id = doc.tree.alloc_id();
+    let mut layer = Layer::new(
+        id,
+        "Filtered",
+        LayerKind::raster(cshop_core::pixels::PixelBuffer::filled(
+            32,
+            32,
+            Rgba8::opaque(120, 60, 30),
+        )),
+    );
+    let mut mask = MaskBuffer::hide_all(32, 32);
+    for y in 0..32 {
+        for x in 0..16 {
+            mask.set(x, y, 200);
+        }
+    }
+    layer.filters = SmartFilters {
+        enabled: true,
+        slots: vec![
+            FilterSlot { filter: Filter::GaussianBlur { radius: 3.5 }, enabled: true, opacity: 1.0 },
+            FilterSlot {
+                filter: Filter::UnsharpMask { amount: 1.25, radius: 2.0, threshold: 0.1 },
+                enabled: false,
+                opacity: 0.4,
+            },
+            FilterSlot { filter: Filter::Mosaic { size: 7 }, enabled: true, opacity: 0.75 },
+        ],
+        mask: Some(mask),
+    };
+    doc.tree.push(layer, None);
+
+    let back = round_trip(&doc);
+    let l = back
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|i| back.tree.get(i))
+        .find(|l| l.name == "Filtered")
+        .expect("the layer should have come back");
+
+    assert!(l.filters.enabled);
+    assert_eq!(l.filters.slots.len(), 3);
+    assert_eq!(l.filters.slots[0].filter, Filter::GaussianBlur { radius: 3.5 });
+    assert!(!l.filters.slots[1].enabled, "a switched-off slot stays switched off");
+    assert!((l.filters.slots[2].opacity - 0.75).abs() < 1e-6);
+    let mask = l.filters.mask.as_ref().expect("the mask came too");
+    assert_eq!(mask.get(4, 4), 200);
+    assert_eq!(mask.get(24, 4), 0);
+}
+
+/// Every filter, so a variant added without a tag shows up here rather than in
+/// someone's project.
+#[test]
+fn every_filter_writes_and_reads_back_as_itself() {
+    use cshop_core::filters::Filter;
+    use cshop_core::layer::{Layer, LayerKind};
+    use cshop_core::smart_filters::{FilterSlot, SmartFilters};
+
+    let every = vec![
+        Filter::GaussianBlur { radius: 1.5 },
+        Filter::BoxBlur { radius: 2.5 },
+        Filter::MotionBlur { angle: 30.0, distance: 12.0 },
+        Filter::RadialBlur { amount: 0.4, spin: true, centre: (0.25, 0.75) },
+        Filter::SurfaceBlur { radius: 4.0, threshold: 0.2 },
+        Filter::AverageBlur,
+        Filter::Sharpen { amount: 0.6 },
+        Filter::UnsharpMask { amount: 1.1, radius: 2.2, threshold: 0.03 },
+        Filter::AddNoise { amount: 0.3, monochromatic: true, gaussian: false, seed: 9 },
+        Filter::Median { radius: 3 },
+        Filter::DustAndScratches { radius: 2, threshold: 0.12 },
+        Filter::Twirl { angle: 45.0 },
+        Filter::Pinch { amount: -0.5 },
+        Filter::Spherize { amount: 0.8 },
+        Filter::Wave { amplitude: 5.0, wavelength: 20.0, vertical: true },
+        Filter::PolarCoordinates { to_polar: false },
+        Filter::Mosaic { size: 9 },
+        Filter::Crystallize { size: 11, seed: 3 },
+        Filter::Fragment { distance: -4 },
+        Filter::Clouds { scale: 1.5, seed: 77, difference: true },
+        Filter::Fibers { strength: 0.7, length: 8.0, seed: 5 },
+        Filter::FindEdges,
+        Filter::Emboss { angle: 120.0, height: 3.0, amount: 1.4 },
+        Filter::Solarize,
+        Filter::Diffuse { amount: 6, seed: 2 },
+        Filter::HighPass { radius: 7.5 },
+        Filter::Offset { dx: -12, dy: 34, wrap: true },
+        Filter::Maximum { radius: 4 },
+        Filter::Minimum { radius: 5 },
+        Filter::Custom { kernel: [0.5; 25], divisor: 2.0, offset: 0.25 },
+    ];
+
+    let mut doc = Document::new("all", 16, 16, Background::Transparent);
+    let id = doc.tree.alloc_id();
+    let mut layer = Layer::new(
+        id,
+        "Every",
+        LayerKind::raster(cshop_core::pixels::PixelBuffer::new(8, 8)),
+    );
+    layer.filters = SmartFilters {
+        enabled: true,
+        slots: every.iter().cloned().map(FilterSlot::new).collect(),
+        mask: None,
+    };
+    doc.tree.push(layer, None);
+
+    let back = round_trip(&doc);
+    let l = back
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|i| back.tree.get(i))
+        .find(|l| l.name == "Every")
+        .unwrap();
+    let got: Vec<_> = l.filters.slots.iter().map(|s| s.filter.clone()).collect();
+    assert_eq!(got, every, "every filter should come back as the one that went in");
+}
+
+/// Layer states are settings, and settings are what has to come back.
+#[test]
+fn layer_states_survive_a_save_and_reopen() {
+    use cshop_core::blend::BlendMode;
+    use cshop_core::layer::{Layer, LayerKind};
+    use cshop_core::states::LayerState;
+
+    let mut doc = Document::new("versions", 64, 64, Background::Transparent);
+    let a = doc.tree.alloc_id();
+    doc.tree.push(
+        Layer::new(a, "Headline", LayerKind::raster(cshop_core::pixels::PixelBuffer::new(8, 8))),
+        None,
+    );
+    let b = doc.tree.alloc_id();
+    doc.tree.push(
+        Layer::new(b, "Banner", LayerKind::raster(cshop_core::pixels::PixelBuffer::new(8, 8))),
+        None,
+    );
+
+    doc.tree.get_mut(a).unwrap().visible = true;
+    doc.tree.get_mut(b).unwrap().visible = false;
+    doc.tree.get_mut(a).unwrap().offset = (11, 22);
+    doc.tree.get_mut(a).unwrap().opacity = 0.6;
+    doc.tree.get_mut(a).unwrap().blend_mode = BlendMode::Multiply;
+    doc.states.push(LayerState::capture(&doc.tree, "With headline"));
+
+    doc.tree.get_mut(a).unwrap().visible = false;
+    doc.tree.get_mut(b).unwrap().visible = true;
+    doc.states.push(LayerState::capture(&doc.tree, "With banner"));
+
+    let back = round_trip(&doc);
+    assert_eq!(back.states.len(), 2);
+    assert_eq!(back.states[0].name, "With headline");
+    assert_eq!(back.states[1].name, "With banner");
+
+    let first = &back.states[0].layers[..];
+    let headline = first.iter().find(|s| s.id == a).expect("the headline's settings");
+    assert!(headline.visible);
+    assert_eq!(headline.offset, (11, 22));
+    assert!((headline.opacity - 0.6).abs() < 1e-6);
+    assert_eq!(headline.blend_mode, BlendMode::Multiply);
+
+    // And applying one still works on the reopened document.
+    let mut back = back;
+    back.states[1].clone().apply(&mut back.tree);
+    assert!(!back.tree.get(a).unwrap().visible);
+    assert!(back.tree.get(b).unwrap().visible);
+}
+
+/// A document with no states carries none, and still reads.
+#[test]
+fn a_document_without_states_carries_none() {
+    let doc = Document::new("plain", 16, 16, Background::Transparent);
+    assert!(round_trip(&doc).states.is_empty());
 }

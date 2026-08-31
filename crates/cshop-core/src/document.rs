@@ -147,6 +147,9 @@ pub struct Document {
     /// than the view, because where something should sit is a property of the
     /// design and not of who is looking at it.
     pub guides: Vec<crate::guides::Guide>,
+    /// Named sets of layer settings, so two versions of a design can live in
+    /// one document. See [`crate::states`].
+    pub states: Vec<crate::states::LayerState>,
 }
 
 impl Clone for Document {
@@ -171,6 +174,7 @@ impl Clone for Document {
             edit_target: self.edit_target,
             last_selection: self.last_selection.clone(),
             guides: self.guides.clone(),
+            states: self.states.clone(),
         }
     }
 }
@@ -222,6 +226,7 @@ impl Document {
             edit_target: EditTarget::Pixels,
             last_selection: None,
             guides: Vec::new(),
+            states: Vec::new(),
         }
     }
 
@@ -302,6 +307,7 @@ impl Document {
             edit_target: EditTarget::Pixels,
             last_selection: None,
             guides: Vec::new(),
+            states: Vec::new(),
         }
     }
 

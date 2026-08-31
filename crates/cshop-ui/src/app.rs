@@ -1842,6 +1842,41 @@ impl CShopApp {
             // --- filters ---
             Action::ShowFilterDialog(filter) => self.show_filter_dialog(*filter),
             Action::ApplyFilter(filter) => self.apply_filter(*filter),
+            Action::AttachFilter(filter) => self.edit_filters("Smart Filter", |f| {
+                f.enabled = true;
+                f.slots.push(cshop_core::smart_filters::FilterSlot::new(*filter));
+            }),
+            Action::RemoveAttachedFilter(i) => {
+                self.edit_filters("Remove Smart Filter", |f| {
+                    if i < f.slots.len() {
+                        f.slots.remove(i);
+                    }
+                })
+            }
+            Action::ToggleAttachedFilter(i) => self.edit_filters("Smart Filter", |f| {
+                if let Some(slot) = f.slots.get_mut(i) {
+                    slot.enabled = !slot.enabled;
+                }
+            }),
+            Action::ToggleAttachedFilters => {
+                self.edit_filters("Smart Filters", |f| f.enabled = !f.enabled)
+            }
+            Action::EditAttachedFilter(i) => self.edit_attached_filter(i),
+            Action::SetAttachedFilterOpacity(i, k) => {
+                self.edit_filters("Smart Filter Opacity", |f| {
+                    if let Some(slot) = f.slots.get_mut(i) {
+                        slot.opacity = k.clamp(0.0, 1.0);
+                    }
+                })
+            }
+            Action::ReplaceAttachedFilter(i, filter) => {
+                self.edit_filters("Smart Filter", |f| {
+                    if let Some(slot) = f.slots.get_mut(i) {
+                        slot.filter = *filter;
+                    }
+                })
+            }
+            Action::ApplyAttachedFilters => self.apply_attached_filters(),
             Action::RepeatLastFilter => match self.last_filter.clone() {
                 Some(filter) => self.apply_filter(filter),
                 None => self.notify("No filter has been used yet"),
@@ -1853,6 +1888,33 @@ impl CShopApp {
                 self.add_layer_mask(true, invert, false)
             }
             Action::AddLayerMaskFromDepth { invert } => self.start_depth_mask(invert),
+            Action::AddVectorMask { invert } => self.add_vector_mask(invert),
+
+            Action::SaveLayerState(name) => self.edit_states("Save Layer State", |doc, s| {
+                let name = if name.trim().is_empty() {
+                    format!("State {}", s.len() + 1)
+                } else {
+                    name
+                };
+                s.push(cshop_core::states::LayerState::capture(&doc.tree, name));
+                None
+            }),
+            Action::ApplyLayerState(i) => {
+                self.edit_states("Layer State", |_, s| (i < s.len()).then_some(i))
+            }
+            Action::UpdateLayerState(i) => self.edit_states("Update Layer State", |doc, s| {
+                if let Some(slot) = s.get_mut(i) {
+                    let name = slot.name.clone();
+                    *slot = cshop_core::states::LayerState::capture(&doc.tree, name);
+                }
+                None
+            }),
+            Action::DeleteLayerState(i) => self.edit_states("Delete Layer State", |_, s| {
+                if i < s.len() {
+                    s.remove(i);
+                }
+                None
+            }),
             Action::LayerToMask => self.layer_to_mask(),
             Action::SelectionFromMask => self.selection_from_mask(),
             Action::DeleteLayerMask => self.remove_layer_mask(false),
@@ -4642,6 +4704,82 @@ impl CShopApp {
         view.invalidate();
     }
 
+    /// Change the active layer's filter stack as one undoable step.
+    fn edit_filters(
+        &mut self,
+        label: &str,
+        change: impl FnOnce(&mut cshop_core::smart_filters::SmartFilters),
+    ) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        if layer.pixels().is_none() {
+            self.fail("Filters need a layer with pixels");
+            return;
+        }
+        let mut next = layer.filters.clone();
+        change(&mut next);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSmartFilters::new(id, next, label)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Reopen the filter window on one that is already attached, so a setting
+    /// can be changed rather than the filter redone.
+    fn edit_attached_filter(&mut self, index: usize) {
+        let Some(view) = self.doc() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(slot) = layer.filters.slots.get(index) else { return };
+        let filter = slot.filter.clone();
+        // The window edits the layer's own pixels, so it previews the filter
+        // on what the stack below it produced rather than on the finished
+        // layer: that is the picture this slot actually sees.
+        let below = cshop_core::smart_filters::SmartFilters {
+            enabled: true,
+            slots: layer.filters.slots[..index].to_vec(),
+            mask: None,
+        };
+        let source = match below.render(
+            layer.pixels().expect("checked when it was attached"),
+            &self.filter_context(),
+        ) {
+            Some(px) => px,
+            None => layer.pixels().expect("checked when it was attached").clone(),
+        };
+        let context = self.filter_context();
+        self.dialog = Dialog::Filter(Box::new(crate::filter_ui::FilterDialog::editing(
+            filter, source, context, index,
+        )));
+    }
+
+    /// Run the stack into the pixels, so it stops being editable.
+    fn apply_attached_filters(&mut self) {
+        let ctx = self.filter_context();
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        let Some(px) = layer.filtered_pixels(&ctx) else {
+            self.notify("There are no smart filters on this layer");
+            return;
+        };
+        let offset = layer.offset;
+        let rect = cshop_core::geom::IRect::at(offset.0, offset.1, px.width(), px.height());
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(ReplacePixels::new(id, rect, px, "Apply Smart Filters")),
+        );
+        view.mark_dirty(dirty);
+        // The stack has been run in; leaving it attached would apply it twice.
+        self.edit_filters("Apply Smart Filters", |f| {
+            f.slots.clear();
+            f.enabled = false;
+        });
+    }
+
     /// Wrap the active raster layer so that placing it stops costing anything.
     ///
     /// The pixels it has now become the source, so nothing changes on screen.
@@ -5118,7 +5256,7 @@ impl CShopApp {
             data: cshop_core::relight::to_mask(&map, invert),
             offset,
             enabled: true,
-            linked: true,
+            linked: true, path: None,
         };
         let dirty = view
             .history
@@ -5165,7 +5303,7 @@ impl CShopApp {
             data: cshop_core::mask::MaskBuffer::from_luminance(&pixels),
             offset,
             enabled: true,
-            linked: true,
+            linked: true, path: None,
         };
         let steps: Vec<Box<dyn cshop_core::history::Command>> = vec![
             Box::new(AddLayerMask::new(target, mask, "Layer to Mask")),
@@ -5239,13 +5377,71 @@ impl CShopApp {
             MaskBuffer::reveal_all(w, h)
         };
 
-        let mask = LayerMask { data, offset: (0, 0), enabled: true, linked: true };
+        let mask =
+            LayerMask { data, offset: (0, 0), enabled: true, linked: true, path: None };
         let dirty = view
             .history
             .apply(&mut view.doc, Box::new(AddLayerMask::new(id, mask, "Add Layer Mask")));
         view.mark_dirty(dirty);
         // A new mask is what the user wants to edit next.
         view.doc.edit_target = EditTarget::Mask;
+        view.invalidate();
+    }
+
+    /// Change the document's saved states as one undoable step.
+    ///
+    /// The closure is handed the document and the list, and returns the state
+    /// to switch to afterwards, if any.
+    fn edit_states(
+        &mut self,
+        label: &str,
+        change: impl FnOnce(
+            &cshop_core::document::Document,
+            &mut Vec<cshop_core::states::LayerState>,
+        ) -> Option<usize>,
+    ) {
+        let Some(view) = self.doc_mut() else { return };
+        let mut next = view.doc.states.clone();
+        let show = change(&view.doc, &mut next);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetLayerStates::new(next, show, label)),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// Turn the path being drawn into a mask rather than a shape layer.
+    ///
+    /// The path is kept alongside the coverage it produces, so resizing the
+    /// document draws it again at the new size instead of resampling the last
+    /// drawing of it — which is the whole difference between a vector mask and
+    /// a painted one, and the only reason to have both.
+    fn add_vector_mask(&mut self, invert: bool) {
+        let Some(draft) = self.pen.take() else {
+            self.notify(
+                "Draw a path with the Pen tool first; a vector mask is that path, kept.",
+            );
+            return;
+        };
+        if draft.anchors.len() < 3 {
+            self.notify("A mask needs a closed path, so at least three points");
+            self.pen = Some(draft);
+            return;
+        }
+        let path = draft.to_path(true);
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        if view.doc.tree.get(id).is_none_or(|l| l.mask.is_some()) {
+            self.notify("That layer already has a mask");
+            return;
+        }
+        let (w, h) = (view.doc.width, view.doc.height);
+        let mask = LayerMask::from_path(path, w, h, invert);
+        let dirty = view
+            .history
+            .apply(&mut view.doc, Box::new(AddLayerMask::new(id, mask, "Add Vector Mask")));
+        view.mark_dirty(dirty);
         view.invalidate();
     }
 
@@ -5263,7 +5459,7 @@ impl CShopApp {
                 data: selection.to_mask(),
                 offset: (0, 0),
                 enabled: true,
-                linked: true,
+                linked: true, path: None,
             });
         }
 
@@ -5462,7 +5658,7 @@ impl CShopApp {
                 data: pixels_to_mask(&moved),
                 offset: moved_offset,
                 enabled: m.enabled,
-                linked: m.linked,
+                linked: m.linked, path: None,
             })
         });
 
@@ -5606,7 +5802,7 @@ impl CShopApp {
                     data: pixels_to_mask(&buf),
                     offset: off,
                     enabled: m.enabled,
-                    linked: m.linked,
+                    linked: m.linked, path: None,
                 },
                 None => m.clone(),
             }
@@ -5703,21 +5899,23 @@ impl CShopApp {
         let Some(px) = view.doc.tree.get(id).and_then(|l| l.pixels()) else { return };
 
         let source = px.copy_rect(rect.translate(-offset.0, -offset.1));
-        let context = cshop_core::filters::FilterContext {
-            foreground: self.foreground,
-            background: self.background,
-        };
+        let context = self.filter_context();
         self.dialog = Dialog::Filter(Box::new(crate::filter_ui::FilterDialog::new(
             filter, source, context,
         )));
     }
 
-    fn apply_filter(&mut self, filter: cshop_core::filters::Filter) {
-        let label = filter.name().to_string();
-        let context = cshop_core::filters::FilterContext {
+    /// The colours a filter that draws with them should use.
+    fn filter_context(&self) -> cshop_core::filters::FilterContext {
+        cshop_core::filters::FilterContext {
             foreground: self.foreground,
             background: self.background,
-        };
+        }
+    }
+
+    fn apply_filter(&mut self, filter: cshop_core::filters::Filter) {
+        let label = filter.name().to_string();
+        let context = self.filter_context();
         let Some((id, rect, offset)) = self.filter_region() else {
             let why = self.why_not("Filters apply to raster layers");
             self.fail(why);

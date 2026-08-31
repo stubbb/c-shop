@@ -1062,11 +1062,24 @@ impl Command for ResizeImage {
             if let Some(mask) = &mut layer.mask {
                 let w = ((mask.data.width() as f64 * sx).round() as u32).max(1);
                 let h = ((mask.data.height() as f64 * sy).round() as u32).max(1);
-                mask.data = resize_mask(&mask.data, w, h);
-                mask.offset = (
-                    (mask.offset.0 as f64 * sx).round() as i32,
-                    (mask.offset.1 as f64 * sy).round() as i32,
-                );
+                // A mask that knows the path it came from is drawn again at
+                // the new size rather than resampled, so its edge stays as
+                // exact as it was. This is what a vector mask is *for*: a
+                // painted one softens a little on every resize and there is
+                // nothing to be done about it, because a picture of an edge
+                // is all it has.
+                if let Some(path) = mask.path.clone() {
+                    let scaled = scale_path(&path, sx as f32, sy as f32);
+                    mask.data = crate::layer::mask_from_path(&scaled, w, h, false);
+                    mask.path = Some(Box::new(scaled));
+                    mask.offset = (0, 0);
+                } else {
+                    mask.data = resize_mask(&mask.data, w, h);
+                    mask.offset = (
+                        (mask.offset.0 as f64 * sx).round() as i32,
+                        (mask.offset.1 as f64 * sy).round() as i32,
+                    );
+                }
             }
         }
 
@@ -1400,6 +1413,29 @@ impl Command for SetProfile {
 }
 
 /// Resize a coverage mask by resampling it as a greyscale image.
+/// Every anchor and handle multiplied through, so a path scales with the
+/// document it is drawn in.
+fn scale_path(path: &crate::path::PathShape, sx: f32, sy: f32) -> crate::path::PathShape {
+    let mut out = path.clone();
+    for part in &mut out.parts {
+        for sub in &mut part.subpaths {
+            for a in &mut sub.anchors {
+                let go = |v: &mut crate::geom::Vec2| {
+                    v.x *= sx;
+                    v.y *= sy;
+                };
+                // A handle is a control point in the same space as the
+                // anchor, not an offset from it, so all three scale the same
+                // way about the origin and none of them needs re-centring.
+                go(&mut a.at);
+                go(&mut a.in_handle);
+                go(&mut a.out_handle);
+            }
+        }
+    }
+    out
+}
+
 fn resize_mask(mask: &MaskBuffer, width: u32, height: u32) -> MaskBuffer {
     let mut as_pixels = PixelBuffer::new(mask.width(), mask.height());
     for y in 0..mask.height() as i32 {
@@ -1526,6 +1562,117 @@ impl Command for RasterizeLayer {
             self.pixels = s.eight().cloned();
         }
         Dirty::structural(layer.bounds())
+    }
+}
+
+/// Switch the document to a saved layer state, or change the list of them.
+///
+/// One command for all of it — applying, saving, renaming, deleting — because
+/// every one of them is "the states and the settings were this, now they are
+/// that", and a state holds settings rather than pixels, so remembering both
+/// sides costs almost nothing.
+#[derive(Debug)]
+pub struct SetLayerStates {
+    to: Vec<crate::states::LayerState>,
+    /// The state to switch to as part of this, if any.
+    show: Option<usize>,
+    before: Option<(Vec<crate::states::LayerState>, crate::states::LayerState)>,
+    label: String,
+}
+
+impl SetLayerStates {
+    pub fn new(
+        to: Vec<crate::states::LayerState>,
+        show: Option<usize>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self { to, show, before: None, label: label.into() }
+    }
+}
+
+impl Command for SetLayerStates {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.before.is_none() {
+            // What the layers are doing right now, so undo can put them back
+            // whether or not this command switches states.
+            self.before = Some((
+                doc.states.clone(),
+                crate::states::LayerState::capture(&doc.tree, "before"),
+            ));
+        }
+        doc.states = self.to.clone();
+        if let Some(state) = self.show.and_then(|i| doc.states.get(i)).cloned() {
+            state.apply(&mut doc.tree);
+        }
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some((states, was)) = self.before.clone() else { return Dirty::NONE };
+        doc.states = states;
+        was.apply(&mut doc.tree);
+        Dirty::structural(doc.bounds())
+    }
+}
+
+/// Change a layer's attached filters.
+///
+/// The whole stack at once rather than one slot, because every operation on it
+/// — adding, removing, reordering, switching one off — is a small edit to a
+/// small structure, and one entry per operation is what someone undoing would
+/// expect. The stack holds settings and a mask, not pixels, so keeping both
+/// the old and the new costs nothing worth counting.
+#[derive(Debug)]
+pub struct SetSmartFilters {
+    id: LayerId,
+    to: crate::smart_filters::SmartFilters,
+    from: Option<crate::smart_filters::SmartFilters>,
+    label: String,
+}
+
+impl SetSmartFilters {
+    pub fn new(
+        id: LayerId,
+        to: crate::smart_filters::SmartFilters,
+        label: impl Into<String>,
+    ) -> Self {
+        Self { id, to, from: None, label: label.into() }
+    }
+
+    fn write(&self, doc: &mut Document, value: crate::smart_filters::SmartFilters) -> Dirty {
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        let before = layer.render_bounds();
+        layer.filters = value;
+        Dirty::pixels(self.id, before.union(&layer.render_bounds()))
+    }
+}
+
+impl Command for SetSmartFilters {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        let mask = |f: &crate::smart_filters::SmartFilters| {
+            f.mask.as_ref().map_or(0, |m| m.width() as u64 * m.height() as u64)
+        };
+        mask(&self.to) + self.from.as_ref().map_or(0, mask)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.from.is_none() {
+            self.from = doc.tree.get(self.id).map(|l| l.filters.clone());
+        }
+        self.write(doc, self.to.clone())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(from) = self.from.clone() else { return Dirty::NONE };
+        self.write(doc, from)
     }
 }
 

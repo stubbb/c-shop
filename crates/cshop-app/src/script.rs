@@ -1434,6 +1434,7 @@ impl Runner {
                 offset,
                 enabled: true,
                 linked: true,
+                path: None,
             };
             let view = self.app.doc_mut().ok_or("no document")?;
             let dirty = view.history.apply(

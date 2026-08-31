@@ -59,12 +59,35 @@ pub struct FilterDialog {
     /// The settings and window the cache was built for.
     rendered: Option<(Filter, IRect, u32, u32)>,
     show_original: bool,
+    /// The slot being edited, when this window was opened on one already
+    /// attached. `None` for a filter being chosen for the first time.
+    editing: Option<usize>,
+    /// Attach the filter to the layer rather than running it into the pixels.
+    /// Remembered between openings, because someone who works this way works
+    /// this way for the whole session.
+    pub attach: bool,
     /// Set while a press has moved, so panning does not also trigger compare.
     press_moved: bool,
 }
 
 impl FilterDialog {
     /// `source` is the affected region of the layer at full resolution.
+    /// The same window, opened on a filter already attached to the layer.
+    ///
+    /// The source is what the slots below this one produced, so the preview
+    /// shows the picture this filter actually sees rather than the finished
+    /// layer.
+    pub fn editing(
+        filter: Filter,
+        source: PixelBuffer,
+        context: FilterContext,
+        slot: usize,
+    ) -> Self {
+        let mut d = Self::new(filter, source, context);
+        d.editing = Some(slot);
+        d
+    }
+
     pub fn new(filter: Filter, source: PixelBuffer, context: FilterContext) -> Self {
         let centre = (source.width() as f32 / 2.0, source.height() as f32 / 2.0);
         let mut dialog = Self {
@@ -79,6 +102,8 @@ impl FilterDialog {
             original: None,
             rendered: None,
             show_original: false,
+            editing: None,
+            attach: false,
             press_moved: false,
         };
         dialog.zoom = dialog.fit_zoom();
@@ -280,12 +305,31 @@ impl FilterDialog {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui.button("OK").clicked() {
-                actions.push(Action::ApplyFilter(Box::new(self.filter.clone())));
+                actions.push(match self.editing {
+                    Some(i) => Action::ReplaceAttachedFilter(i, Box::new(self.filter.clone())),
+                    None if self.attach => Action::AttachFilter(Box::new(self.filter.clone())),
+                    None => Action::ApplyFilter(Box::new(self.filter.clone())),
+                });
                 close = true;
             }
             if ui.button("Cancel").clicked() {
                 close = true;
             }
+            ui.add_space(12.0);
+            if self.editing.is_some() {
+                ui.label(
+                    egui::RichText::new("Editing a filter already on this layer")
+                        .color(crate::theme::Palette::DARK.text_dim)
+                        .small(),
+                );
+                return;
+            }
+            ui.checkbox(&mut self.attach, "Keep editable")
+                .on_hover_text(
+                    "Attach the filter to the layer instead of running it into the \
+                     pixels, so its settings can be changed or the whole thing \
+                     removed afterwards",
+                );
         });
         close
     }

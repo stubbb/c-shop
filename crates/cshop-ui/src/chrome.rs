@@ -591,6 +591,23 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                     ui.close();
                 }
                 ui.separator();
+                let drawing = app.pen.as_ref().is_some_and(|d| d.anchors.len() >= 3);
+                if item_enabled(ui, "From Path", "", drawing && !has_mask)
+                    .on_hover_text(
+                        "The path you are drawing becomes the mask, and stays a path: \
+                         resizing the document draws it again rather than resampling it",
+                    )
+                    .clicked()
+                {
+                    app.push(Action::AddVectorMask { invert: false });
+                    ui.close();
+                }
+                if item_enabled(ui, "From Path (hide inside)", "", drawing && !has_mask).clicked()
+                {
+                    app.push(Action::AddVectorMask { invert: true });
+                    ui.close();
+                }
+                ui.separator();
                 if item_enabled(ui, "Layer to Mask", "", has_doc).clicked() {
                     app.push(Action::LayerToMask);
                     ui.close();

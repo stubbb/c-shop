@@ -14,6 +14,10 @@ use cshop_core::layer::{Layer, LayerId, LayerKind};
 struct Entry {
     pixels: Option<GpuTexture>,
     mask: Option<GpuTexture>,
+    /// Whether what is in `pixels` is a composition — the layer with its
+    /// filters and effects run over it — rather than the layer's own pixels.
+    /// Switching a stack off has to reach the GPU even when no pixel changed.
+    composed: bool,
 }
 
 /// Texture cache keyed by layer id.
@@ -205,7 +209,7 @@ impl LayerTextures {
     }
 
     fn sync_layer(&mut self, ctx: &GpuContext, layer: &Layer, dirty: &Dirty) {
-        let entry = self.entries.entry(layer.id).or_insert(Entry { pixels: None, mask: None });
+        let entry = self.entries.entry(layer.id).or_insert(Entry { pixels: None, mask: None, composed: false });
 
         // --- pixels --------------------------------------------------------
         match &layer.kind {
@@ -214,11 +218,35 @@ impl LayerTextures {
             LayerKind::Raster(_)
             | LayerKind::Text(_)
             | LayerKind::Shape(_)
-            | LayerKind::Smart(_) => {
-                // A layer with effects uploads the effects and its pixels
-                // composited together, sized to `render_bounds`. Everything
+            | LayerKind::Smart(_) => 'pixels: {
+                // A layer with effects or filters uploads the composition of
+                // them with its pixels, sized to `render_bounds`. Everything
                 // from here on treats that as the layer's texture, so the
-                // compositor needs no knowledge of effects.
+                // compositor needs no knowledge of either.
+                //
+                // Composing is only worth doing when something is going to be
+                // uploaded. Nothing below writes to the GPU unless the layer
+                // is named in `dirty` or has no texture yet, and a filter
+                // stack is not cheap — a full-layer blur is a fifth of a
+                // second — so working one out to throw it away would cost that
+                // on every frame the document was dirty anywhere at all.
+                //
+                // `structure` is in the condition because a size change does
+                // not name its layer — `Dirty::structural` names none at all —
+                // and the full-upload branch below used to catch those by
+                // comparing the texture's size against the pixels it had just
+                // composed. It cannot compare what it has not computed.
+                let wants = layer.has_effects() || layer.has_filters();
+                let upload = dirty.structure
+                    || dirty.layers.contains(&layer.id)
+                    || entry.pixels.is_none()
+                    || entry.composed != wants;
+                if !upload {
+                    // Only the pixel work is skipped; the mask below still
+                    // has to be brought up to date.
+                    break 'pixels;
+                }
+                entry.composed = wants;
                 let composed = layer.render_with_effects().map(|(px, _)| px);
 
                 // A deep layer with nothing composited over it goes up at its
@@ -231,7 +259,7 @@ impl LayerTextures {
                         &layer.kind
                     {
                         Self::upload_deep(ctx, entry, layer.id.0, deep);
-                        return;
+                        break 'pixels;
                     }
                 }
 
@@ -244,10 +272,10 @@ impl LayerTextures {
                         None => {
                             let narrowed = match &layer.kind {
                                 LayerKind::Raster(s) => s.to_eight(),
-                                _ => return,
+                                _ => break 'pixels,
                             };
                             Self::upload_whole(ctx, entry, layer.id.0, &narrowed);
-                            return;
+                            break 'pixels;
                         }
                     },
                 };
@@ -265,14 +293,11 @@ impl LayerTextures {
                     );
                     tex.write(ctx, px.as_bytes(), 4);
                     entry.pixels = Some(tex);
-                } else if composed.is_some() && dirty.layers.contains(&layer.id) {
-                    // The whole composition changed, not just the dirty rect.
-                    let tex = entry.pixels.as_ref().expect("checked above");
-                    tex.write(ctx, px.as_bytes(), 4);
-                } else if composed.is_some() && dirty.layers.contains(&layer.id) {
-                    // Effects are re-rendered whole — a blur spreads a change
-                    // well beyond the dirty rect — so the partial upload below
-                    // would leave stale pixels around the edit.
+                } else if composed.is_some() {
+                    // Effects and filters are re-rendered whole — a blur
+                    // spreads a change well beyond the dirty rect — so the
+                    // partial upload below would leave stale pixels around the
+                    // edit.
                     let tex = entry.pixels.as_ref().expect("checked above");
                     tex.write(ctx, px.as_bytes(), 4);
                 } else if dirty.layers.contains(&layer.id) {

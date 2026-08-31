@@ -399,6 +399,23 @@ pub enum Action {
     ApplyFilter(Box<cshop_core::filters::Filter>),
     /// Re-run the last filter with the settings it was used with.
     RepeatLastFilter,
+    /// Attach a filter to the active layer rather than running it into the
+    /// pixels. See [`cshop_core::smart_filters`].
+    AttachFilter(Box<cshop_core::filters::Filter>),
+    /// Take one off again.
+    RemoveAttachedFilter(usize),
+    /// Switch one on or off, keeping its settings.
+    ToggleAttachedFilter(usize),
+    /// Switch the whole stack on or off.
+    ToggleAttachedFilters,
+    /// Reopen the filter window on one that is already attached.
+    EditAttachedFilter(usize),
+    /// Put new settings on one that is already attached.
+    ReplaceAttachedFilter(usize, Box<cshop_core::filters::Filter>),
+    /// How much of one slot's result to keep, `0..=1`.
+    SetAttachedFilterOpacity(usize, f32),
+    /// Run the whole stack into the pixels, so it stops being editable.
+    ApplyAttachedFilters,
 
     // --- masks ---
     AddLayerMask { hide_all: bool },
@@ -406,6 +423,18 @@ pub enum Action {
     /// Mask the active layer by how far away everything in it is. Needs the
     /// vision pack, so it runs on a worker thread.
     AddLayerMaskFromDepth { invert: bool },
+    /// Remember what every layer is doing, under a name.
+    SaveLayerState(String),
+    /// Show a saved one.
+    ApplyLayerState(usize),
+    /// Replace one with what the layers are doing now.
+    UpdateLayerState(usize),
+    /// Forget one.
+    DeleteLayerState(usize),
+
+    /// Turn the path being drawn with the Pen into a mask on the active layer,
+    /// keeping the path so the edge stays exact. See [`cshop_core::layer`].
+    AddVectorMask { invert: bool },
     /// Turn the active layer into a mask on the one below it, consuming it.
     LayerToMask,
     /// Load the active layer's mask as the selection.
