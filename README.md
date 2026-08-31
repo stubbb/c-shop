@@ -106,6 +106,17 @@ point text and wrapping paragraph boxes, real or synthesised bold and italic,
 alignment, leading, tracking and anti-aliasing. Edited live on canvas with a
 caret; a whole typing session is a single undo step.
 
+**Selecting.** Marquees, lassos and a magic wand, plus three that look harder
+at the picture. **Colour range** finds a colour wherever it appears rather than
+where it is joined to a click, and answers with partial coverage instead of a
+verdict, so an edge that is halfway between comes out halfway selected.
+**Refine edge** fits a boundary to the one in the photograph — a guided filter
+against the image's own brightness, which is what hair needs and what growing
+or feathering an edge can never do, since neither of those looks at the
+picture. And a path becomes a selection or a selection becomes a path, the
+second by tracing the boundary and then simplifying it, so what comes back has
+handles at the corners rather than one per pixel.
+
 **Smart objects.** A layer that keeps the picture it was made from. Scale a
 raster layer to a quarter and back and you have a quarter of a picture
 stretched over the original space; a smart object treats the placement as a

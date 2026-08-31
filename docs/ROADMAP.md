@@ -81,15 +81,24 @@ than in two.
 
 ## Selecting and masking
 
-**Selection by colour range**, across the whole image rather than flood-filled
-from a point, which is what the magic wand does.
+**Selection by colour range.** ~~Across the whole image rather than
+flood-filled from a point.~~ Done, on `Select ▸ Colour Range…` and
+`select colour`. Sampled colours, tonal bands or a hue band, with fuzziness
+giving *partial* coverage — the real difference from the wand, whose answer is
+in or out.
 
-**Refining an edge.** The model-driven segmentation gets the shape right and
-the boundary approximate; hair and fur need a matting pass that estimates
-partial coverage rather than a hard in-or-out.
+**Refining an edge.** ~~The model-driven segmentation gets the shape right and
+the boundary approximate.~~ Done, on `Select ▸ Refine Edge…` and
+`select refine`. A guided filter fits the mask to the picture's own brightness
+locally, so the boundary moves onto the edge that is really there instead of
+being moved by hand. The radius has to reach the edge to find it, which the
+window says.
 
-**Paths and selections, both ways.** A selection from a path, and a path traced
-round a selection.
+**Paths and selections, both ways.** ~~A selection from a path, and a path
+traced round a selection.~~ Done. The trace reuses the crack-following the
+marching ants already do; what is new is Douglas–Peucker on top of it, which is
+what turns a staircase of a few hundred right angles into a path with handles
+someone can actually edit.
 
 ## Geometry
 

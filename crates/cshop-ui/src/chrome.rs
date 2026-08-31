@@ -730,6 +730,39 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ShowSegment);
                 ui.close();
             }
+            if item_enabled(ui, "Colour Range…", "", has_doc)
+                .on_hover_text(
+                    "Selects a colour wherever it appears, not just where it is joined \
+                     to what you clicked — and partly, where it is partly there",
+                )
+                .clicked()
+            {
+                app.push(Action::ShowColorRange);
+                ui.close();
+            }
+            if item_enabled(ui, "Refine Edge…", "", has_selection)
+                .on_hover_text(
+                    "Fits the selection's edge to the one in the picture, which is what \
+                     hair and fur need and what growing or feathering cannot do",
+                )
+                .clicked()
+            {
+                app.push(Action::ShowRefineEdge);
+                ui.close();
+            }
+            ui.separator();
+            let drawing_path = app.pen.as_ref().is_some_and(|d| d.anchors.len() >= 3);
+            if item_enabled(ui, "Selection from Path", "", drawing_path).clicked() {
+                app.push(Action::SelectionFromPath);
+                ui.close();
+            }
+            if item_enabled(ui, "Path from Selection", "", has_selection)
+                .on_hover_text("Traces the outline as a path you can edit with the Pen")
+                .clicked()
+            {
+                app.push(Action::PathFromSelection);
+                ui.close();
+            }
             ui.separator();
             if item_enabled(ui, "All", &k::SELECT_ALL.label(), has_doc).clicked() {
                 app.push(Action::SelectAll);

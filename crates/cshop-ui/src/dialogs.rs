@@ -39,6 +39,9 @@ pub enum Dialog {
     /// Boxed like the others that carry a list, and non-modal: the canvas is
     /// this one's control surface as well as its preview.
     Segment(Box<crate::segment_ui::SegmentDialog>),
+    /// Boxed: both carry a preview of the picture they select from.
+    ColorRange(Box<crate::select_ui::ColorRangeDialog>),
+    RefineEdge(Box<crate::select_ui::RefineEdgeDialog>),
     About,
 }
 

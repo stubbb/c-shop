@@ -522,6 +522,8 @@ impl CShopApp {
             Dialog::ImageSize(d) => d.title(),
             Dialog::Rename(_) => "Rename Layer",
             Dialog::Segment(d) => d.title(),
+            Dialog::ColorRange(_) => "Colour Range",
+            Dialog::RefineEdge(_) => "Refine Edge",
             Dialog::Fill(_) => "Fill",
             Dialog::ColorPicker(d) => d.title(),
             Dialog::ColorProfile(d) => d.title(),
@@ -586,6 +588,8 @@ impl CShopApp {
                 Dialog::LayerStyle(d) => close = d.ui(ui, &mut actions),
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
                 Dialog::Filter(d) => close = d.ui(ui, &mut actions),
+                Dialog::ColorRange(d) => close = d.ui(ui, &mut actions),
+                Dialog::RefineEdge(d) => close = d.ui(ui, &mut actions),
                 Dialog::About => {
                     ui.label("C-Shop — a native, GPU-accelerated layered image editor.");
                     ui.add_space(4.0);
@@ -1889,6 +1893,13 @@ impl CShopApp {
             }
             Action::AddLayerMaskFromDepth { invert } => self.start_depth_mask(invert),
             Action::AddVectorMask { invert } => self.add_vector_mask(invert),
+
+            Action::ShowColorRange => self.show_color_range(),
+            Action::ApplyColorRange(range) => self.apply_color_range(*range),
+            Action::ShowRefineEdge => self.show_refine_edge(),
+            Action::ApplyRefineEdge(settings) => self.apply_refine_edge(*settings),
+            Action::SelectionFromPath => self.selection_from_path(),
+            Action::PathFromSelection => self.path_from_selection(),
 
             Action::SaveLayerState(name) => self.edit_states("Save Layer State", |doc, s| {
                 let name = if name.trim().is_empty() {
@@ -5388,6 +5399,118 @@ impl CShopApp {
         view.invalidate();
     }
 
+    /// The picture a selection should be made from: the composite, since a
+    /// selection belongs to the document rather than to one layer.
+    fn selection_source(&mut self) -> Option<PixelBuffer> {
+        let gpu = self.gpu.clone();
+        let i = self.active?;
+        Some(self.render_composite(&gpu, i))
+    }
+
+    fn show_color_range(&mut self) {
+        let Some(source) = self.selection_source() else {
+            self.notify("Open a document first");
+            return;
+        };
+        self.dialog =
+            Dialog::ColorRange(Box::new(crate::select_ui::ColorRangeDialog::new(source)));
+    }
+
+    fn apply_color_range(&mut self, range: cshop_core::color_range::ColorRange) {
+        let Some(source) = self.selection_source() else { return };
+        let mask = range.matte(&source);
+        let Some(view) = self.doc_mut() else { return };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSelection::new(
+                Some(&cshop_core::selection::Selection::from_mask(mask)),
+                "Colour Range",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    fn show_refine_edge(&mut self) {
+        let Some(mask) = self.doc().and_then(|v| v.doc.selection.as_ref().map(|s| s.to_mask()))
+        else {
+            self.notify("Refine Edge works on a selection; make one first");
+            return;
+        };
+        let Some(source) = self.selection_source() else { return };
+        self.dialog = Dialog::RefineEdge(Box::new(crate::select_ui::RefineEdgeDialog::new(
+            source, &mask,
+        )));
+    }
+
+    fn apply_refine_edge(&mut self, settings: cshop_core::refine::RefineEdge) {
+        let Some(mask) = self.doc().and_then(|v| v.doc.selection.as_ref().map(|s| s.to_mask()))
+        else {
+            return;
+        };
+        let Some(source) = self.selection_source() else { return };
+        let refined = settings.apply(&mask, &source);
+        let Some(view) = self.doc_mut() else { return };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSelection::new(
+                Some(&cshop_core::selection::Selection::from_mask(refined)),
+                "Refine Edge",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// The path being drawn becomes the selection.
+    fn selection_from_path(&mut self) {
+        let Some(draft) = self.pen.take() else {
+            self.notify("Draw a path with the Pen tool first");
+            return;
+        };
+        if draft.anchors.len() < 3 {
+            self.notify("A selection needs a closed path, so at least three points");
+            self.pen = Some(draft);
+            return;
+        }
+        let path = draft.to_path(true);
+        let Some(view) = self.doc_mut() else { return };
+        let (w, h) = (view.doc.width, view.doc.height);
+        let mask = cshop_core::layer::mask_from_path(&path, w, h, false);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::SetSelection::new(
+                Some(&cshop_core::selection::Selection::from_mask(mask)),
+                "Selection from Path",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+    }
+
+    /// The selection becomes a path, as a shape layer that can be edited with
+    /// the Pen like any other.
+    fn path_from_selection(&mut self) {
+        let Some(view) = self.doc_mut() else { return };
+        let Some(selection) = view.doc.selection.clone() else {
+            self.notify("Nothing is selected");
+            return;
+        };
+        let mut selection = selection;
+        // A pixel of tolerance: closer than that mostly preserves the
+        // aliasing, which is not something anyone wants handles on.
+        let path = cshop_core::trace::path_from_selection(&mut selection, 1.0);
+        if path.is_empty() {
+            self.notify("That selection has no outline to trace");
+            return;
+        }
+        let mut style = self.shape_style;
+        // An outline, not a filled shape: what is wanted is the boundary.
+        style.stroke = style.stroke.or(Some(self.foreground));
+        style.fill = None;
+        self.add_path_layer(path, style, "Path from Selection");
+    }
+
     /// Change the document's saved states as one undoable step.
     ///
     /// The closure is handed the document and the list, and returns the state
@@ -6247,6 +6370,8 @@ fn window_key(dialog: &Dialog) -> Option<&'static str> {
         Dialog::None => return None,
         Dialog::LayerStyle(_) => "window-layer-style",
         Dialog::Segment(_) => "window-segment",
+        Dialog::ColorRange(_) => "window-color-range",
+        Dialog::RefineEdge(_) => "window-refine-edge",
         Dialog::Filter(_) => "window-filter",
         Dialog::Adjustment(_) => "window-adjustment",
         Dialog::Lens(_) => "window-lens",

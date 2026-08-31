@@ -100,6 +100,9 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `info` | Report the document's size, layer count and working colour space. |
 | `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
+| `select colour NAME\|#rrggbb [fuzziness= invert]` | Select a colour wherever it appears, or `shadows`, `midtones`, `highlights`, `reds`, `greens`, `blues`. |
+| `select refine [radius= smooth= feather= contrast= shift=]` | Fit the selection's edge to the picture's. |
+| `select to-path` | Trace the selection's outline as a path layer. |
 | `mode [8\|16]` | Report the bit depth, or move every raster layer to it. Widening is lossless; narrowing is not. |
 | `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks; `depth=16` writes sixteen bits a channel, which PNG and TIFF can hold and the rest cannot. |
 

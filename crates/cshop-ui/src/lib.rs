@@ -33,6 +33,7 @@ pub mod profile_ui;
 pub mod relight_ui;
 pub mod rulers;
 pub mod segment_ui;
+pub mod select_ui;
 pub mod separate_ui;
 pub mod vision;
 pub mod transform_tool;

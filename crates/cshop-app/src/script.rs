@@ -2193,6 +2193,64 @@ impl Runner {
                 self.app.dispatch(Action::Deselect);
                 Ok("deselected".into())
             }
+            // Selecting a colour wherever it appears, rather than flooding out
+            // from a point the way `wand` does.
+            Some("color") | Some("colour") => {
+                use cshop_core::color_range::{ColorRange, Pick};
+                let what = cmd.args.get(1).map(|s| s.as_str()).unwrap_or("");
+                let pick = match what {
+                    "shadows" => Pick::Shadows,
+                    "midtones" => Pick::Midtones,
+                    "highlights" => Pick::Highlights,
+                    "reds" => Pick::Hue { centre: 0.0 },
+                    "greens" => Pick::Hue { centre: 1.0 / 3.0 },
+                    "blues" => Pick::Hue { centre: 2.0 / 3.0 },
+                    "" => {
+                        return Err(
+                            "`select colour` needs what to look for: a colour like #a04030, \
+                             or shadows, midtones, highlights, reds, greens or blues"
+                                .into(),
+                        )
+                    }
+                    named => Pick::Sampled(vec![parse_color(named)?]),
+                };
+                let range = ColorRange {
+                    pick,
+                    fuzziness: cmd.f32("fuzziness")?.unwrap_or(0.16).clamp(0.0, 1.0),
+                    invert: cmd.flag("invert"),
+                };
+                self.app.dispatch(Action::ApplyColorRange(Box::new(range)));
+                let covered = self
+                    .app
+                    .doc()
+                    .and_then(|v| v.doc.selection.as_ref().map(|s| s.bounds()))
+                    .unwrap_or(cshop_core::geom::IRect::EMPTY);
+                Ok(format!("selected {what} over {}x{}", covered.width(), covered.height()))
+            }
+            // Fitting an edge already found to the one in the picture.
+            Some("refine") => {
+                use cshop_core::refine::RefineEdge;
+                if self.app.doc().is_none_or(|v| v.doc.selection.is_none()) {
+                    return Err("there is no selection to refine".into());
+                }
+                let settings = RefineEdge {
+                    radius: cmd.f32("radius")?.unwrap_or(4.0).clamp(0.0, 200.0),
+                    smooth: cmd.f32("smooth")?.unwrap_or(0.0).clamp(0.0, 200.0),
+                    feather: cmd.f32("feather")?.unwrap_or(0.0).clamp(0.0, 200.0),
+                    contrast: cmd.f32("contrast")?.unwrap_or(0.0).clamp(0.0, 1.0),
+                    shift: cmd.f32("shift")?.unwrap_or(0.0).clamp(-1.0, 1.0),
+                };
+                self.app.dispatch(Action::ApplyRefineEdge(Box::new(settings)));
+                Ok(format!("refined the edge with a radius of {}", settings.radius))
+            }
+            // The selection's outline, as a path layer to edit.
+            Some("to-path") => {
+                if self.app.doc().is_none_or(|v| v.doc.selection.is_none()) {
+                    return Err("there is no selection to trace".into());
+                }
+                self.app.dispatch(Action::PathFromSelection);
+                Ok("traced the selection as a path".into())
+            }
             Some("invert") | Some("inverse") => {
                 self.app.dispatch(Action::InverseSelection);
                 Ok("inverted the selection".into())

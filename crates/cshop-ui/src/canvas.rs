@@ -598,6 +598,30 @@ fn interact(
     // The Segment window takes the canvas as its input: a click says "this",
     // Alt-click says "not this". Handled before the tools, since while it is
     // open that is what a click means.
+    // Colour Range takes its samples off the canvas, so while it is open a
+    // click means "that colour" rather than whatever the tool would have done.
+    if matches!(app.dialog, crate::dialogs::Dialog::ColorRange(_)) {
+        if response.clicked_by(egui::PointerButton::Primary) {
+            if let Some(p) = response.interact_pointer_pos() {
+                let v = app.docs[index].screen_to_doc(viewport, p);
+                let alt = ui.input(|i| i.modifiers.alt);
+                let gpu = app.gpu.clone();
+                let sampled =
+                    app.docs[index].sample_composite(&gpu, v.x as i32, v.y as i32);
+                if let (Some(c), crate::dialogs::Dialog::ColorRange(d)) = (sampled, &mut app.dialog)
+                {
+                    // Alt adds without having to reach for the checkbox, which
+                    // is what a second sample almost always means.
+                    let was = d.adding;
+                    d.adding = was || alt;
+                    d.sample(c);
+                    d.adding = was;
+                }
+            }
+        }
+        return;
+    }
+
     if matches!(app.dialog, crate::dialogs::Dialog::Segment(_)) {
         if response.clicked_by(egui::PointerButton::Primary) {
             if let Some(p) = response.interact_pointer_pos() {

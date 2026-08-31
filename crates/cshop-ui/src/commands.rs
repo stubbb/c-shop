@@ -423,6 +423,19 @@ pub enum Action {
     /// Mask the active layer by how far away everything in it is. Needs the
     /// vision pack, so it runs on a worker thread.
     AddLayerMaskFromDepth { invert: bool },
+    /// Open the window that selects a colour wherever it appears.
+    ShowColorRange,
+    /// Make that selection.
+    ApplyColorRange(Box<cshop_core::color_range::ColorRange>),
+    /// Open the window that fits a selection's edge to the picture.
+    ShowRefineEdge,
+    /// Refine it.
+    ApplyRefineEdge(Box<cshop_core::refine::RefineEdge>),
+    /// Turn the path being drawn into a selection.
+    SelectionFromPath,
+    /// Trace the selection's outline as an editable path.
+    PathFromSelection,
+
     /// Remember what every layer is doing, under a name.
     SaveLayerState(String),
     /// Show a saved one.
