@@ -25,6 +25,7 @@ pub mod lens_ui;
 pub mod panels;
 pub mod properties;
 pub mod theme;
+pub mod settings;
 pub mod shortcuts;
 pub mod text_tool;
 pub mod tools;

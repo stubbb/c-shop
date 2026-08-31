@@ -14,12 +14,9 @@ Nothing here is a commitment. It is a menu, ordered by what it would unlock.
 Rulers on two edges, guides dragged out of them, a grid, and snapping that
 catches by whichever edge comes closest. Guides are saved with the document.
 
-**Anything at all that persists between runs.** Nothing is remembered: not the
-window size, not which tool was selected, not the last brush, not recently
-opened files, not the workspace. Every launch starts from the same blank state.
-A small settings file under the usual directory would fix all of it at once,
-and it is the sort of absence people notice on the second day rather than the
-first.
+**Anything at all that persists between runs.** ~~Nothing is remembered.~~
+Done. Window size, tool, brush, colours, panels, view settings and the last
+dozen opened files, as JSON under the usual configuration directory.
 
 **Sixteen bits in the layers.** The machinery is already there — `Rgba16`, a
 pixel buffer generic over its sample, files and profiles that read and write at

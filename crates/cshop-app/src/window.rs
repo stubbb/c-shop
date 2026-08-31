@@ -105,7 +105,13 @@ impl ApplicationHandler for Handler {
         }
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Closing the window is as much a way out as choosing Quit, so
+                // it remembers just the same.
+                let size = state.window.inner_size();
+                state.app.save_settings(Some((size.width, size.height)));
+                event_loop.exit();
+            }
 
             WindowEvent::Resized(size) => {
                 state.resize(size.width, size.height);
@@ -115,6 +121,11 @@ impl ApplicationHandler for Handler {
             WindowEvent::RedrawRequested => {
                 state.render();
                 if state.app.quit {
+                    // On the way out, and only here: the size is known to the
+                    // window rather than to the editor, so this is where the
+                    // two can be written down together.
+                    let size = state.window.inner_size();
+                    state.app.save_settings(Some((size.width, size.height)));
                     event_loop.exit();
                 }
             }
@@ -140,12 +151,16 @@ impl State {
         files: &[String],
         started: Instant,
     ) -> Result<State, Box<dyn std::error::Error>> {
+        // Opening at the size it was closed at, if it has been closed before.
+        // Read here rather than in the editor because the window is the only
+        // thing that can act on it.
+        let remembered = cshop_ui::settings::Settings::load().window;
+        let (width, height) = remembered
+            .map(|(w, h)| (w as f64, h as f64))
+            .unwrap_or((INITIAL_SIZE.0 as f64, INITIAL_SIZE.1 as f64));
         let attrs = Window::default_attributes()
             .with_title("C-Shop")
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                INITIAL_SIZE.0 as f64,
-                INITIAL_SIZE.1 as f64,
-            ))
+            .with_inner_size(winit::dpi::LogicalSize::new(width, height))
             .with_min_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0))
             // The application draws its own title bar so the window matches the
             // rest of the interface; see `chrome::title_bar`.

@@ -89,6 +89,8 @@ pub struct CShopApp {
     pub grid_spacing: f32,
     /// The guide currently being dragged, by index.
     pub dragging_guide: Option<usize>,
+    /// What is remembered between runs, and the files opened so far.
+    pub settings: crate::settings::Settings,
 
     pub foreground: Rgba8,
     pub background: Rgba8,
@@ -214,22 +216,29 @@ pub struct CShopApp {
 
 impl CShopApp {
     pub fn new(gpu: GpuContext) -> Self {
+        Self::with_settings(gpu, crate::settings::Settings::load())
+    }
+
+    /// The same, with settings supplied rather than read — which is what a
+    /// test wants, since a test that read the machine's own settings would
+    /// pass or fail depending on who ran it.
+    pub fn with_settings(gpu: GpuContext, settings: crate::settings::Settings) -> Self {
         let compositor = Compositor::new(&gpu);
         Self {
             gpu,
             compositor,
             docs: Vec::new(),
             active: None,
-            tool: Tool::Brush,
-            show_rulers: true,
-            show_guides: true,
-            show_grid: false,
-            snap: true,
-            grid_spacing: 32.0,
+            tool: settings.tool,
+            show_rulers: settings.show_rulers,
+            show_guides: settings.show_guides,
+            show_grid: settings.show_grid,
+            snap: settings.snap,
+            grid_spacing: settings.grid_spacing,
             dragging_guide: None,
-            foreground: Rgba8::BLACK,
-            background: Rgba8::WHITE,
-            brush: Brush::default(),
+            foreground: settings.foreground,
+            background: settings.background,
+            brush: settings.brush,
             text_style: cshop_core::text::TextStyle::default(),
             text_edit: None,
             clipboard: Default::default(),
@@ -265,7 +274,8 @@ impl CShopApp {
             clone_offset: None,
             dialog: Dialog::None,
             toast: None,
-            show_panels: true,
+            show_panels: settings.show_panels,
+            settings,
             canvas_viewport: egui::Rect::NOTHING,
             histogram: None,
             histogram_key: None,
@@ -555,6 +565,36 @@ impl CShopApp {
         }
 
         self.finish_dialog_frame(dialog, close, actions);
+    }
+
+    /// The settings as they stand, ready to be written.
+    ///
+    /// Gathered when they are wanted rather than mirrored on every change:
+    /// there is one place that has to be right, instead of a dozen that each
+    /// have to remember.
+    pub fn current_settings(&self) -> crate::settings::Settings {
+        crate::settings::Settings {
+            window: self.settings.window,
+            tool: self.tool,
+            brush: self.brush,
+            foreground: self.foreground,
+            background: self.background,
+            show_rulers: self.show_rulers,
+            show_guides: self.show_guides,
+            show_grid: self.show_grid,
+            snap: self.snap,
+            grid_spacing: self.grid_spacing,
+            show_panels: self.show_panels,
+            recent: self.settings.recent.clone(),
+        }
+    }
+
+    /// Write them down. Called on the way out, and cheap enough to call again.
+    pub fn save_settings(&mut self, window: Option<(u32, u32)>) {
+        if window.is_some() {
+            self.settings.window = window;
+        }
+        self.current_settings().save();
     }
 
     /// What to do with a window once it has drawn itself and said what it
@@ -1512,6 +1552,12 @@ impl CShopApp {
                 }
             }
 
+            Action::ClearRecent => {
+                self.settings.recent.clear();
+                self.current_settings().save();
+                self.notify("Cleared the recent files");
+            }
+
             Action::ShowUpscale => {
                 let counted = self.doc().map(|v| {
                     let n = v
@@ -1781,6 +1827,7 @@ impl CShopApp {
             Ok(doc) => {
                 let (name, w, h) = (doc.name.clone(), doc.width, doc.height);
                 let layers = doc.tree.len();
+                self.settings.remember(&path);
                 self.add_document(doc, "Open");
                 if layers > 1 {
                     self.notify(format!("Opened {name} ({w} x {h}, {layers} layers)"));

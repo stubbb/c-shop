@@ -55,6 +55,14 @@ lassos, magic wand. All four boolean modes; feather, expand, contract, border,
 smooth, invert, grow and similar; animated marching ants. Every tool respects
 the selection, including partial coverage along a feathered edge.
 
+**It remembers.** The window opens at the size it was closed, with the tool,
+brush, colours, panels and view settings it was left with, and **File ▸ Open
+Recent** lists the last dozen files. Kept as JSON under the usual configuration
+directory, and treated as a convenience: anything unreadable falls back to the
+defaults rather than stopping the editor, and a value that would leave it
+unusable — a window larger than any screen, a brush of no size — is not
+honoured.
+
 **Guides and rulers.** Rulers along two edges with ticks that step through
 round numbers as you zoom, guides dragged out of them and dropped back to throw
 away, an optional grid, and snapping that catches a layer by whichever of its
@@ -463,7 +471,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-848 tests, and the interesting ones are not unit tests:
+854 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

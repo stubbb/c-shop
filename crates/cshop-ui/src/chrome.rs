@@ -329,6 +329,29 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ShowOpenDialog);
                 ui.close();
             }
+            // Read before the menu is built, so the borrow ends before the
+            // items below need `app` mutably.
+            let recent: Vec<std::path::PathBuf> = app.settings.recent.clone();
+            ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                ui.menu_button("Open Recent", |ui| {
+                    for path in &recent {
+                        let shown = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        if item(ui, &shown, "").on_hover_text(path.display().to_string()).clicked()
+                        {
+                            app.push(Action::OpenPath(path.clone()));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if item(ui, "Clear", "").clicked() {
+                        app.push(Action::ClearRecent);
+                        ui.close();
+                    }
+                });
+            });
             ui.separator();
             if item_enabled(ui, "Save", &k::SAVE.label(), has_doc).clicked() {
                 app.push(Action::Save);

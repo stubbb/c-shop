@@ -353,6 +353,8 @@ pub enum Action {
     /// Put a guide across the document at a given place.
     AddGuide { vertical: bool, at: f32 },
     ClearGuides,
+    /// Forget the list of recently opened files.
+    ClearRecent,
     ShowUpscale,
     /// Run the enlarger over every raster layer, on a worker thread.
     RunUpscale,
