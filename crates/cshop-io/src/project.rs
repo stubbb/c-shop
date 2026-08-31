@@ -51,6 +51,9 @@ const CHUNK_CHANNEL: &[u8; 4] = b"CHAN";
 /// before profiles existed still opens, and one written after still opens in
 /// a build from before.
 const CHUNK_PROFILE: &[u8; 4] = b"ICCP";
+/// Guides, when there are any. Its own chunk for the same reason as the
+/// profile: a project written before they existed still opens.
+const CHUNK_GUIDES: &[u8; 4] = b"GIDE";
 const CHUNK_END: &[u8; 4] = b"END ";
 
 /// Deflate level. Pixel data dominates the file and is highly compressible;
@@ -85,6 +88,16 @@ pub fn write(doc: &Document) -> Vec<u8> {
     // what is already the default would be waste.
     if !doc.profile.is_srgb() {
         chunk(&mut w, CHUNK_PROFILE, doc.profile.bytes());
+    }
+
+    if !doc.guides.is_empty() {
+        let mut g = Writer::new();
+        g.u32(doc.guides.len() as u32);
+        for guide in &doc.guides {
+            g.u8(guide.vertical as u8);
+            g.f32(guide.at);
+        }
+        chunk(&mut w, CHUNK_GUIDES, &g.bytes);
     }
 
     // Depth-first, parents first, so the reader can attach children as it goes.
@@ -562,6 +575,19 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
                     // project. Opening it in sRGB shows the pixels as they
                     // were stored, which is the least wrong thing available.
                     Err(e) => log::warn!("project profile unreadable, using sRGB: {e}"),
+                }
+            }
+            CHUNK_GUIDES => {
+                let count = r.u32()?;
+                // A count is a claim by the file, so it is bounded by what the
+                // chunk could actually hold rather than trusted.
+                let most = len.saturating_sub(4) / 5;
+                for _ in 0..count.min(most as u32) {
+                    let vertical = r.u8()? != 0;
+                    let at = r.f32()?;
+                    if at.is_finite() {
+                        doc.guides.push(cshop_core::guides::Guide { vertical, at });
+                    }
                 }
             }
             CHUNK_END => break,

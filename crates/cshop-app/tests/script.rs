@@ -1339,3 +1339,45 @@ fn selecting_a_mask_that_is_not_there_says_so() {
     assert!(!report.ok);
     assert!(report.steps[1].note.contains("no mask"), "{:?}", notes(&report));
 }
+
+// --- guides ----------------------------------------------------------------
+
+#[test]
+fn guides_can_be_placed_listed_and_cleared() {
+    let Some(report) = run(
+        "new 800 600 background=white\nguide v 400\nguide h 300\nguide list\nguide clear\nguide list",
+    ) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert_eq!(report.steps[3].note, "v 400, h 300");
+    assert!(report.steps[4].note.contains("cleared 2"), "{:?}", notes(&report));
+    assert_eq!(report.steps[5].note, "no guides");
+}
+
+/// A guide outside the picture is a mistake worth naming, since a script
+/// cannot see that it landed nowhere.
+#[test]
+fn a_guide_outside_the_document_is_refused() {
+    let Some(report) = run("new 100 100 background=white\nguide v 400") else { return };
+    assert!(!report.ok);
+    assert!(report.steps[1].note.contains("outside the document"), "{:?}", notes(&report));
+}
+
+#[test]
+fn guides_survive_being_saved_and_opened() {
+    let dir = std::env::temp_dir().join(format!("cshop-guides-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("g.cshop");
+    let Some(report) = run(&format!(
+        "new 400 400 background=white\nguide v 120\nguide h 60\nexport {}",
+        path.display()
+    )) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+
+    let Some(report) = run(&format!("open {}\nguide list", path.display())) else { return };
+    assert_eq!(report.steps[1].note, "v 120, h 60");
+    let _ = std::fs::remove_dir_all(&dir);
+}

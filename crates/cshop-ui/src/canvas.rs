@@ -4,6 +4,11 @@
 use crate::app::{CShopApp, SelectionDrag};
 use crate::commands::Action;
 use crate::theme::Palette;
+
+/// How near, in screen pixels, something must come to a guide before it
+/// catches. Fixed on screen rather than in the picture, so that zooming in to
+/// place something precisely does not make every guide grab it.
+const SNAP_REACH: f32 = 6.0;
 use crate::tools::Tool;
 use cshop_core::geom::{IRect, Vec2};
 use cshop_core::history::OffsetLayer;
@@ -16,11 +21,14 @@ use cshop_core::transform::Handle;
 const CHECKER: f32 = 8.0;
 
 pub fn show(app: &mut CShopApp, ui: &mut egui::Ui) {
-    let viewport = ui.available_rect_before_wrap();
+    let outer = ui.available_rect_before_wrap();
+    // The rulers take a strip off two edges and the picture gets what is left,
+    // so everything below works in the area rather than the whole panel.
+    let viewport = crate::rulers::canvas_area(app, outer);
     app.canvas_viewport = viewport;
 
     if app.docs.is_empty() {
-        empty_state(app, ui, viewport);
+        empty_state(app, ui, outer);
         return;
     }
     let Some(index) = app.active else { return };
@@ -61,6 +69,8 @@ pub fn show(app: &mut CShopApp, ui: &mut egui::Ui) {
         egui::StrokeKind::Outside,
     );
 
+    crate::rulers::draw_grid(app, &painter, outer);
+
     if app.quick_mask {
         draw_quick_mask(app, &painter, viewport);
     }
@@ -68,10 +78,16 @@ pub fn show(app: &mut CShopApp, ui: &mut egui::Ui) {
     // A transform preview stands in for the layer it hid.
     draw_transform_preview(app, ui, viewport);
 
-    interact(app, ui, &response, viewport);
+    // A ruler or a guide has the pointer before any tool does, so dragging a
+    // guide out over the picture does not also paint on it.
+    let on_a_guide = crate::rulers::rulers(app, ui, outer);
+    if !on_a_guide {
+        interact(app, ui, &response, viewport);
+    }
     // Right-click opens the tool's menu. Every interaction above is gated to
     // the primary button so opening it cannot also lay down a brush stroke.
     response.context_menu(|ui| crate::context_menus::canvas_menu(app, ui));
+    crate::rulers::draw_guides(app, &painter, outer);
     draw_selection(app, ui, &painter, viewport);
     draw_transform_overlay(app, ui, &painter, viewport);
     draw_crop_overlay(app, ui, &painter, viewport);
@@ -991,7 +1007,47 @@ fn interact(
                 let delta = response.drag_delta() / zoom;
                 // Only whole pixels; sub-pixel layer offsets would need
                 // resampling, which belongs with the transform tool.
-                let (dx, dy) = (delta.x.round() as i32, delta.y.round() as i32);
+                let (mut dx, mut dy) = (delta.x.round() as i32, delta.y.round() as i32);
+
+                // Where the layer would land, offered to the guides. Snapping
+                // the *destination* each frame rather than the movement is
+                // what gives it the magnetic feel: a small drag away is pulled
+                // back, and a larger one lets go.
+                if app.snap && (dx != 0 || dy != 0) {
+                    let view = &app.docs[index];
+                    if let Some(bounds) = view.doc.active.and_then(|id| {
+                        view.doc.tree.get(id).map(|l| l.bounds())
+                    }) {
+                        let mut lines = cshop_core::guides::SnapLines::for_document(
+                            view.doc.width,
+                            view.doc.height,
+                        );
+                        lines.add_guides(&view.doc.guides);
+                        if app.show_grid {
+                            let near = cshop_core::geom::Vec2::new(
+                                (bounds.x0 + dx) as f32,
+                                (bounds.y0 + dy) as f32,
+                            );
+                            lines.add_grid(app.grid_spacing, near, app.grid_spacing * 2.0);
+                        }
+                        let proposed = cshop_core::geom::IRect::new(
+                            bounds.x0 + dx,
+                            bounds.y0 + dy,
+                            bounds.x1 + dx,
+                            bounds.y1 + dy,
+                        );
+                        // The reach is fixed on screen, so a guide is equally
+                        // easy to catch at any magnification.
+                        let shift = cshop_core::guides::snap_offset(
+                            proposed,
+                            &lines,
+                            SNAP_REACH / zoom,
+                        );
+                        dx += shift.x.round() as i32;
+                        dy += shift.y.round() as i32;
+                    }
+                }
+
                 if dx != 0 || dy != 0 {
                     let view = &mut app.docs[index];
                     if let Some(id) = view.doc.active {

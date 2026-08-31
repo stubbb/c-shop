@@ -78,6 +78,18 @@ pub struct CShopApp {
     pub active: Option<usize>,
 
     pub tool: Tool,
+
+    /// What the canvas shows besides the picture, and whether things catch on
+    /// it. View settings rather than document ones — except the guides
+    /// themselves, which belong to the document.
+    pub show_rulers: bool,
+    pub show_guides: bool,
+    pub show_grid: bool,
+    pub snap: bool,
+    pub grid_spacing: f32,
+    /// The guide currently being dragged, by index.
+    pub dragging_guide: Option<usize>,
+
     pub foreground: Rgba8,
     pub background: Rgba8,
     pub brush: Brush,
@@ -209,6 +221,12 @@ impl CShopApp {
             docs: Vec::new(),
             active: None,
             tool: Tool::Brush,
+            show_rulers: true,
+            show_guides: true,
+            show_grid: false,
+            snap: true,
+            grid_spacing: 32.0,
+            dragging_guide: None,
             foreground: Rgba8::BLACK,
             background: Rgba8::WHITE,
             brush: Brush::default(),
@@ -1473,6 +1491,26 @@ impl CShopApp {
                 }
             }
             Action::RunSeparate => self.run_separate(),
+
+            Action::ToggleRulers => self.show_rulers = !self.show_rulers,
+            Action::ToggleGuides => self.show_guides = !self.show_guides,
+            Action::ToggleGrid => self.show_grid = !self.show_grid,
+            Action::ToggleSnap => self.snap = !self.snap,
+            Action::AddGuide { vertical, at } => {
+                self.show_guides = true;
+                if let Some(view) = self.doc_mut() {
+                    view.doc.guides.push(cshop_core::guides::Guide { vertical, at });
+                }
+            }
+            Action::ClearGuides => {
+                if let Some(view) = self.doc_mut() {
+                    let had = view.doc.guides.len();
+                    view.doc.guides.clear();
+                    if had > 0 {
+                        self.notify(format!("Cleared {had} guide{}", if had == 1 { "" } else { "s" }));
+                    }
+                }
+            }
 
             Action::ShowUpscale => {
                 let counted = self.doc().map(|v| {

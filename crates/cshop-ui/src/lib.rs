@@ -30,6 +30,7 @@ pub mod text_tool;
 pub mod tools;
 pub mod profile_ui;
 pub mod relight_ui;
+pub mod rulers;
 pub mod segment_ui;
 pub mod separate_ui;
 pub mod vision;

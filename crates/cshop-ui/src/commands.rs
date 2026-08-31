@@ -345,6 +345,14 @@ pub enum Action {
     /// Make a layer from each kind of thing that was ticked.
     RunSeparate,
     /// Open the upscale window.
+    /// Show or hide the rulers, the guides, the grid; turn snapping off.
+    ToggleRulers,
+    ToggleGuides,
+    ToggleGrid,
+    ToggleSnap,
+    /// Put a guide across the document at a given place.
+    AddGuide { vertical: bool, at: f32 },
+    ClearGuides,
     ShowUpscale,
     /// Run the enlarger over every raster layer, on a worker thread.
     RunUpscale,

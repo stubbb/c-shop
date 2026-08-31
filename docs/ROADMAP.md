@@ -10,12 +10,9 @@ Nothing here is a commitment. It is a menu, ordered by what it would unlock.
 
 ## The three worth doing first
 
-**Guides, rulers, grid and snapping.** The most conspicuous absence. There is a
-rule-of-thirds overlay while cropping and nothing else — no rulers, no
-draggable guides, no grid, and nothing snaps to anything. Every layout task
-becomes arithmetic done by eye, and the `measure` command exists precisely
-because a caller cannot see the canvas. Cheap, touches almost nothing else, and
-it makes the editor feel finished in a way no filter does.
+**Guides, rulers, grid and snapping.** ~~The most conspicuous absence.~~ Done.
+Rulers on two edges, guides dragged out of them, a grid, and snapping that
+catches by whichever edge comes closest. Guides are saved with the document.
 
 **Anything at all that persists between runs.** Nothing is remembered: not the
 window size, not which tool was selected, not the last brush, not recently

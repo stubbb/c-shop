@@ -764,11 +764,12 @@ impl Runner {
             "inpaint" => self.cmd_inpaint(cmd),
             "relight" => self.cmd_relight(cmd),
             "depth" => self.cmd_depth(cmd),
+            "guide" => self.cmd_guide(cmd),
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
                  order, info, profile, lens, denoise, upscale, separate, inpaint, \
-                 depth, relight, export, save"
+                 depth, relight, guide, export, save"
             )),
         }
     }
@@ -1309,6 +1310,63 @@ impl Runner {
     /// Somewhere to put the image and the mask while the models work.
     fn vision_dir(&self) -> std::path::PathBuf {
         cshop_ui::vision::scratch()
+    }
+
+    /// Put a line across the document to line things up against.
+    ///
+    /// Guides belong to the document and are saved with it, so a script that
+    /// lays out a design can leave the reasoning behind the layout in the file
+    /// rather than only its result.
+    fn cmd_guide(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let what = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
+        match what {
+            "clear" => {
+                let view = self.app.doc_mut().ok_or("no document")?;
+                let had = view.doc.guides.len();
+                view.doc.guides.clear();
+                view.invalidate();
+                Ok(format!("cleared {had} guide{}", if had == 1 { "" } else { "s" }))
+            }
+            "list" | "" => {
+                let doc = &self.app.doc().ok_or("no document")?.doc;
+                if doc.guides.is_empty() {
+                    return Ok("no guides".to_string());
+                }
+                let said: Vec<String> = doc
+                    .guides
+                    .iter()
+                    .map(|g| format!("{} {:.0}", if g.vertical { "v" } else { "h" }, g.at))
+                    .collect();
+                let fact = said.join(", ");
+                self.report.facts.push(("guides".into(), fact.clone()));
+                Ok(fact)
+            }
+            "h" | "horizontal" | "v" | "vertical" => {
+                let vertical = what.starts_with('v');
+                let at = cmd.arg_f32(1, "position")?;
+                let (w, h) = {
+                    let doc = &self.app.doc().ok_or("no document")?.doc;
+                    (doc.width as f32, doc.height as f32)
+                };
+                let limit = if vertical { w } else { h };
+                if !(0.0..=limit).contains(&at) {
+                    return Err(format!(
+                        "a guide at {at} is outside the document, which is {w}x{h}"
+                    ));
+                }
+                let view = self.app.doc_mut().ok_or("no document")?;
+                view.doc.guides.push(cshop_core::guides::Guide { vertical, at });
+                view.invalidate();
+                Ok(format!(
+                    "guide {} at {at:.0}",
+                    if vertical { "down" } else { "across" }
+                ))
+            }
+            other => Err(format!(
+                "no such thing as `guide {other}`; it is `h`, `v`, `clear` or `list`"
+            )),
+        }
     }
 
     /// Work out the depth of the active layer, once, and keep it.

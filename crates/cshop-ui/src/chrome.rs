@@ -769,6 +769,27 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ZoomActual);
                 ui.close();
             }
+            ui.separator();
+            if item(ui, if app.show_rulers { "Hide Rulers" } else { "Rulers" }, "").clicked() {
+                app.push(Action::ToggleRulers);
+                ui.close();
+            }
+            if item(ui, if app.show_guides { "Hide Guides" } else { "Show Guides" }, "").clicked() {
+                app.push(Action::ToggleGuides);
+                ui.close();
+            }
+            if item(ui, if app.show_grid { "Hide Grid" } else { "Show Grid" }, "").clicked() {
+                app.push(Action::ToggleGrid);
+                ui.close();
+            }
+            if item(ui, if app.snap { "Turn Snapping Off" } else { "Snap to Guides" }, "").clicked() {
+                app.push(Action::ToggleSnap);
+                ui.close();
+            }
+            if item_enabled(ui, "Clear Guides", "", has_doc).clicked() {
+                app.push(Action::ClearGuides);
+                ui.close();
+            }
         });
 
         ui.menu_button("Window", |ui| {

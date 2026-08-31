@@ -357,3 +357,44 @@ fn a_compound_path_survives_the_round_trip() {
         other => panic!("came back as {}", other.name()),
     }
 }
+
+/// Guides belong to the document, so they have to survive a save.
+#[test]
+fn guides_come_back_where_they_were_put() {
+    use cshop_core::guides::Guide;
+    let mut doc = rich_document();
+    doc.guides = vec![Guide::vertical(120.5), Guide::horizontal(40.0), Guide::vertical(0.0)];
+
+    let back = cshop_io::project::read(&cshop_io::project::write(&doc)).expect("read");
+    assert_eq!(back.guides, doc.guides);
+}
+
+/// A document with none writes no chunk, and one written before guides
+/// existed still opens.
+#[test]
+fn a_document_without_guides_carries_none() {
+    let doc = rich_document();
+    assert!(doc.guides.is_empty());
+    let bytes = cshop_io::project::write(&doc);
+    assert!(
+        !bytes.windows(4).any(|w| w == b"GIDE"),
+        "nothing to say, so nothing should be said"
+    );
+    assert!(cshop_io::project::read(&bytes).expect("read").guides.is_empty());
+}
+
+/// A count is a claim the file makes about itself, so it is bounded by what
+/// the chunk could hold rather than believed.
+#[test]
+fn a_guide_count_that_lies_is_not_believed() {
+    use cshop_core::guides::Guide;
+    let mut doc = rich_document();
+    doc.guides = vec![Guide::vertical(10.0)];
+    let mut bytes = cshop_io::project::write(&doc);
+
+    let at = bytes.windows(4).position(|w| w == b"GIDE").expect("the chunk");
+    // Claim a million guides in a chunk that holds one.
+    bytes[at + 8..at + 12].copy_from_slice(&1_000_000u32.to_le_bytes());
+    let back = cshop_io::project::read(&bytes).expect("it should still open");
+    assert!(back.guides.len() <= 1, "it read {} of them", back.guides.len());
+}

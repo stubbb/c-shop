@@ -55,6 +55,14 @@ lassos, magic wand. All four boolean modes; feather, expand, contract, border,
 smooth, invert, grow and similar; animated marching ants. Every tool respects
 the selection, including partial coverage along a feathered edge.
 
+**Guides and rulers.** Rulers along two edges with ticks that step through
+round numbers as you zoom, guides dragged out of them and dropped back to throw
+away, an optional grid, and snapping that catches a layer by whichever of its
+edges comes closest — to a guide, the grid, or the document's own edges and
+middle. The reach is fixed in screen pixels, so a guide is equally easy to
+catch at any magnification. Guides belong to the document and are saved with
+it.
+
 **Masks and channels.** Layer masks from a selection, from blank, or from how
 far away everything is; painted on directly, enabled, applied or deleted. Masks,
 layers and selections convert between each other — a greyscale layer becomes a
@@ -455,7 +463,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-827 tests, and the interesting ones are not unit tests:
+848 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

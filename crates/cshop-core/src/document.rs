@@ -143,6 +143,10 @@ pub struct Document {
     pub edit_target: EditTarget,
     /// The last selection that was deselected, so Reselect can bring it back.
     pub last_selection: Option<Selection>,
+    /// Lines to line things up against. They belong to the document rather
+    /// than the view, because where something should sit is a property of the
+    /// design and not of who is looking at it.
+    pub guides: Vec<crate::guides::Guide>,
 }
 
 impl Clone for Document {
@@ -166,6 +170,7 @@ impl Clone for Document {
             channels: self.channels.clone(),
             edit_target: self.edit_target,
             last_selection: self.last_selection.clone(),
+            guides: self.guides.clone(),
         }
     }
 }
@@ -216,6 +221,7 @@ impl Document {
             channels: Vec::new(),
             edit_target: EditTarget::Pixels,
             last_selection: None,
+            guides: Vec::new(),
         }
     }
 
@@ -245,6 +251,7 @@ impl Document {
             channels: Vec::new(),
             edit_target: EditTarget::Pixels,
             last_selection: None,
+            guides: Vec::new(),
         }
     }
 

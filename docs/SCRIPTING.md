@@ -96,6 +96,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
+| `guide h\|v POS` \| `guide list` \| `guide clear` | Lines to line things up against, saved with the document. |
 | `info` | Report the document's size, layer count and working colour space. |
 | `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
