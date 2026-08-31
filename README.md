@@ -515,6 +515,9 @@ PSD reader alone — CMYK and sixteen bits are read and written happily as TIFF.
 
 The toolbar is complete: every tool it shows is implemented.
 
+[docs/ROADMAP.md](docs/ROADMAP.md) is the longer list — what is missing, why it
+would matter here rather than in general, and roughly what each would cost.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.
