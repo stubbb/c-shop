@@ -61,14 +61,18 @@ pub struct Relight {
     /// shows at all — so the light lands only on what most faces it and the
     /// rest of the picture is left exactly as it was.
     pub lighten_only: bool,
-    /// How far to soften the shape before lighting it, as a fraction of the
+    /// How much to smooth the shape before lighting it, as a fraction of the
     /// picture's shorter side.
     ///
-    /// A depth model draws a *cliff* at the edge of an object — the dog is
-    /// here and the trees are four metres behind it — and differentiating a
-    /// cliff gives an enormous slope, which lights as a hard black outline
-    /// traced round everything. Softening the shape first turns that outline
-    /// into shading, which is what an edge actually looks like.
+    /// A depth model's answer is smooth but not clean, and shading noise looks
+    /// like crumpled foil — so the shape is averaged first. It is averaged
+    /// *within* a surface only: see [`DepthMap::smoothed`] for why, and
+    /// [`DepthMap::normal_at`] for what happens at the outline instead.
+    ///
+    /// It used to have a second job, spreading the cliff at an object's edge
+    /// so that it shaded rather than being outlined, and that wanted a large
+    /// radius. It no longer does, and the default is much smaller than it was:
+    /// a large radius now only costs time and blurs shape that was real.
     pub softness: f32,
 }
 
@@ -82,7 +86,7 @@ impl Default for Relight {
             relief: 1.0,
             color: Rgba8::WHITE,
             lighten_only: false,
-            softness: 0.02,
+            softness: 0.008,
         }
     }
 }
@@ -113,6 +117,36 @@ impl Relight {
         [-ca * horizontal, -sa * horizontal, e.sin().max(0.02)]
     }
 }
+
+/// How close two depths have to be to be taken as the same surface, as a
+/// fraction of the whole scene's range.
+///
+/// Under it, the difference is the model's noise or a fold in a coat and wants
+/// smoothing away. Over it, it is one thing in front of another and the
+/// distance between them is not a slope — there is nothing between the dog's
+/// ear and the trees four metres behind it.
+const SAME_SURFACE: f32 = 0.06;
+
+/// The furthest one smoothing pass reaches, in pixels. See
+/// [`DepthMap::smoothed_within`] for why it is short.
+const MAX_PASS: u32 = 4;
+
+/// How steeply the depth may fall away and still be a surface, in whole depth
+/// ranges across the picture's shorter side.
+///
+/// One means a surface that runs from the nearest thing in the frame to the
+/// furthest, evenly, from one edge to the other — about as steep as a real
+/// surface gets. Two allows for something steeper still.
+///
+/// Measured rather than chosen. On a photograph of a dog, in these units: the
+/// body, the bench and the trees come in under 1, and the ramp the model draws
+/// where one of them ends and the next begins comes in between 15 and 28. More
+/// than a decade apart, so the number between them barely matters — but it has
+/// to be scale-free, which the first two attempts were not. A threshold on the
+/// raw depth change is a different number on a 64-pixel test pattern and on a
+/// 900-pixel photograph, and it silently stopped lighting the test pattern at
+/// all.
+const OUTLINE: f32 = 2.0;
 
 /// How far a surface may lean away from the camera before the lighting stops
 /// believing it.
@@ -164,51 +198,81 @@ impl DepthMap {
         self
     }
 
-    /// Soften the shape, so that an edge shades instead of being outlined.
+    /// Soften the shape, without softening across an edge in it.
     ///
-    /// Two box blurs rather than one: run twice, a box approaches a Gaussian
-    /// closely enough that nothing downstream can tell, and each pass is a
-    /// running sum — the cost is the same whatever the radius, which matters
-    /// because the useful radius on a large photograph is large.
+    /// A depth model's answer is smooth but not clean, and shading noise looks
+    /// like crumpled foil, so the shape wants blurring. A plain blur cannot do
+    /// it: at an object's outline the depth is a cliff, and blurring a cliff
+    /// makes a ramp that straddles it. A ramp lights — so the background
+    /// beside the dog picks up a steep normal and takes the lamp as though it
+    /// were part of him, which shows up as a glow hanging in the air off his
+    /// muzzle and a shadow cast onto the trees behind him.
+    ///
+    /// So a neighbour only counts if its depth is near the centre's. Within
+    /// the dog everything counts and the model's noise averages away; across
+    /// his outline nothing does, and the step stays a step — which
+    /// [`DepthMap::normal_at`] then declines to light, because a step is not a
+    /// surface.
     pub fn smoothed(&self, radius: u32) -> DepthMap {
+        self.smoothed_within(radius, SAME_SURFACE)
+    }
+
+    /// The same, choosing what counts as one surface. Depth is normalised to
+    /// `0..1`, so the threshold is a fraction of the whole scene's range.
+    ///
+    /// Done as several short passes rather than one long one. A separable
+    /// pass that reaches a long way in one direction *looks* like it: the
+    /// picture comes out in horizontal streaks, because a row that crosses an
+    /// outline averages differently from the row above it and there is nothing
+    /// vertical to even it out until much later. Alternating short passes have
+    /// no such run in them, and the answer is isotropic enough that nothing in
+    /// a photograph gives it away.
+    pub fn smoothed_within(&self, radius: u32, threshold: f32) -> DepthMap {
         if radius == 0 {
             return self.clone();
         }
+        let passes = radius.div_ceil(MAX_PASS).max(1);
+        let step = radius.div_ceil(passes).max(1);
         let mut out = self.clone();
-        for _ in 0..2 {
-            out = out.box_blurred(radius);
+        for _ in 0..passes {
+            out = out.blurred_along(step, threshold, true);
+            out = out.blurred_along(step, threshold, false);
         }
         out
     }
 
-    fn box_blurred(&self, radius: u32) -> DepthMap {
-        let (w, h) = (self.width as usize, self.height as usize);
+    /// One edge-aware pass along one axis.
+    ///
+    /// Separable, which a bilateral filter strictly is not — but two 1-D
+    /// passes cost `2r` samples a pixel against `r²`, and on a twelve-
+    /// megapixel photograph at a useful radius that is the difference between
+    /// a fraction of a second and most of a minute. What it gives up is
+    /// exactness at a corner of an outline, which no photograph has ever
+    /// complained about.
+    fn blurred_along(&self, radius: u32, threshold: f32, horizontal: bool) -> DepthMap {
+        let w = self.width as usize;
         let r = radius as i32;
-        let span = (2 * r + 1) as f32;
-        let mut mid = vec![0.0f32; w * h];
-
-        // Along each row, then each column: two one-dimensional passes cost
-        // what one two-dimensional one would have cost per pixel of radius.
-        for y in 0..h {
-            let row = &self.data[y * w..(y + 1) * w];
-            let mut sum: f32 = (-r..=r).map(|i| row[i.clamp(0, w as i32 - 1) as usize]).sum();
-            for x in 0..w {
-                mid[y * w + x] = sum / span;
-                let leaving = row[(x as i32 - r).clamp(0, w as i32 - 1) as usize];
-                let arriving = row[(x as i32 + r + 1).clamp(0, w as i32 - 1) as usize];
-                sum += arriving - leaving;
+        let mut out = vec![0.0f32; w * self.height as usize];
+        out.par_chunks_mut(w.max(1)).enumerate().for_each(|(y, row)| {
+            for (x, slot) in row.iter_mut().enumerate() {
+                let centre = self.at(x as i32, y as i32);
+                let mut sum = 0.0f32;
+                let mut count = 0.0f32;
+                for k in -r..=r {
+                    let v = if horizontal {
+                        self.at(x as i32 + k, y as i32)
+                    } else {
+                        self.at(x as i32, y as i32 + k)
+                    };
+                    if (v - centre).abs() <= threshold {
+                        sum += v;
+                        count += 1.0;
+                    }
+                }
+                // The centre always counts, so the divisor is never zero.
+                *slot = sum / count.max(1.0);
             }
-        }
-
-        let mut out = vec![0.0f32; w * h];
-        for x in 0..w {
-            let at = |y: i32| mid[y.clamp(0, h as i32 - 1) as usize * w + x];
-            let mut sum: f32 = (-r..=r).map(at).sum();
-            for y in 0..h {
-                out[y * w + x] = sum / span;
-                sum += at(y as i32 + r + 1) - at(y as i32 - r);
-            }
-        }
+        });
         DepthMap { width: self.width, height: self.height, data: out }
     }
 
@@ -224,19 +288,47 @@ impl DepthMap {
     /// smooth but not clean, and the wider stencil is markedly steadier
     /// without losing anything a photograph's shading would show.
     ///
-    /// The slope is capped. Even softened, the edge of an object is a step
-    /// rather than a slope — nothing in the picture says how the back of the
-    /// dog joins the trees behind it — and without a cap that step lights as
-    /// a black line drawn round the subject. Capped, it becomes a steep piece
-    /// of shading, which is what the eye expects at a turning surface.
+    /// Where an outline runs through the stencil the answer is flat.
+    ///
+    /// A depth model does not draw a slope at the edge of an object, it draws
+    /// a step: the dog is here and the trees are four metres behind him, with
+    /// nothing in between. Shading that step treats it as a wall, which draws
+    /// a line round the subject — bright on the side the lamp is, dark on the
+    /// other. There is no surface there, and the honest amount of light to put
+    /// on no surface is none.
+    ///
+    /// The test is on the depth across the stencil rather than on the slope it
+    /// implies, because whether one thing is in front of another is a fact
+    /// about the picture and not about how much relief somebody asked for —
+    /// though it is still measured against the picture's size, or the same
+    /// slope would be a surface on a large image and an outline on a small
+    /// one. It fades over a second [`OUTLINE`] rather than switching, so the
+    /// boundary does not swap one visible line for another.
+    ///
+    /// Sampled two pixels either side rather than one: depth from a model is
+    /// smooth but not clean, and the wider stencil is markedly steadier
+    /// without losing anything a photograph's shading would show.
     #[inline]
     pub fn normal_at(&self, x: i32, y: i32, relief: f32) -> [f32; 3] {
-        let dx = (self.at(x + 2, y) - self.at(x - 2, y)) * 0.25;
-        let dy = (self.at(x, y + 2) - self.at(x, y - 2)) * 0.25;
+        let (left, right) = (self.at(x - 2, y), self.at(x + 2, y));
+        let (above, below) = (self.at(x, y - 2), self.at(x, y + 2));
+        let here = self.at(x, y);
+
+        let stencil = [left, right, above, below, here];
+        let lo = stencil.iter().copied().fold(f32::MAX, f32::min);
+        let hi = stencil.iter().copied().fold(f32::MIN, f32::max);
+        // The stencil is four pixels across, and the picture's shorter side is
+        // what makes the answer the same on a thumbnail and on a print.
+        let steepness = (hi - lo) / 4.0 * self.width.min(self.height) as f32;
+        let surface = ((2.0 * OUTLINE - steepness) / OUTLINE).clamp(0.0, 1.0);
+
         // The scale turns a unitless depth change into something comparable
         // with one pixel of distance across the frame.
-        let s = relief * self.width.min(self.height) as f32 * 0.05;
-        let (mut nx, mut ny) = (-dx * s, -dy * s);
+        let s = relief * self.width.min(self.height) as f32 * 0.05 * surface;
+        let (mut nx, mut ny) = (-(right - left) * 0.25 * s, -(below - above) * 0.25 * s);
+        // Still capped: a real surface can lean a long way from the camera,
+        // and past about seventy degrees the shading stops being believable
+        // whether or not there is an outline in it.
         let lateral = (nx * nx + ny * ny).sqrt();
         if lateral > MAX_SLOPE {
             let k = MAX_SLOPE / lateral;

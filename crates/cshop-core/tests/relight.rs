@@ -198,11 +198,16 @@ fn cliff(w: u32, h: u32) -> DepthMap {
     DepthMap::from_values(w, h, data).unwrap()
 }
 
-/// Whatever the settings, a step in the depth may not light as a black line.
-/// It is not a wall; nothing in the picture says how the near thing joins the
-/// far one behind it.
+/// A step in the depth may not light as a line at all — dark or bright.
+///
+/// The picture is two flat surfaces at different distances with a step between
+/// them. Both face the camera, so both take exactly the same light, and the
+/// step between them is not a surface: there is nothing in the picture that
+/// says how the near one joins the far one. So the whole frame should come out
+/// as evenly lit as either half of it, and any line along the join is the
+/// lighting inventing a wall that is not there.
 #[test]
-fn the_edge_of_an_object_shades_rather_than_being_outlined() {
+fn a_step_in_the_depth_does_not_light_as_a_line() {
     let src = flat(80, 40);
     let depth = cliff(80, 40);
     let lamp = Relight {
@@ -215,22 +220,33 @@ fn the_edge_of_an_object_shades_rather_than_being_outlined() {
     };
     let out = apply(&src, &depth, lamp);
 
-    // The flat left and right must be lit, and nothing along the join may be
-    // driven to black — that is the outline.
-    let darkest = (0..40)
-        .flat_map(|y| (0..80).map(move |x| (x, y)))
-        .map(|(x, y)| luma(&out, x, y))
-        .fold(f32::MAX, f32::min);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    let (mut where_lo, mut where_hi) = ((0, 0), (0, 0));
+    for y in 0..40 {
+        for x in 0..80 {
+            let v = luma(&out, x, y);
+            if v < lo {
+                lo = v;
+                where_lo = (x, y);
+            }
+            if v > hi {
+                hi = v;
+                where_hi = (x, y);
+            }
+        }
+    }
     assert!(
-        darkest > 30.0,
-        "something on the step went to {darkest}, which is an outline rather than shading"
+        hi - lo < 2.0,
+        "the step lights as a line: {lo:.0} at {where_lo:?} against {hi:.0} at {where_hi:?}"
     );
 }
 
-/// Softening spreads the step over many pixels, which is what turns a hard
-/// line into a gradient the eye reads as a turning surface.
+/// Softening must not spread a step. It exists to take the model's noise off
+/// a surface, and a step is not a surface: blurring across one puts a ramp on
+/// both sides of an outline, and a ramp lights — which is a glow hanging in
+/// the air beside the subject and a shadow thrown onto what is behind it.
 #[test]
-fn softening_spreads_the_step_out() {
+fn softening_does_not_reach_across_a_step() {
     // Square, because the radius is a fraction of the picture's shorter side:
     // on a 200 by 40 strip a five percent softening is two pixels, which is
     // right and would make this test look like it had failed.
@@ -243,15 +259,83 @@ fn softening_spreads_the_step_out() {
         (0..200).filter(|&x| { let v = m.at(x, 100); v > 0.02 && v < 0.98 }).count()
     };
     assert!(transition(&depth) <= 2, "a cliff is a cliff: {}", transition(&depth));
-    assert!(
-        transition(&soft) > 20,
-        "softened by ten, it should be a slope tens of pixels wide: {}",
+    assert_eq!(
+        transition(&soft), 0,
+        "the step was smeared into a ramp {} columns wide",
         transition(&soft)
     );
 
-    // And it is still a step overall, not a flat field: the far side stays far.
+    // And it is still a step, in the same place: the near side stays near.
     assert!(soft.at(2, 100) > 0.9, "the near side is still near");
     assert!(soft.at(197, 100) < 0.1, "and the far side still far");
+    assert!(soft.at(99, 100) > 0.9 && soft.at(100, 100) < 0.1, "and it did not move");
+}
+
+/// Within one surface it still softens, or it is not doing its job.
+#[test]
+fn softening_still_smooths_what_is_one_surface() {
+    // A gentle ramp with noise on it: the noise is what has to go.
+    let mut data = Vec::with_capacity(200 * 200);
+    for y in 0..200 {
+        for x in 0..200 {
+            let ramp = x as f32 / 199.0 * 0.5;
+            let noise = if (x + y) % 2 == 0 { 0.02 } else { -0.02 };
+            data.push(ramp + noise);
+        }
+    }
+    let rough = DepthMap::from_values(200, 200, data).unwrap();
+    let smooth = rough.smoothed(6);
+
+    // Roughness as the mean step between neighbours along a row.
+    let roughness = |m: &DepthMap| {
+        (1..200).map(|x| (m.at(x, 100) - m.at(x - 1, 100)).abs()).sum::<f32>() / 199.0
+    };
+    assert!(
+        roughness(&smooth) < roughness(&rough) / 4.0,
+        "it should have smoothed the noise: {} against {}",
+        roughness(&smooth),
+        roughness(&rough)
+    );
+}
+
+/// The point of all of it, on the shape that actually shows it: a lamp beside
+/// a near object must not light the far side of the step. That is the glow
+/// that hangs in the air next to a subject, and it comes from a blur that
+/// crossed the outline.
+#[test]
+fn a_lamp_does_not_light_across_an_outline() {
+    let src = flat(200, 200);
+    let depth = cliff(200, 200);
+    // Lit from the left, so the step at x=100 faces the lamp and the far side
+    // beyond it is what must be left alone.
+    let lamp = Relight {
+        azimuth: 0.0,
+        elevation: 20.0,
+        intensity: 2.0,
+        ambient: 1.0,
+        relief: 4.0,
+        softness: 0.05,
+        ..Default::default()
+    };
+    let radius = depth.softening_radius(lamp.softness);
+    let out = apply(&src, &depth.smoothed(radius), lamp);
+
+    // The far side is flat, so every pixel of it faces the camera and takes
+    // the same light. Measured against a column well clear of the outline
+    // rather than against the unlit picture: the lamp is *supposed* to light
+    // the far side, evenly. What it must not do is light the part of it that
+    // happens to sit next to the near object more than the rest.
+    let clear = luma(&out, 190, 100);
+    let beside: Vec<(i32, f32)> =
+        (102..160).map(|x| (x, luma(&out, x, 100) - clear)).collect();
+    let (where_worst, worst) =
+        beside.iter().copied().fold((0, 0.0f32), |a, b| if b.1.abs() > a.1.abs() { b } else { a });
+    assert!(
+        worst.abs() < 1.0,
+        "the far side is {worst:+.1} levels different {} pixels past the outline — \
+         the lamp is reaching across it",
+        where_worst - 100
+    );
 }
 
 /// Softening by nothing is the picture unchanged, so the control has a
@@ -373,4 +457,44 @@ fn under_the_flag_ambient_narrows_the_light_rather_than_darkening() {
         touched(&wide)
     );
     assert!(touched(&narrow) > 0, "and not none of it");
+}
+
+/// Whether a slope is a surface or an outline must not depend on how big the
+/// picture is. The same scene at two sizes has to shade the same way.
+///
+/// Guarding a constant rather than a behaviour, which is unusual — but the
+/// first two attempts at that constant were absolute depth changes, and an
+/// absolute depth change per pixel means something different on a thumbnail
+/// and on a print. One of them silently stopped lighting anything at all on a
+/// small test pattern while looking right on a photograph.
+#[test]
+fn the_same_shape_shades_the_same_at_any_size() {
+    let lamp = Relight {
+        azimuth: 0.0,
+        elevation: 20.0,
+        intensity: 1.0,
+        ambient: 0.6,
+        relief: 1.0,
+        softness: 0.0,
+        ..Default::default()
+    };
+    // A ramp across the whole frame is the same surface whatever the frame's
+    // size: the depth range and the distance it is spread over both scale.
+    // Measured as the difference between lighting it from one side and from
+    // the other, which is the shading with the ambient taken out of it.
+    let shading = |side: u32| {
+        let src = flat(side, side);
+        let depth = ramp_x(side, side);
+        let left = apply(&src, &depth, Relight { azimuth: 0.0, ..lamp });
+        let right = apply(&src, &depth, Relight { azimuth: 180.0, ..lamp });
+        let at = side as i32 / 2;
+        luma(&left, at, at) - luma(&right, at, at)
+    };
+    let small = shading(64);
+    let large = shading(512);
+    assert!(small.abs() > 2.0, "the small one should be shaded at all: {small}");
+    assert!(
+        (small - large).abs() < small.abs() * 0.25,
+        "the same slope shaded {small:.1} at 64 pixels and {large:.1} at 512"
+    );
 }

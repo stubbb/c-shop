@@ -279,9 +279,12 @@ The lamp is a dot on a circle rather than two numbers, and the window says
 of a second and does not change while the lamp moves, so it is worked out once
 and dragging the light after that is arithmetic.
 
-A depth model draws a cliff at the edge of an object, and lighting a cliff
-outlines it — so the shape is softened before it is lit and the slope is
-capped, which turns that outline into shading. `softness` is the control.
+A depth model does not draw a slope at the edge of an object, it draws a step:
+the dog is here and the trees are four metres behind him, with nothing in
+between. There is no surface there, so it is not lit — which is why the light
+in the picture below stops at the dog's outline rather than glowing off it into
+the air. Smoothing the shape first, to take the model's noise off it, is done
+within a surface and never across one, for the same reason.
 
 The contrast in a relight comes from dropping **ambient** — what survives where
 the lamp does not reach — and dropping ambient is also how a photograph quietly
@@ -300,7 +303,7 @@ relight azimuth=180 elevation=10 intensity=3.0 ambient=0.55 relief=4.0 color=#ff
 
 Same lamp in both. The rim on the dog's back and the light through the hand
 are identical; what differs is everything the lamp does *not* reach. In the
-middle 79% of the frame came out darker than it started — the trees on the
+middle 83% of the frame came out darker than it started — the trees on the
 left lose their separation and the bench in front goes to black. On the right
 not one pixel is darker. Under the flag ambient stops being a darkener and
 becomes a *threshold*: the lamp has to beat `1 - ambient` before it shows, so
@@ -437,7 +440,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-1140 tests, and the interesting ones are not unit tests:
+1143 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -485,7 +488,7 @@ Every commit is a version, starting at 0.001 and incrementing by one.
 There are no dates in it: dates say when someone was at a keyboard, and
 versions say what the program is.
 
-**Where it is now.** 0.075 — 1140 tests, and the roadmap worked through end to
+**Where it is now.** 0.076 — 1143 tests, and the roadmap worked through end to
 end. The last four additions were a colour-managed canvas with soft proofing,
 long operations moved onto workers with progress and cancellation, smart
 objects that several layers can share, and a relight that never takes light

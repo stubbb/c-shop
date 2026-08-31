@@ -7,6 +7,11 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.076** — *Stop the relighting glowing off the edges of things.* Softening
+  the depth turned the step at an object's outline into a ramp that straddled
+  it, so the background beside the dog lit as though it were part of him. The
+  softening is now edge-aware and an outline is not lit at all, because a step
+  is not a surface.
 - **0.075** — *Make the relight in the example look like a relight.* At relief
   1.4 on a photograph with a blurred background the lamp was adding four
   levels and ambient was doing all the work, so the picture read as darker

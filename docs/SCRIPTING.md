@@ -272,11 +272,12 @@ relight azimuth=200 elevation=18 intensity=1.5 ambient=0.45 relief=1.6
 `azimuth` is where the lamp is on a circle round the picture: **0° is to the
 left** and it goes clockwise, so 90° is above and 180° is to the right.
 `elevation` is how high, from level with the subject to straight in front.
-`softness` is how far to soften the shape before lighting it — the model draws
-a cliff at the edge of every object and lighting a cliff outlines it, so this
-defaults to 0.02 rather than 0 and is worth raising on a picture with a lot of
-cut-out edges. `ambient` is what survives where the lamp does not reach — at 1 the lamp can
-only add light, below it the unlit side falls away. `relief` is how much shape
+`softness` is how much to smooth the shape before lighting it — a depth model's
+answer is smooth but not clean, and shading its noise looks like crumpled foil.
+It smooths *within* a surface only, so raising it will not spread light past an
+object's outline; nothing will, since an outline is not a surface and is not
+lit at all. `ambient` is what survives where the lamp does not reach — at 1 the
+lamp can only add light, below it the unlit side falls away. `relief` is how much shape
 to read into the depth; the depth has no unit, so that is a choice rather than
 a measurement.
 
@@ -284,7 +285,7 @@ a measurement.
 matters because the contrast in a relight comes from dropping `ambient`, and
 dropping `ambient` is also how a photograph quietly loses the shadow detail it
 was carrying — on a photograph of a dog on a bench, under a low warm lamp from
-the right, 79% of the frame came out darker and the trees behind him went with
+the right, 83% of the frame came out darker and the trees behind him went with
 it. Under the flag `ambient` stops being a darkener and becomes a *threshold*:
 the lamp has to beat `1 - ambient` before it shows at all, so the light lands
 only on what most faces it and everything else is left exactly as it was.

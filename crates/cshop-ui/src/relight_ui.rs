@@ -257,9 +257,10 @@ impl RelightDialog {
                             .fixed_decimals(3),
                     )
                     .on_hover_text(
-                        "How far to soften the shape before lighting it. The model draws a \
-                         cliff at the edge of an object, and lighting a cliff outlines it; \
-                         softening turns that outline into shading.",
+                        "How much to smooth the shape before lighting it. A depth model's \
+                         answer is smooth but not clean, and shading its noise looks like \
+                         crumpled foil. It smooths within a surface and never across one, \
+                         so raising it will not spread light past an outline.",
                     )
                     .drag_stopped();
                 ui.end_row();
