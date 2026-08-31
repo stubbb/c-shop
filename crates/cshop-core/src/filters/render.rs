@@ -1,8 +1,8 @@
 //! Filters that generate an image rather than transform one.
 
-use super::plane::{Plane, Rng};
+use super::plane::{fill_rows, Plane, Rng};
 use crate::color::Rgba8;
-use rayon::prelude::*;
+use crate::progress::Progress;
 
 /// Value noise at a point, interpolated smoothly between lattice values.
 fn value_noise(x: f32, y: f32, seed: u64) -> f32 {
@@ -51,6 +51,7 @@ pub fn clouds(
     foreground: Rgba8,
     background: Rgba8,
     difference: bool,
+    p: &Progress,
 ) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
@@ -59,7 +60,7 @@ pub fn clouds(
     let fg = foreground.to_f32();
     let bg = background.to_f32();
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let py = y as f32 * step;
         for x in 0..width {
             let t = fbm(x as f32 * step, py, seed, 6).clamp(0.0, 1.0);
@@ -89,7 +90,7 @@ pub fn clouds(
 }
 
 /// Fibers: vertical streaks between the two colours, as if woven.
-pub fn fibers(src: &Plane, strength: f32, length: f32, seed: u64, foreground: Rgba8, background: Rgba8) -> Plane {
+pub fn fibers(src: &Plane, strength: f32, length: f32, seed: u64, foreground: Rgba8, background: Rgba8, p: &Progress) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
     let fg = foreground.to_f32();
@@ -98,7 +99,7 @@ pub fn fibers(src: &Plane, strength: f32, length: f32, seed: u64, foreground: Rg
     let vertical_step = 1.0 / length.max(1.0);
     let variance = strength.clamp(0.0, 1.0);
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let py = y as f32 * vertical_step;
         for x in 0..width {
             // High horizontal frequency, low vertical: that is what makes a

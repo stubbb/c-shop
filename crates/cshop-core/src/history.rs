@@ -989,17 +989,53 @@ impl Command for ResizeCanvas {
 /// One layer's pixels, position and mask, as they were before a resize.
 type LayerSnapshot = (LayerId, crate::layer::Surface, (i32, i32), Option<LayerMask>);
 
+/// A layer's pixels resampled somewhere else, with the size they were
+/// resampled from so a stale one can be recognised and redone.
+pub type Resampled = (LayerId, (u32, u32), PixelBuffer);
+
 #[derive(Debug)]
 pub struct ResizeImage {
     width: u32,
     height: u32,
     filter: crate::resample::Resampling,
     before: Option<(u32, u32, Vec<LayerSnapshot>)>,
+    /// Layers already resampled by whoever asked for this. Consumed on the
+    /// first apply and not kept for the redo: an undo puts the originals back,
+    /// so a redo resamples them again rather than trusting pixels worked out
+    /// against a document that has since been elsewhere.
+    prepared: Vec<Resampled>,
 }
 
 impl ResizeImage {
     pub fn new(width: u32, height: u32, filter: crate::resample::Resampling) -> Self {
-        Self { width: width.max(1), height: height.max(1), filter, before: None }
+        Self {
+            width: width.max(1),
+            height: height.max(1),
+            filter,
+            before: None,
+            prepared: Vec::new(),
+        }
+    }
+
+    /// The same resize, with the resampling already done.
+    ///
+    /// Resampling a large document is seconds, and seconds belong on a worker
+    /// thread rather than in the middle of a frame. The arithmetic that goes
+    /// with it — the offsets, the masks, the vector layers redrawn at the new
+    /// size — is quick and stays here, so there is one description of what a
+    /// resize means rather than two that have to agree.
+    ///
+    /// A prepared layer is used only if it was made from the pixels the layer
+    /// still has, which is checked by size. Anything else is resampled here as
+    /// though nothing had been prepared, so a document that moved while the
+    /// worker ran comes out right rather than out of date.
+    pub fn prepared(
+        width: u32,
+        height: u32,
+        filter: crate::resample::Resampling,
+        prepared: Vec<Resampled>,
+    ) -> Self {
+        Self { prepared, ..Self::new(width, height, filter) }
     }
 }
 
@@ -1054,7 +1090,14 @@ impl Command for ResizeImage {
             if let Some(px) = layer.pixels() {
                 let w = ((px.width() as f64 * sx).round() as u32).max(1);
                 let h = ((px.height() as f64 * sy).round() as u32).max(1);
-                let resized = crate::resample::resize(px, w, h, self.filter);
+                let ready = self
+                    .prepared
+                    .iter()
+                    .position(|(at, from, _)| *at == id && *from == (px.width(), px.height()))
+                    .map(|i| self.prepared.swap_remove(i).2)
+                    .filter(|ready| ready.width() == w && ready.height() == h);
+                let resized =
+                    ready.unwrap_or_else(|| crate::resample::resize(px, w, h, self.filter));
                 layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(resized));
             }
             layer.offset = new_offset;
@@ -1083,6 +1126,10 @@ impl Command for ResizeImage {
             }
         }
 
+        // Anything left over was prepared against a layer that has since
+        // changed shape, and has just been resampled again from what is
+        // actually there. Dropping it keeps it out of the undo's memory.
+        self.prepared.clear();
         doc.width = self.width;
         doc.height = self.height;
         doc.set_selection(None);

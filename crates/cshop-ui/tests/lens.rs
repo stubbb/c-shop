@@ -146,15 +146,16 @@ fn progress_reports_how_far_the_pass_has_got() {
     assert!(!d.is_working());
     assert_eq!(d.progress(), 0.0);
 
-    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-    d.applying = Some((counter.clone(), 200));
+    let counter = cshop_core::progress::Progress::new();
+    counter.begin("Lens Correction", 200);
+    d.applying = Some(counter.clone());
     assert!(d.is_working());
     assert_eq!(d.progress(), 0.0);
 
-    counter.store(50, std::sync::atomic::Ordering::Relaxed);
+    counter.set(50);
     assert!((d.progress() - 0.25).abs() < 1e-6);
 
     // A worker that overshoots its estimate must not push the bar past full.
-    counter.store(400, std::sync::atomic::Ordering::Relaxed);
+    counter.set(400);
     assert_eq!(d.progress(), 1.0);
 }

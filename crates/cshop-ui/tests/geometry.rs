@@ -42,19 +42,6 @@ fn bar_width(px: &PixelBuffer, y: i32) -> i32 {
     (0..px.width() as i32).filter(|&x| px.get(x, y).r < 100).count() as i32
 }
 
-/// Wait for the worker thread to finish; a script would do the same.
-fn settle_carve(app: &mut CShopApp) {
-    let ctx = egui::Context::default();
-    let started = std::time::Instant::now();
-    while app.carve_progress().is_some() {
-        app.poll_carve(&ctx);
-        if started.elapsed() > std::time::Duration::from_secs(60) {
-            panic!("the carve never finished");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-}
-
 #[test]
 fn content_aware_scale_takes_the_space_and_leaves_the_subject() {
     let Some(mut app) = app_with(sky_and_bar(120, 40, 90..100)) else { return };
@@ -65,7 +52,6 @@ fn content_aware_scale_takes_the_space_and_leaves_the_subject() {
         height: 40,
         protect_selection: false,
     });
-    settle_carve(&mut app);
 
     assert_eq!(app.doc().unwrap().doc.width, 80);
     assert_eq!(bar_width(pixels(&app), 20), 10, "the bar keeps its width");
@@ -80,7 +66,6 @@ fn a_content_aware_scale_undoes() {
         height: 30,
         protect_selection: false,
     });
-    settle_carve(&mut app);
     assert_eq!(app.doc().unwrap().doc.width, 70);
     assert_eq!(
         app.doc().unwrap().history.undo_name().unwrap_or_default(),
@@ -112,7 +97,6 @@ fn the_selection_protects_what_it_covers() {
         height: 40,
         protect_selection: true,
     });
-    settle_carve(&mut app);
     // The left half was protected, so the seams had to come out of the bar.
     assert!(
         bar_width(pixels(&app), 20) < 10,

@@ -17,6 +17,7 @@ pub mod render;
 
 use crate::color::Rgba8;
 use crate::pixels::PixelBuffer;
+use crate::progress::Progress;
 use blur::RadialKind;
 use plane::Plane;
 
@@ -240,6 +241,112 @@ impl Filter {
         ]
     }
 
+    /// One of every filter, at settings that actually do something.
+    ///
+    /// Several of them return the image untouched when their parameter is
+    /// trivial — a blur of radius nought, a sharpen of nought amount — so a
+    /// test that wants to see each one work has to be given settings that
+    /// make it work.
+    pub fn examples() -> Vec<Filter> {
+        // Adding a variant breaks the match below, which sits here rather
+        // than anywhere else so that whoever adds one is looking at the list
+        // they also need to extend.
+        fn _exhaustive(f: &Filter) {
+            match f {
+                Filter::GaussianBlur { .. }
+                | Filter::BoxBlur { .. }
+                | Filter::MotionBlur { .. }
+                | Filter::RadialBlur { .. }
+                | Filter::SurfaceBlur { .. }
+                | Filter::AverageBlur
+                | Filter::Sharpen { .. }
+                | Filter::UnsharpMask { .. }
+                | Filter::AddNoise { .. }
+                | Filter::Median { .. }
+                | Filter::DustAndScratches { .. }
+                | Filter::Twirl { .. }
+                | Filter::Pinch { .. }
+                | Filter::Spherize { .. }
+                | Filter::Wave { .. }
+                | Filter::PolarCoordinates { .. }
+                | Filter::Mosaic { .. }
+                | Filter::Crystallize { .. }
+                | Filter::Fragment { .. }
+                | Filter::Clouds { .. }
+                | Filter::Fibers { .. }
+                | Filter::FindEdges
+                | Filter::Emboss { .. }
+                | Filter::Solarize
+                | Filter::Diffuse { .. }
+                | Filter::HighPass { .. }
+                | Filter::Offset { .. }
+                | Filter::Maximum { .. }
+                | Filter::Minimum { .. }
+                | Filter::Custom { .. } => (),
+            }
+        }
+        let mut sharpening = Filter::IDENTITY_KERNEL;
+        sharpening[12] = 2.0;
+        sharpening[7] = -0.25;
+        vec![
+            Filter::GaussianBlur { radius: 6.0 },
+            Filter::BoxBlur { radius: 6.0 },
+            Filter::MotionBlur { angle: 30.0, distance: 12.0 },
+            Filter::RadialBlur { amount: 0.4, spin: true, centre: (0.5, 0.5) },
+            Filter::SurfaceBlur { radius: 4.0, threshold: 0.1 },
+            Filter::AverageBlur,
+            Filter::Sharpen { amount: 1.0 },
+            Filter::UnsharpMask { amount: 1.0, radius: 4.0, threshold: 0.0 },
+            Filter::AddNoise { amount: 0.2, monochromatic: false, gaussian: true, seed: 1 },
+            Filter::Median { radius: 2 },
+            Filter::DustAndScratches { radius: 2, threshold: 0.1 },
+            Filter::Twirl { angle: 60.0 },
+            Filter::Pinch { amount: 0.5 },
+            Filter::Spherize { amount: 0.5 },
+            Filter::Wave { amplitude: 8.0, wavelength: 40.0, vertical: false },
+            Filter::PolarCoordinates { to_polar: true },
+            Filter::Mosaic { size: 8 },
+            Filter::Crystallize { size: 8, seed: 1 },
+            Filter::Fragment { distance: 3 },
+            Filter::Clouds { scale: 30.0, seed: 1, difference: false },
+            Filter::Fibers { strength: 0.5, length: 16.0, seed: 1 },
+            Filter::FindEdges,
+            Filter::Emboss { angle: 45.0, height: 3.0, amount: 1.0 },
+            Filter::Solarize,
+            Filter::Diffuse { amount: 4, seed: 1 },
+            Filter::HighPass { radius: 8.0 },
+            Filter::Offset { dx: 12, dy: 8, wrap: true },
+            Filter::Maximum { radius: 3 },
+            Filter::Minimum { radius: 3 },
+            Filter::Custom { kernel: sharpening, divisor: 1.75, offset: 0.0 },
+        ]
+    }
+
+    /// How many sweeps of the image this filter makes, for the progress bar.
+    ///
+    /// Only the count matters, not the cost: the bar is reset for each filter,
+    /// so it need only be linear within one run. Zero means the filter does
+    /// not report at all — it is one of the few cheap enough to be over before
+    /// a bar could be drawn — and the bar shows an unmeasured wait instead.
+    ///
+    /// Kept honest by `filter_progress`, which runs every filter and compares
+    /// what it counted against what is claimed here.
+    pub fn passes(&self) -> u64 {
+        match self {
+            // Separable: one pass across, one down.
+            Filter::GaussianBlur { .. } | Filter::BoxBlur { .. } => 2,
+            // A blur, then a sweep to add back the difference.
+            Filter::Sharpen { .. } | Filter::UnsharpMask { .. } | Filter::HighPass { .. } => 3,
+            // A median first, then the comparison against it.
+            Filter::DustAndScratches { .. } => 2,
+            // Once to work out the cells, once to paint them.
+            Filter::Crystallize { .. } => 2,
+            // Written without a row loop, and fast enough not to need one.
+            Filter::AverageBlur | Filter::Solarize | Filter::Offset { .. } => 0,
+            _ => 1,
+        }
+    }
+
     /// A 5x5 kernel that leaves the image alone, the starting point for Custom.
     pub const IDENTITY_KERNEL: [f32; 25] = {
         let mut k = [0.0; 25];
@@ -247,73 +354,93 @@ impl Filter {
         k
     };
 
-    /// Apply to a pixel buffer.
+    /// Apply to a pixel buffer, with nobody watching.
     pub fn apply(&self, src: &PixelBuffer, ctx: &FilterContext) -> PixelBuffer {
+        self.apply_reporting(src, ctx, &Progress::ignored())
+    }
+
+    /// Apply to a pixel buffer, saying how far along it is.
+    ///
+    /// The two conversions either side — into premultiplied float and back —
+    /// are not counted. They are a fixed cost that does not depend on the
+    /// filter, and on the filters slow enough to want a bar they are noise.
+    pub fn apply_reporting(
+        &self,
+        src: &PixelBuffer,
+        ctx: &FilterContext,
+        p: &Progress,
+    ) -> PixelBuffer {
         if src.width() == 0 || src.height() == 0 {
             return src.clone();
         }
-        self.apply_plane(&Plane::from_pixels(src), ctx).to_pixels()
+        p.begin(self.name(), src.height() as u64 * self.passes());
+        self.apply_plane(&Plane::from_pixels(src), ctx, p).to_pixels()
     }
 
     /// Apply to an already-converted plane, which saves a round trip when
     /// several filters run in sequence.
-    pub fn apply_plane(&self, src: &Plane, ctx: &FilterContext) -> Plane {
+    ///
+    /// The phase is the caller's to declare: a filter made of several sweeps
+    /// counts them all against one total rather than restarting the bar in
+    /// the middle of itself.
+    pub fn apply_plane(&self, src: &Plane, ctx: &FilterContext, p: &Progress) -> Plane {
         match *self {
-            Filter::GaussianBlur { radius } => blur::gaussian(src, radius),
-            Filter::BoxBlur { radius } => blur::box_blur(src, radius),
-            Filter::MotionBlur { angle, distance } => blur::motion(src, angle, distance),
+            Filter::GaussianBlur { radius } => blur::gaussian(src, radius, p),
+            Filter::BoxBlur { radius } => blur::box_blur(src, radius, p),
+            Filter::MotionBlur { angle, distance } => blur::motion(src, angle, distance, p),
             Filter::RadialBlur { amount, spin, centre } => blur::radial(
                 src,
                 amount,
                 if spin { RadialKind::Spin } else { RadialKind::Zoom },
                 centre,
+                p,
             ),
-            Filter::SurfaceBlur { radius, threshold } => blur::surface(src, radius, threshold),
-            Filter::AverageBlur => blur::average(src),
+            Filter::SurfaceBlur { radius, threshold } => blur::surface(src, radius, threshold, p),
+            Filter::AverageBlur => blur::average(src, p),
 
-            Filter::Sharpen { amount } => effects::sharpen(src, amount),
+            Filter::Sharpen { amount } => effects::sharpen(src, amount, p),
             Filter::UnsharpMask { amount, radius, threshold } => {
-                effects::unsharp_mask(src, amount, radius, threshold)
+                effects::unsharp_mask(src, amount, radius, threshold, p)
             }
 
             Filter::AddNoise { amount, monochromatic, gaussian, seed } => {
-                effects::add_noise(src, amount, monochromatic, gaussian, seed)
+                effects::add_noise(src, amount, monochromatic, gaussian, seed, p)
             }
-            Filter::Median { radius } => effects::median(src, radius),
+            Filter::Median { radius } => effects::median(src, radius, p),
             Filter::DustAndScratches { radius, threshold } => {
-                effects::dust_and_scratches(src, radius, threshold)
+                effects::dust_and_scratches(src, radius, threshold, p)
             }
 
-            Filter::Twirl { angle } => distort::twirl(src, angle),
-            Filter::Pinch { amount } => distort::pinch(src, amount),
-            Filter::Spherize { amount } => distort::spherize(src, amount),
+            Filter::Twirl { angle } => distort::twirl(src, angle, p),
+            Filter::Pinch { amount } => distort::pinch(src, amount, p),
+            Filter::Spherize { amount } => distort::spherize(src, amount, p),
             Filter::Wave { amplitude, wavelength, vertical } => {
-                distort::wave(src, amplitude, wavelength, vertical)
+                distort::wave(src, amplitude, wavelength, vertical, p)
             }
-            Filter::PolarCoordinates { to_polar } => distort::polar_coordinates(src, to_polar),
+            Filter::PolarCoordinates { to_polar } => distort::polar_coordinates(src, to_polar, p),
 
-            Filter::Mosaic { size } => distort::mosaic(src, size),
-            Filter::Crystallize { size, seed } => distort::crystallize(src, size, seed),
-            Filter::Fragment { distance } => distort::fragment(src, distance),
+            Filter::Mosaic { size } => distort::mosaic(src, size, p),
+            Filter::Crystallize { size, seed } => distort::crystallize(src, size, seed, p),
+            Filter::Fragment { distance } => distort::fragment(src, distance, p),
 
             Filter::Clouds { scale, seed, difference } => {
-                render::clouds(src, scale, seed, ctx.foreground, ctx.background, difference)
+                render::clouds(src, scale, seed, ctx.foreground, ctx.background, difference, p)
             }
             Filter::Fibers { strength, length, seed } => {
-                render::fibers(src, strength, length, seed, ctx.foreground, ctx.background)
+                render::fibers(src, strength, length, seed, ctx.foreground, ctx.background, p)
             }
 
-            Filter::FindEdges => effects::find_edges(src),
-            Filter::Emboss { angle, height, amount } => effects::emboss(src, angle, height, amount),
-            Filter::Solarize => effects::solarize(src),
-            Filter::Diffuse { amount, seed } => effects::diffuse(src, amount, seed),
+            Filter::FindEdges => effects::find_edges(src, p),
+            Filter::Emboss { angle, height, amount } => effects::emboss(src, angle, height, amount, p),
+            Filter::Solarize => effects::solarize(src, p),
+            Filter::Diffuse { amount, seed } => effects::diffuse(src, amount, seed, p),
 
-            Filter::HighPass { radius } => effects::high_pass(src, radius),
-            Filter::Offset { dx, dy, wrap } => effects::offset(src, dx, dy, wrap),
-            Filter::Maximum { radius } => effects::morphology(src, radius, true),
-            Filter::Minimum { radius } => effects::morphology(src, radius, false),
+            Filter::HighPass { radius } => effects::high_pass(src, radius, p),
+            Filter::Offset { dx, dy, wrap } => effects::offset(src, dx, dy, wrap, p),
+            Filter::Maximum { radius } => effects::morphology(src, radius, true, p),
+            Filter::Minimum { radius } => effects::morphology(src, radius, false, p),
             Filter::Custom { ref kernel, divisor, offset } => {
-                effects::custom(src, kernel, divisor, offset)
+                effects::custom(src, kernel, divisor, offset, p)
             }
         }
     }

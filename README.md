@@ -138,6 +138,15 @@ pressure drives is a choice, and a device that cannot measure it presses fully,
 so nothing changes for a mouse. A selection's shape becomes a brush tip, fitted
 to the brush size with its own proportions kept.
 
+**Nothing waits on a frozen window.** A median on twelve megapixels is nearly
+four seconds, a content-aware scale eight; held on the drawing thread each of
+those is a window that stops repainting and gets offered to you for killing.
+Everything that slow runs on a worker instead, with a bar in the status line
+saying how far along it is and a way to stop it — one mechanism, so a filter,
+a resize, an alignment and a model run all behave the same way. A filter also
+checks that the pixels it read are still the ones there before writing its
+answer back, so a stroke made while it ran does not quietly disappear.
+
 **Depth.** The depth model's answer drives three effects that are impossible
 without it and ordinary with it: haze that thickens with distance, a shallow
 depth of field applied to a photograph that was not taken with one, and a shift

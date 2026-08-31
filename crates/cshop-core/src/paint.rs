@@ -16,6 +16,22 @@
 //! So dabs accumulate into a coverage mask, and that mask is composited onto
 //! the layer exactly once, at the end. That also makes the whole stroke a
 //! single undo step for free.
+//!
+//! # Still to do: painting at sixteen bits
+//!
+//! Every type here works in [`Rgba8`]. A raster layer can hold sixteen bits a
+//! channel and files round-trip them, but the brush cannot reach one — the
+//! window says so and offers `Image ▸ Mode` rather than narrowing the layer
+//! behind the user's back, which is the honest half of the situation and not
+//! the whole of it.
+//!
+//! What it would take: the stroke's coverage mask is already independent of
+//! depth, so the change is in the compositing at the end — [`Stroke::commit`]
+//! and the [`composite`] call under it — plus the sampled sources
+//! ([`StrokeSource`]) reading and writing at the layer's own depth rather than
+//! at eight bits. It is not deep, but it is every path in this file, and half
+//! of it done is worse than none: a brush that paints at sixteen bits into a
+//! stroke buffer that clamps at eight would look right and quantise anyway.
 
 use crate::blend::composite;
 use crate::color::{Rgba, Rgba8};

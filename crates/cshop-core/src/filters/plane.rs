@@ -15,7 +15,31 @@
 
 use crate::color::Rgba8;
 use crate::pixels::PixelBuffer;
+use crate::progress::Progress;
 use rayon::prelude::*;
+
+/// Fill a plane a row at a time, in parallel, saying so as it goes.
+///
+/// Every spatial filter here has the same shape — a new plane written row by
+/// row from the old one — so the counting and the stopping live once, here,
+/// rather than being remembered at twenty call sites.
+///
+/// A cancelled run leaves the remaining rows as it found them and returns.
+/// That is not a valid picture and is not meant to be: the only caller that
+/// can cancel is the one that throws the answer away.
+pub fn fill_rows(out: &mut Plane, p: &Progress, f: impl Fn(usize, &mut [f32]) + Sync + Send) {
+    let width = out.width as usize;
+    if width == 0 {
+        return;
+    }
+    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+        if p.cancelled() {
+            return;
+        }
+        f(y, row);
+        p.advance(1);
+    });
+}
 
 /// A premultiplied `f32` RGBA image.
 #[derive(Clone)]
@@ -138,13 +162,13 @@ impl Plane {
 ///
 /// Separating a 2D kernel into two 1D passes turns an O(r²) filter into O(r),
 /// which is what makes a large-radius Gaussian usable at all.
-pub fn convolve_1d(src: &Plane, kernel: &[f32], horizontal: bool) -> Plane {
+pub fn convolve_1d(src: &Plane, kernel: &[f32], horizontal: bool, p: &Progress) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let half = (kernel.len() / 2) as i32;
     let width = src.width as usize;
 
     // Rows are independent, so this parallelises directly.
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let mut acc = [0.0f32; 4];
@@ -186,27 +210,27 @@ pub fn gaussian_kernel(sigma: f32) -> Vec<f32> {
 }
 
 /// Separable Gaussian blur.
-pub fn gaussian_blur(src: &Plane, sigma: f32) -> Plane {
+pub fn gaussian_blur(src: &Plane, sigma: f32, p: &Progress) -> Plane {
     if sigma <= 0.01 {
         return src.clone();
     }
     let kernel = gaussian_kernel(sigma);
-    let horizontal = convolve_1d(src, &kernel, true);
-    convolve_1d(&horizontal, &kernel, false)
+    let horizontal = convolve_1d(src, &kernel, true, p);
+    convolve_1d(&horizontal, &kernel, false, p)
 }
 
 /// Convolve with an arbitrary square kernel.
 ///
 /// Used by the fixed 3×3 effects and by the Custom filter; anything larger and
 /// separable should use [`convolve_1d`] twice instead.
-pub fn convolve_2d(src: &Plane, kernel: &[f32], size: usize, divisor: f32, bias: f32) -> Plane {
+pub fn convolve_2d(src: &Plane, kernel: &[f32], size: usize, divisor: f32, bias: f32, p: &Progress) -> Plane {
     debug_assert_eq!(kernel.len(), size * size);
     let mut out = Plane::new(src.width, src.height);
     let half = (size / 2) as i32;
     let width = src.width as usize;
     let divisor = if divisor.abs() < 1e-6 { 1.0 } else { divisor };
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let mut acc = [0.0f32; 4];
@@ -336,7 +360,7 @@ mod tests {
     fn blurring_a_flat_colour_changes_nothing() {
         // Edge clamping means even the border must survive untouched.
         let src = PixelBuffer::filled(32, 32, Rgba8::opaque(90, 140, 210));
-        let out = gaussian_blur(&Plane::from_pixels(&src), 5.0).to_pixels();
+        let out = gaussian_blur(&Plane::from_pixels(&src), 5.0, &Progress::ignored()).to_pixels();
         for (x, y) in [(0, 0), (31, 31), (0, 15), (16, 16)] {
             let c = out.get(x, y);
             assert!(
@@ -358,7 +382,7 @@ mod tests {
                 src.set(x, y, Rgba8::new(255, 240, 0, a as u8));
             }
         }
-        let out = gaussian_blur(&Plane::from_pixels(&src), 4.0).to_pixels();
+        let out = gaussian_blur(&Plane::from_pixels(&src), 4.0, &Progress::ignored()).to_pixels();
         for y in 0..48i32 {
             for x in 0..48i32 {
                 let c = out.get(x, y);
@@ -373,7 +397,7 @@ mod tests {
     fn blur_spreads_a_point_symmetrically() {
         let mut src = PixelBuffer::new(41, 41);
         src.set(20, 20, Rgba8::WHITE);
-        let out = gaussian_blur(&Plane::from_pixels(&src), 3.0);
+        let out = gaussian_blur(&Plane::from_pixels(&src), 3.0, &Progress::ignored());
 
         let centre = out.get(20, 20)[3];
         assert!(centre > 0.0 && centre < 1.0, "the point should have spread");
@@ -392,7 +416,7 @@ mod tests {
         let mut src = PixelBuffer::new(64, 64);
         src.fill_rect(crate::geom::IRect::new(20, 20, 44, 44), Rgba8::WHITE);
         let before: f32 = Plane::from_pixels(&src).data.iter().skip(3).step_by(4).sum();
-        let after: f32 = gaussian_blur(&Plane::from_pixels(&src), 3.0)
+        let after: f32 = gaussian_blur(&Plane::from_pixels(&src), 3.0, &Progress::ignored())
             .data
             .iter()
             .skip(3)
@@ -409,7 +433,7 @@ mod tests {
         let src = PixelBuffer::filled(16, 16, Rgba8::opaque(30, 60, 90));
         let mut kernel = [0.0f32; 9];
         kernel[4] = 1.0;
-        let out = convolve_2d(&Plane::from_pixels(&src), &kernel, 3, 1.0, 0.0).to_pixels();
+        let out = convolve_2d(&Plane::from_pixels(&src), &kernel, 3, 1.0, 0.0, &Progress::ignored()).to_pixels();
         assert_eq!(out.get(8, 8), Rgba8::opaque(30, 60, 90));
     }
 
@@ -419,7 +443,7 @@ mod tests {
         let src = PixelBuffer::filled(8, 8, Rgba8::opaque(100, 100, 100));
         let mut kernel = [0.0f32; 9];
         kernel[4] = 1.0;
-        let out = convolve_2d(&Plane::from_pixels(&src), &kernel, 3, 0.0, 0.0).to_pixels();
+        let out = convolve_2d(&Plane::from_pixels(&src), &kernel, 3, 0.0, 0.0, &Progress::ignored()).to_pixels();
         assert_eq!(out.get(4, 4).r, 100);
     }
 

@@ -401,9 +401,9 @@ fn main() {
                     app.dispatch(cshop_ui::commands::Action::ShowDenoise);
                     if let cshop_ui::dialogs::Dialog::Denoise(d) = &mut app.dialog {
                         // Frozen part-way, so the capture catches the bar.
-                        let p = std::sync::Arc::new(cshop_ui::vision::DenoiseProgress::default());
-                        p.total.store(24, std::sync::atomic::Ordering::Relaxed);
-                        p.done.store(9, std::sync::atomic::Ordering::Relaxed);
+                        let p = cshop_core::progress::Progress::new();
+                        p.begin("Denoising", 24);
+                        p.set(9);
                         d.progress = Some(p);
                     }
                 }
@@ -430,10 +430,10 @@ fn main() {
                             // Frozen part-way, so the capture catches the
                             // progress bar rather than a window that has
                             // already finished.
-                            let done = std::sync::Arc::new(
-                                std::sync::atomic::AtomicU32::new(371),
-                            );
-                            d.applying = Some((done, 600));
+                            let p = cshop_core::progress::Progress::new();
+                            p.begin("Lens Correction", 600);
+                            p.set(371);
+                            d.applying = Some(p);
                         }
                     }
                 }

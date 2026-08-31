@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cshop_core::json::{self, Json};
+use cshop_core::progress::Progress;
 
 /// Where the pack installs itself, matching `vision/setup.sh`.
 fn home() -> PathBuf {
@@ -266,35 +267,14 @@ pub struct Denoised {
     pub moved: f32,
 }
 
-/// How far a denoising run has got, shared with whoever is drawing the bar.
-#[derive(Debug, Default)]
-pub struct DenoiseProgress {
-    pub done: std::sync::atomic::AtomicU32,
-    pub total: std::sync::atomic::AtomicU32,
-}
-
-impl DenoiseProgress {
-    /// Zero until the sidecar has said how many tiles there are, and then the
-    /// fraction of them finished.
-    pub fn fraction(&self) -> f32 {
-        use std::sync::atomic::Ordering::Relaxed;
-        let total = self.total.load(Relaxed);
-        if total == 0 {
-            return 0.0;
-        }
-        (self.done.load(Relaxed) as f32 / total as f32).min(1.0)
-    }
-}
-
 /// Run a subcommand that takes a while, reading its progress as it arrives.
 ///
 /// Unlike [`run`], this reads the child's stderr line by line rather than
 /// waiting for it to finish. The slow models — denoising, enlarging — are slow
 /// enough that a caller with no idea how far they have got cannot tell them
 /// apart from ones that have hung.
-fn run_streaming(args: &[&str], progress: &DenoiseProgress) -> Result<Json, String> {
+fn run_streaming(args: &[&str], progress: &Progress) -> Result<Json, String> {
     use std::io::BufRead;
-    use std::sync::atomic::Ordering::Relaxed;
 
     let (Some(python), Some(script)) = (python(), script()) else {
         return Err(NOT_INSTALLED.to_string());
@@ -314,16 +294,23 @@ fn run_streaming(args: &[&str], progress: &DenoiseProgress) -> Result<Json, Stri
         for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
             if let Ok(note) = json::parse(line.trim()) {
                 if let Some(total) = note.get("tiles").and_then(Json::as_f64) {
-                    progress.total.store(total as u32, Relaxed);
+                    progress.begin(progress.what(), total as u64);
                 }
                 if let Some(done) = note.get("tile").and_then(Json::as_f64) {
-                    progress.done.store(done as u32, Relaxed);
+                    progress.set(done as u64);
                 }
                 continue;
             }
             tail.push(line);
             if tail.len() > 4 {
                 tail.remove(0);
+            }
+            // Stopping the model means stopping the process running it. There
+            // is nothing else to stop: the work is all over there, and it will
+            // keep chewing through tiles for minutes if merely ignored.
+            if progress.cancelled() {
+                let _ = child.kill();
+                return Err("stopped".into());
             }
         }
     }
@@ -352,7 +339,7 @@ pub fn denoise(
     image: &Path,
     out: &Path,
     strength: f32,
-    progress: &DenoiseProgress,
+    progress: &Progress,
 ) -> Result<Denoised, String> {
     let image = image_arg(image)?;
     let out_s = out.to_str().ok_or("that output path is not text")?;
@@ -386,7 +373,7 @@ pub fn upscale(
     image: &Path,
     out: &Path,
     scale: f32,
-    progress: &DenoiseProgress,
+    progress: &Progress,
 ) -> Result<Upscaled, String> {
     let image = image_arg(image)?;
     let out_s = out.to_str().ok_or("that output path is not text")?;

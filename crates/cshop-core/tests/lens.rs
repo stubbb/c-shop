@@ -7,6 +7,7 @@
 
 use cshop_core::color::Rgba8;
 use cshop_core::filters::plane::Plane;
+use cshop_core::progress::Progress;
 use cshop_core::lens::{apply, largest_opaque_rect, Lens};
 use cshop_core::pixels::PixelBuffer;
 
@@ -68,7 +69,7 @@ fn doing_nothing_changes_nothing() {
     let lens = Lens::default();
     assert!(lens.is_identity());
     let src = ruled(64, 48, 12);
-    let out = apply(&src, lens, None);
+    let out = apply(&src, lens, &Progress::ignored());
     assert_eq!(out.data, src.data, "the identity must be exactly the identity");
 }
 
@@ -81,7 +82,7 @@ fn distortion_bends_a_straight_line_the_way_it_says() {
     let src = ruled(200, 200, 50); // a quarter of the way down
     let centre_column = 100;
 
-    let pincushion = apply(&src, Lens { distortion: 0.3, ..Default::default() }, None);
+    let pincushion = apply(&src, Lens { distortion: 0.3, ..Default::default() }, &Progress::ignored());
     let mid = line_row(&pincushion, centre_column).expect("the middle keeps its line");
     let (at, edge) = outermost_line(&pincushion);
     assert!(
@@ -90,7 +91,7 @@ fn distortion_bends_a_straight_line_the_way_it_says() {
          centre at {mid:.1}, column {at} at {edge:.1}"
     );
 
-    let barrel = apply(&src, Lens { distortion: -0.3, ..Default::default() }, None);
+    let barrel = apply(&src, Lens { distortion: -0.3, ..Default::default() }, &Progress::ignored());
     let mid = line_row(&barrel, centre_column).expect("the middle keeps its line");
     let (at, edge) = outermost_line(&barrel);
     assert!(
@@ -105,7 +106,7 @@ fn distortion_bends_a_straight_line_the_way_it_says() {
 fn the_line_through_the_centre_stays_straight() {
     let src = ruled(200, 200, 100);
     for d in [-0.5, -0.2, 0.2, 0.5] {
-        let out = apply(&src, Lens { distortion: d, ..Default::default() }, None);
+        let out = apply(&src, Lens { distortion: d, ..Default::default() }, &Progress::ignored());
         let mid = line_row(&out, 100).expect("the middle keeps its line");
         let (at, edge) = outermost_line(&out);
         assert!(
@@ -121,7 +122,7 @@ fn the_line_through_the_centre_stays_straight() {
 #[test]
 fn rotation_leaves_the_corners_empty() {
     let src = white(100, 100);
-    let out = apply(&src, Lens { rotation: 20.0, ..Default::default() }, None);
+    let out = apply(&src, Lens { rotation: 20.0, ..Default::default() }, &Progress::ignored());
     assert!(alpha(&out, 50, 50) > 0.99, "the middle should still be there");
     assert!(alpha(&out, 1, 1) < 0.01, "and the corners should not");
     assert!(alpha(&out, 98, 1) < 0.01);
@@ -133,7 +134,7 @@ fn rotation_turns_the_way_it_is_asked_to() {
     // carry it upward, so it appears above the middle.
     let mut px = PixelBuffer::filled(101, 101, Rgba8::WHITE);
     px.set(90, 50, Rgba8::BLACK);
-    let out = apply(&Plane::from_pixels(&px), Lens { rotation: 30.0, ..Default::default() }, None);
+    let out = apply(&Plane::from_pixels(&px), Lens { rotation: 30.0, ..Default::default() }, &Progress::ignored());
 
     // Darkest *covered* pixel: premultiplied, an empty corner is black too,
     // and looking for black without asking about coverage finds the corner.
@@ -161,7 +162,7 @@ fn rotation_turns_the_way_it_is_asked_to() {
 #[test]
 fn a_keystone_leans_the_frame() {
     let src = white(120, 120);
-    let out = apply(&src, Lens { perspective_v: 0.3, ..Default::default() }, None);
+    let out = apply(&src, Lens { perspective_v: 0.3, ..Default::default() }, &Progress::ignored());
     let width_at = |y: u32| (0..120).filter(|&x| alpha(&out, x, y) > 0.99).count();
     let (top, bottom) = (width_at(2), width_at(117));
     assert_ne!(top, bottom, "a keystone that keeps both edges the same is not a keystone");
@@ -175,12 +176,12 @@ fn a_keystone_leans_the_frame() {
 fn the_vignette_darkens_or_brightens_only_the_outside() {
     let src = white(100, 100);
 
-    let dark = apply(&src, Lens { vignette: -0.8, ..Default::default() }, None);
+    let dark = apply(&src, Lens { vignette: -0.8, ..Default::default() }, &Progress::ignored());
     assert!((luma(&dark, 50, 50) - 1.0).abs() < 0.01, "the middle is left alone");
     assert!(luma(&dark, 1, 1) < 0.5, "and the corner is dimmed");
     assert!(alpha(&dark, 1, 1) > 0.99, "a vignette dims a picture, it does not make holes");
 
-    let bright = apply(&src, Lens { vignette: 0.8, ..Default::default() }, None);
+    let bright = apply(&src, Lens { vignette: 0.8, ..Default::default() }, &Progress::ignored());
     assert!(luma(&bright, 1, 1) > luma(&dark, 1, 1), "and it goes the other way too");
 }
 
@@ -189,7 +190,7 @@ fn the_vignette_darkens_or_brightens_only_the_outside() {
 #[test]
 fn brightening_a_vignette_lifts_the_corners() {
     let grey = Plane::from_pixels(&PixelBuffer::filled(100, 100, Rgba8::opaque(128, 128, 128)));
-    let out = apply(&grey, Lens { vignette: 0.6, ..Default::default() }, None);
+    let out = apply(&grey, Lens { vignette: 0.6, ..Default::default() }, &Progress::ignored());
     assert!(luma(&out, 1, 1) > luma(&grey, 1, 1) + 0.05, "the corner should be lifted");
     assert!((luma(&out, 50, 50) - luma(&grey, 50, 50)).abs() < 0.01, "the middle untouched");
 }
@@ -214,7 +215,7 @@ fn an_empty_frame_crops_to_nothing() {
 #[test]
 fn the_crop_of_a_rotation_holds_no_transparency() {
     let src = white(200, 140);
-    let out = apply(&src, Lens { rotation: 12.0, ..Default::default() }, None);
+    let out = apply(&src, Lens { rotation: 12.0, ..Default::default() }, &Progress::ignored());
     let r = largest_opaque_rect(&out);
     assert!(!r.is_empty());
 
@@ -235,7 +236,7 @@ fn the_crop_of_a_rotation_holds_no_transparency() {
 #[test]
 fn the_crop_of_a_distortion_holds_no_transparency() {
     let src = white(160, 160);
-    let out = apply(&src, Lens { distortion: 0.35, ..Default::default() }, None);
+    let out = apply(&src, Lens { distortion: 0.35, ..Default::default() }, &Progress::ignored());
     let r = largest_opaque_rect(&out);
     assert!(!r.is_empty(), "there should be something left");
     for y in r.y0..r.y1 {
@@ -248,7 +249,9 @@ fn the_crop_of_a_distortion_holds_no_transparency() {
 #[test]
 fn progress_counts_every_row() {
     let src = white(30, 24);
-    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-    apply(&src, Lens { rotation: 5.0, ..Default::default() }, Some(&progress));
-    assert_eq!(progress.load(std::sync::atomic::Ordering::Relaxed), 24);
+    let progress = Progress::new();
+    apply(&src, Lens { rotation: 5.0, ..Default::default() }, &progress);
+    assert_eq!(progress.done(), 24);
+    assert_eq!(progress.total(), 24, "the total should be the rows it will do");
+    assert_eq!(progress.fraction(), Some(1.0));
 }

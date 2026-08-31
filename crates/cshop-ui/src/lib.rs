@@ -21,6 +21,7 @@ pub mod doc_view;
 pub mod filter_ui;
 pub mod icons;
 pub mod input_harness;
+pub mod jobs;
 pub mod layer_style;
 pub mod lens_ui;
 pub mod panels;

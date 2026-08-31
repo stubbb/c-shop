@@ -153,38 +153,47 @@ pub struct CShopApp {
     /// The selection as it stood before the Segment window opened, so that
     /// cancelling puts it back rather than leaving a half-chosen mask.
     segment_before: Option<cshop_core::selection::Selection>,
+    /// Everything running on a worker, so one place can draw it and one
+    /// place can decide whether workers are used at all. See [`crate::jobs`].
+    pub jobs: crate::jobs::Jobs,
     /// A segmentation running on another thread.
     ///
     /// The models take about a second, which is a long time to hold the frame:
     /// with the work on this thread the window freezes and nothing can say it
     /// is busy, least of all a spinner that never gets drawn.
-    segment_job: Option<std::sync::mpsc::Receiver<SegmentOutcome>>,
+    segment_job: Option<crate::jobs::Job<SegmentOutcome>>,
     /// The full-resolution lens pass, while it runs. See [`CShopApp::poll_lens`].
-    lens_job: Option<std::sync::mpsc::Receiver<LensOutcome>>,
+    lens_job: Option<crate::jobs::Job<LensOutcome>>,
     /// A content-aware scale running on a worker thread.
     carve_job: Option<CarveJob>,
+    /// A filter running over a whole layer. See [`CShopApp::poll_filter`].
+    filter_job: Option<FilterJob>,
+    /// Frames being aligned to the first of them.
+    align_job: Option<crate::jobs::Job<Aligned>>,
+    /// Every layer being resampled for a new image size.
+    resize_job: Option<ResizeJob>,
     /// A model-driven whole-layer edit running on a worker thread.
     model_job: Option<ModelJob>,
     /// The denoising run, while it works its way through the tiles.
-    denoise_job: Option<std::sync::mpsc::Receiver<Result<PixelBuffer, String>>>,
+    denoise_job: Option<crate::jobs::Job<Result<PixelBuffer, String>>>,
     /// The depth model, while it looks at the picture.
-    depth_job: Option<std::sync::mpsc::Receiver<Result<cshop_core::relight::DepthMap, String>>>,
+    depth_job: Option<crate::jobs::Job<Result<cshop_core::relight::DepthMap, String>>>,
     /// Set while the depth being worked out is destined for a mask rather than
     /// for the Relight window: the layer to put it on, and which way round.
     depth_for_mask: Option<(LayerId, bool)>,
     /// The hole being filled in, while the model works on it.
     #[allow(clippy::type_complexity)]
-    inpaint_job: Option<std::sync::mpsc::Receiver<Result<(LayerId, PixelBuffer), String>>>,
+    inpaint_job: Option<crate::jobs::Job<Result<(LayerId, PixelBuffer), String>>>,
     /// The map the labeller wrote, kept between looking and separating.
     separate_map: Option<PixelBuffer>,
     /// The labeller, while it looks: what it found and the map it wrote.
     #[allow(clippy::type_complexity)]
     separate_job:
-        Option<std::sync::mpsc::Receiver<Result<(Vec<crate::vision::Region>, PixelBuffer), String>>>,
+        Option<crate::jobs::Job<Result<(Vec<crate::vision::Region>, PixelBuffer), String>>>,
     /// The enlargement, and the size and scale it was started for.
     #[allow(clippy::type_complexity)]
     upscale_job:
-        Option<std::sync::mpsc::Receiver<Result<((u32, u32), f32, Vec<(LayerId, PixelBuffer)>), String>>>,
+        Option<crate::jobs::Job<Result<((u32, u32), f32, Vec<(LayerId, PixelBuffer)>), String>>>,
     /// This frame's clock, for anything that animates without a widget of its
     /// own — the type caret's blink.
     pub now: f64,
@@ -288,6 +297,17 @@ impl CShopApp {
         Self::with_settings(gpu, crate::settings::Settings::load())
     }
 
+    /// Put the long operations on worker threads.
+    ///
+    /// Only the window wants this. A worker exists to keep a window painting,
+    /// and everything else that drives this application — a script, a test,
+    /// the screenshot generator — has no window to keep and every reason to
+    /// want the next line to see the finished picture.
+    pub fn with_workers(mut self) -> Self {
+        self.jobs.run_here(false);
+        self
+    }
+
     /// The same, with settings supplied rather than read — which is what a
     /// test wants, since a test that read the machine's own settings would
     /// pass or fail depending on who ran it.
@@ -319,9 +339,15 @@ impl CShopApp {
             path_edit: PathEdit::default(),
             edit_run: 0,
             segment_before: None,
+            // Work runs where it was started unless something turns workers
+            // on, which only the window does: see [`CShopApp::with_workers`].
+            jobs: crate::jobs::Jobs::default(),
             segment_job: None,
             lens_job: None,
             carve_job: None,
+            filter_job: None,
+            align_job: None,
+            resize_job: None,
             model_job: None,
             denoise_job: None,
             upscale_job: None,
@@ -493,16 +519,13 @@ impl CShopApp {
     pub fn update(&mut self, ui: &mut egui::Ui, renderer: &mut egui_wgpu::Renderer) {
         let ctx = ui.ctx().clone();
         self.now = ctx.input(|i| i.time);
-        self.poll_segment(&ctx);
-        self.poll_lens(&ctx);
-        self.poll_carve(&ctx);
+        self.collect_jobs();
         self.poll_playback(&ctx);
-        self.poll_model_edit(&ctx);
-        self.poll_denoise(&ctx);
-        self.poll_upscale(&ctx);
-        self.poll_separate(&ctx);
-        self.poll_inpaint(&ctx);
-        self.poll_depth(&ctx);
+        // One request for all of them: a job that is still running wants the
+        // next frame drawn, and it does not matter which job asked.
+        if self.jobs.any() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         self.handle_shortcuts(&ctx);
 
         egui::Panel::top("titlebar")
@@ -1997,15 +2020,7 @@ impl CShopApp {
                 self.start_content_aware_scale(width, height, protect_selection)
             }
             Action::ResizeImage { width, height, filter } => {
-                let gpu = self.gpu.clone();
-                let Some(view) = self.doc_mut() else { return };
-                let dirty = view
-                    .history
-                    .apply(&mut view.doc, Box::new(ResizeImage::new(width, height, filter)));
-                view.mark_dirty(dirty);
-                view.resize_targets(&gpu);
-                view.invalidate();
-                view.zoom_initialised = false;
+                self.start_resize_image(width, height, filter)
             }
             Action::ResizeCanvas { width, height, anchor } => {
                 let gpu = self.gpu.clone();
@@ -2209,6 +2224,33 @@ impl CShopApp {
     pub fn dispatch(&mut self, action: Action) {
         self.run(action);
         self.run_actions();
+        // With no worker, the work is already done by the time the action
+        // returns — but nothing has collected it. Collecting here is what
+        // makes a script and a test see the finished picture on the next
+        // line, exactly as they did before any of this ran on a thread.
+        if self.jobs.runs_here() {
+            self.collect_jobs();
+            self.run_actions();
+        }
+    }
+
+    /// Take the answer from every job that has one.
+    ///
+    /// Called once a frame by the window, and once per action by everything
+    /// that has no frames.
+    pub fn collect_jobs(&mut self) {
+        self.poll_segment();
+        self.poll_lens();
+        self.poll_carve();
+        self.poll_filter();
+        self.poll_align();
+        self.poll_resize();
+        self.poll_model_edit();
+        self.poll_denoise();
+        self.poll_upscale();
+        self.poll_separate();
+        self.poll_inpaint();
+        self.poll_depth();
     }
 
     fn open_path(&mut self, path: PathBuf) {
@@ -3744,18 +3786,16 @@ impl CShopApp {
             d.busy = true;
             d.status = "Looking…".into();
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.segment_job = Some(rx);
-        std::thread::spawn(move || {
+        self.segment_job = Some(self.jobs.start("Finding Objects", move |_| {
             let found = crate::vision::detect(&source.0, 0.25, "");
             if let Some(dir) = source.0.parent() {
                 let _ = std::fs::remove_dir_all(dir);
             }
-            let _ = tx.send(match found {
+            match found {
                 Ok(objects) => SegmentOutcome::Found(objects),
                 Err(e) => SegmentOutcome::Failed(e),
-            });
-        });
+            }
+        }));
     }
 
     /// Collect a finished segmentation, if one has come back.
@@ -3764,8 +3804,7 @@ impl CShopApp {
     /// repaint, which is what keeps the spinner turning.
     /// Ask the depth model how far away everything is, on a thread.
     fn start_depth(&mut self, pixels: PixelBuffer) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        self.depth_job = Some(self.jobs.start("Depth", move |_| {
             let dir = crate::vision::scratch();
             let result = (|| {
                 crate::vision::make_scratch(&dir)
@@ -3778,18 +3817,15 @@ impl CShopApp {
                 crate::vision::depth_map(&path)
             })();
             let _ = std::fs::remove_dir_all(&dir);
-            let _ = tx.send(result);
-        });
-        self.depth_job = Some(rx);
+            result
+        }));
     }
 
-    pub fn poll_depth(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.depth_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            Err(_) => {
+    pub fn poll_depth(&mut self) {
+        let Some(job) = &self.depth_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.depth_job = None;
                 let for_mask = self.depth_for_mask.take().is_some();
                 if let Dialog::Relight(d) = &mut self.dialog {
@@ -3800,7 +3836,7 @@ impl CShopApp {
                     self.fail("The depth model stopped without answering");
                 }
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.depth_job = None;
                 let for_mask = self.depth_for_mask.take().is_some();
                 if let Dialog::Relight(d) = &mut self.dialog {
@@ -3811,7 +3847,7 @@ impl CShopApp {
                     self.fail(why);
                 }
             }
-            Ok(Ok(map)) => {
+            crate::jobs::Poll::Done(Ok(map)) => {
                 self.depth_job = None;
                 // The same model answers two questions. Which one asked is
                 // recorded when the job starts, so the answer knows where to go.
@@ -3956,31 +3992,26 @@ impl CShopApp {
             self.fail(crate::vision::NOT_INSTALLED);
             return;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(work(source));
-        });
-        self.model_job = Some(ModelJob { layer: id, label, done: rx });
+        let job = self.jobs.start(label, move |_| work(source));
+        self.model_job = Some(ModelJob { layer: id, label, job });
         self.notify(saying.to_string());
     }
 
     /// Collect a model-driven edit when it finishes.
-    pub fn poll_model_edit(&mut self, ctx: &egui::Context) {
+    pub fn poll_model_edit(&mut self) {
         let Some(job) = &self.model_job else { return };
         let (id, label) = (job.layer, job.label);
-        match job.done.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(80));
-            }
-            Err(_) => {
+        match job.job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.model_job = None;
                 self.fail("That stopped without finishing");
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.model_job = None;
                 self.fail(why);
             }
-            Ok(Ok(pixels)) => {
+            crate::jobs::Poll::Done(Ok(pixels)) => {
                 self.model_job = None;
                 let Some(view) = self.doc_mut() else { return };
                 let Some(layer) = view.doc.tree.get(id) else { return };
@@ -4282,8 +4313,7 @@ impl CShopApp {
         }
 
         self.notify("Filling in…");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        self.inpaint_job = Some(self.jobs.start("Content-Aware Fill", move |_| {
             let dir = crate::vision::scratch();
             let result = (|| {
                 crate::vision::make_scratch(&dir)
@@ -4314,26 +4344,23 @@ impl CShopApp {
                 Ok((id, pixels))
             })();
             let _ = std::fs::remove_dir_all(&dir);
-            let _ = tx.send(result);
-        });
-        self.inpaint_job = Some(rx);
+            result
+        }));
     }
 
-    pub fn poll_inpaint(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.inpaint_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            Err(_) => {
+    pub fn poll_inpaint(&mut self) {
+        let Some(job) = &self.inpaint_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.inpaint_job = None;
                 self.fail("The model stopped without answering");
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.inpaint_job = None;
                 self.fail(why);
             }
-            Ok(Ok((id, pixels))) => {
+            crate::jobs::Poll::Done(Ok((id, pixels))) => {
                 self.inpaint_job = None;
                 let Some(view) = self.doc_mut() else { return };
                 let Some(layer) = view.doc.tree.get(id) else { return };
@@ -4356,8 +4383,7 @@ impl CShopApp {
     /// Half a second, but on the frame thread half a second is a visible
     /// stutter, and the window has a spinner to earn.
     fn start_separate_look(&mut self, pixels: PixelBuffer) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        self.separate_job = Some(self.jobs.start("Looking", move |_| {
             let dir = crate::vision::scratch();
             let result = (|| {
                 crate::vision::make_scratch(&dir)
@@ -4372,32 +4398,29 @@ impl CShopApp {
                 Ok((answer.regions, labels))
             })();
             let _ = std::fs::remove_dir_all(&dir);
-            let _ = tx.send(result);
-        });
-        self.separate_job = Some(rx);
+            result
+        }));
     }
 
-    pub fn poll_separate(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.separate_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            Err(_) => {
+    pub fn poll_separate(&mut self) {
+        let Some(job) = &self.separate_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.separate_job = None;
                 if let Dialog::Separate(d) = &mut self.dialog {
                     d.busy = false;
                     d.status = "The labeller stopped without answering.".into();
                 }
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.separate_job = None;
                 if let Dialog::Separate(d) = &mut self.dialog {
                     d.busy = false;
                     d.status = why;
                 }
             }
-            Ok(Ok((regions, labels))) => {
+            crate::jobs::Poll::Done(Ok((regions, labels))) => {
                 self.separate_job = None;
                 self.separate_map = Some(labels);
                 if let Dialog::Separate(d) = &mut self.dialog {
@@ -4507,14 +4530,7 @@ impl CShopApp {
         }
         let size = self.doc().map(|v| (v.doc.width, v.doc.height)).unwrap_or((1, 1));
 
-        let progress = std::sync::Arc::new(crate::vision::DenoiseProgress::default());
-        if let Dialog::Upscale(d) = &mut self.dialog {
-            d.progress = Some(progress.clone());
-            d.status.clear();
-        }
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let job = self.jobs.start("Enlarging", move |p| {
             let dir = crate::vision::scratch();
             let result = (|| {
                 crate::vision::make_scratch(&dir)
@@ -4525,7 +4541,7 @@ impl CShopApp {
                     let output = dir.join(format!("out{i}.png"));
                     cshop_io::save(&input, pixels, 100)
                         .map_err(|e| format!("could not write the image for the model: {e}"))?;
-                    let answer = crate::vision::upscale(&input, &output, scale, &progress)?;
+                    let answer = crate::vision::upscale(&input, &output, scale, p)?;
                     let big = cshop_io::load(&answer.path)
                         .map_err(|e| format!("could not read the enlargement back: {e}"))?;
                     out.push((*id, big));
@@ -4533,33 +4549,35 @@ impl CShopApp {
                 Ok(out)
             })();
             let _ = std::fs::remove_dir_all(&dir);
-            let _ = tx.send(result.map(|layers| (size, scale, layers)));
+            result.map(|layers| (size, scale, layers))
         });
-        self.upscale_job = Some(rx);
+        if let Dialog::Upscale(d) = &mut self.dialog {
+            d.progress = Some(job.progress().clone());
+            d.status.clear();
+        }
+        self.upscale_job = Some(job);
     }
 
     /// Collect the enlargement and put the document at its new size.
-    pub fn poll_upscale(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.upscale_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            Err(_) => {
+    pub fn poll_upscale(&mut self) {
+        let Some(job) = &self.upscale_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.upscale_job = None;
                 if let Dialog::Upscale(d) = &mut self.dialog {
                     d.progress = None;
                     d.status = "The model stopped without answering.".into();
                 }
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.upscale_job = None;
                 if let Dialog::Upscale(d) = &mut self.dialog {
                     d.progress = None;
                     d.status = why;
                 }
             }
-            Ok(Ok(((w, h), scale, layers))) => {
+            crate::jobs::Poll::Done(Ok(((w, h), scale, layers))) => {
                 self.upscale_job = None;
                 self.finish_upscale(w, h, scale, layers);
                 self.dialog = Dialog::None;
@@ -4637,14 +4655,7 @@ impl CShopApp {
             return;
         }
         let (before, strength) = (d.before.clone(), 1.0f32);
-        let progress = std::sync::Arc::new(crate::vision::DenoiseProgress::default());
-        if let Dialog::Denoise(d) = &mut self.dialog {
-            d.progress = Some(progress.clone());
-            d.status.clear();
-        }
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let job = self.jobs.start("Denoising", move |p| {
             let dir = crate::vision::scratch();
             let result = (|| {
                 std::fs::create_dir_all(&dir).map_err(|e| format!("could not use a scratch directory: {e}"))?;
@@ -4652,38 +4663,40 @@ impl CShopApp {
                 let output = dir.join("clean.png");
                 cshop_io::save(&input, &before, 100)
                     .map_err(|e| format!("could not write the image for the model: {e}"))?;
-                let answer = crate::vision::denoise(&input, &output, strength, &progress)?;
+                let answer = crate::vision::denoise(&input, &output, strength, p)?;
                 cshop_io::load(&answer.path)
                     .map_err(|e| format!("could not read the cleaned image back: {e}"))
             })();
             let _ = std::fs::remove_dir_all(&dir);
-            let _ = tx.send(result);
+            result
         });
-        self.denoise_job = Some(rx);
+        if let Dialog::Denoise(d) = &mut self.dialog {
+            d.progress = Some(job.progress().clone());
+            d.status.clear();
+        }
+        self.denoise_job = Some(job);
     }
 
     /// Collect the model's answer, and keep the bar moving until it arrives.
-    pub fn poll_denoise(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.denoise_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            Err(_) => {
+    pub fn poll_denoise(&mut self) {
+        let Some(job) = &self.denoise_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.denoise_job = None;
                 if let Dialog::Denoise(d) = &mut self.dialog {
                     d.progress = None;
                     d.status = "The model stopped without answering.".into();
                 }
             }
-            Ok(Err(why)) => {
+            crate::jobs::Poll::Done(Err(why)) => {
                 self.denoise_job = None;
                 if let Dialog::Denoise(d) = &mut self.dialog {
                     d.progress = None;
                     d.status = why;
                 }
             }
-            Ok(Ok(cleaned)) => {
+            crate::jobs::Poll::Done(Ok(cleaned)) => {
                 self.denoise_job = None;
                 let shown = match &mut self.dialog {
                     Dialog::Denoise(d) => {
@@ -4767,22 +4780,18 @@ impl CShopApp {
             return;
         };
 
-        let total = cshop_core::lens::total_rows(source.height());
-        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        if let Dialog::Lens(d) = &mut self.dialog {
-            d.applying = Some((progress.clone(), total));
-        }
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let job = self.jobs.start("Lens Correction", move |p| {
             let plane = cshop_core::filters::plane::Plane::from_pixels(&source);
-            let out = cshop_core::lens::apply(&plane, lens, Some(&progress));
+            let out = cshop_core::lens::apply(&plane, lens, p);
             let crop = autocrop
                 .then(|| cshop_core::lens::largest_opaque_rect(&out))
                 .filter(|r| !r.is_empty());
-            let _ = tx.send(LensOutcome::Done { pixels: Box::new(out.to_pixels()), crop });
+            LensOutcome::Done { pixels: Box::new(out.to_pixels()), crop }
         });
-        self.lens_job = Some(rx);
+        if let Dialog::Lens(d) = &mut self.dialog {
+            d.applying = Some(job.progress().clone());
+        }
+        self.lens_job = Some(job);
     }
 
     /// Start carving, on a worker thread.
@@ -4818,41 +4827,35 @@ impl CShopApp {
                 .flatten(),
             remove: None,
         };
-        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counter = progress.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let out = layers
+        // Every layer is carved with the same seam count, so the total is the
+        // seams times the layers rather than the seams.
+        let total = (seams.max(1) as u64) * layers.len() as u64;
+        let job = self.jobs.start("Content-Aware Scale", move |p| {
+            p.begin("Content-Aware Scale", total);
+            layers
                 .into_iter()
-                .map(|(id, px)| {
-                    let carved = carve.resize_reporting(&px, width, height, Some(&counter));
-                    (id, carved)
-                })
-                .collect();
-            let _ = tx.send(out);
+                .map(|(id, px)| (id, carve.resize_reporting(&px, width, height, p)))
+                .collect::<Vec<_>>()
         });
-        self.carve_job = Some(CarveJob {
-            done: rx,
-            seams_cut: progress,
-            seams_total: seams.max(1),
-            size: (width, height),
-        });
+        self.carve_job = Some(CarveJob { job, size: (width, height) });
         self.notify(format!("Carving {seams} seams…"));
     }
 
     /// Collect the carve when it finishes.
-    pub fn poll_carve(&mut self, ctx: &egui::Context) {
+    pub fn poll_carve(&mut self) {
         let Some(job) = &self.carve_job else { return };
         let size = job.size;
-        match job.done.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        match job.job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled => {
+                self.carve_job = None;
+                self.notify("Content-aware scale cancelled");
             }
-            Err(_) => {
+            crate::jobs::Poll::Lost => {
                 self.carve_job = None;
                 self.fail("The content-aware scale stopped without finishing");
             }
-            Ok(layers) => {
+            crate::jobs::Poll::Done(layers) => {
                 self.carve_job = None;
                 let gpu = self.gpu.clone();
                 let Some(view) = self.doc_mut() else { return };
@@ -4868,36 +4871,28 @@ impl CShopApp {
         }
     }
 
-    /// How far a content-aware scale has got, for the status bar.
-    pub fn carve_progress(&self) -> Option<f32> {
-        let job = self.carve_job.as_ref()?;
-        let done = job.seams_cut.load(std::sync::atomic::Ordering::Relaxed);
-        Some(done as f32 / job.seams_total.max(1) as f32)
-    }
 
     /// Collect the pass when it finishes, and keep the progress bar moving
     /// while it does not.
-    pub fn poll_lens(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.lens_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            Err(_) => {
+    pub fn poll_lens(&mut self) {
+        let Some(job) = &self.lens_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.lens_job = None;
                 if let Dialog::Lens(d) = &mut self.dialog {
                     d.applying = None;
                 }
                 self.fail("The correction stopped without finishing");
             }
-            Ok(LensOutcome::Failed(why)) => {
+            crate::jobs::Poll::Done(LensOutcome::Failed(why)) => {
                 self.lens_job = None;
                 if let Dialog::Lens(d) = &mut self.dialog {
                     d.applying = None;
                 }
                 self.fail(why);
             }
-            Ok(LensOutcome::Done { pixels, crop }) => {
+            crate::jobs::Poll::Done(LensOutcome::Done { pixels, crop }) => {
                 self.lens_job = None;
                 let Dialog::Lens(d) = &self.dialog else { return };
                 let (id, autocrop) = (d.layer, d.autocrop);
@@ -4966,20 +4961,18 @@ impl CShopApp {
         }
     }
 
-    pub fn poll_segment(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.segment_job else { return };
-        match rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            Err(_) => {
+    pub fn poll_segment(&mut self) {
+        let Some(job) = &self.segment_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled | crate::jobs::Poll::Lost => {
                 self.segment_job = None;
                 if let Dialog::Segment(d) = &mut self.dialog {
                     d.busy = false;
                     d.status = "The segmenter stopped without answering.".into();
                 }
             }
-            Ok(outcome) => {
+            crate::jobs::Poll::Done(outcome) => {
                 self.segment_job = None;
                 match outcome {
                     SegmentOutcome::Found(objects) => {
@@ -5051,9 +5044,7 @@ impl CShopApp {
             d.status = "Segmenting…".into();
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.segment_job = Some(rx);
-        std::thread::spawn(move || {
+        self.segment_job = Some(self.jobs.start("Segmenting", move |_| {
             let mask_path = image.with_file_name("mask.png");
             let outcome = crate::vision::segment(&image, &prompt, &mask_path, 0.25)
                 .and_then(|r| {
@@ -5087,13 +5078,13 @@ impl CShopApp {
             if let Some(dir) = image.parent() {
                 let _ = std::fs::remove_dir_all(dir);
             }
-            let _ = tx.send(match outcome {
+            match outcome {
                 Ok((selection, coverage)) => {
                     SegmentOutcome::Ready { selection: Box::new(selection), coverage }
                 }
                 Err(e) => SegmentOutcome::Failed(e),
-            });
-        });
+            }
+        }));
     }
 
     // -----------------------------------------------------------------------
@@ -6335,13 +6326,17 @@ impl CShopApp {
     /// which is done here rather than on a thread: it is an explicit,
     /// infrequent operation, and a handful of frames is a moment.
     fn align_layers(&mut self, motion: cshop_core::align::Motion, stack: bool) {
+        if self.align_job.is_some() {
+            self.notify("An alignment is already running");
+            return;
+        }
         let Some(view) = self.doc() else { return };
         let ids = view.doc.tree.iter_all();
-        let frames: Vec<(LayerId, PixelBuffer, (i32, i32))> = ids
+        let frames: Vec<Frame> = ids
             .iter()
             .filter_map(|&id| {
                 let l = view.doc.tree.get(id)?;
-                Some((id, l.pixels()?.clone(), l.offset))
+                Some(Frame { id, pixels: l.pixels()?.clone(), at: l.offset, name: l.name.clone() })
             })
             .collect();
         if frames.len() < 2 {
@@ -6349,122 +6344,137 @@ impl CShopApp {
             return;
         }
         let canvas = view.doc.bounds();
-        let (_, reference, _) = &frames[0];
-        let reference = reference.clone();
-
         let align = cshop_core::align::Align { motion, ..Default::default() };
-        let mut moved: Vec<(LayerId, PixelBuffer, (i32, i32))> = Vec::new();
-        let mut refused: Vec<String> = Vec::new();
-        for (id, px, offset) in frames.iter().skip(1) {
-            match align.between(&reference, px) {
-                Ok(matrix) => {
-                    let reach = canvas.width().max(canvas.height()) as i32;
-                    match cshop_core::resample::transform(
-                        px,
-                        *offset,
-                        matrix,
-                        cshop_core::resample::Resampling::Bicubic,
-                        Some(canvas.inflate(reach)),
-                    ) {
-                        Some((out, at)) => moved.push((*id, out, at)),
-                        None => refused.push(format!(
-                            "{}: the movement takes it off the canvas",
-                            self.doc()
-                                .and_then(|v| v.doc.tree.get(*id).map(|l| l.name.clone()))
-                                .unwrap_or_default()
-                        )),
-                    }
+
+        let job = self.jobs.start("Align Layers", move |p| {
+            // Every frame goes onto the first, so the first frame's features
+            // are worked out once rather than once a pair.
+            p.begin("Align Layers", frames.len() as u64);
+            let reference = cshop_core::align::features(&frames[0].pixels, align.features);
+            p.advance(1);
+
+            let mut moved: Vec<(LayerId, PixelBuffer, (i32, i32))> = Vec::new();
+            let mut refused: Vec<String> = Vec::new();
+            for frame in frames.iter().skip(1) {
+                if p.cancelled() {
+                    break;
                 }
-                Err(why) => refused.push(format!(
-                    "{}: {why}",
-                    self.doc()
-                        .and_then(|v| v.doc.tree.get(*id).map(|l| l.name.clone()))
-                        .unwrap_or_default()
-                )),
+                p.say(format!("Aligning {}", frame.name));
+                match align.onto(&reference, &frame.pixels) {
+                    Ok(matrix) => {
+                        let reach = canvas.width().max(canvas.height()) as i32;
+                        match cshop_core::resample::transform(
+                            &frame.pixels,
+                            frame.at,
+                            matrix,
+                            cshop_core::resample::Resampling::Bicubic,
+                            Some(canvas.inflate(reach)),
+                        ) {
+                            Some((out, at)) => moved.push((frame.id, out, at)),
+                            None => refused.push(format!(
+                                "{}: the movement takes it off the canvas",
+                                frame.name
+                            )),
+                        }
+                    }
+                    Err(why) => refused.push(format!("{}: {why}", frame.name)),
+                }
+                p.advance(1);
             }
-        }
 
-        if moved.is_empty() {
-            // Say which layer and why, rather than "alignment failed".
-            self.fail(match refused.first() {
-                Some(first) => format!("Nothing could be aligned. {first}"),
-                None => "Nothing could be aligned".into(),
+            // Averaging is another whole pass over every frame, so it belongs
+            // on the worker with the rest rather than back on the drawing
+            // thread once the answer arrives.
+            let stacked = (stack && !moved.is_empty()).then(|| {
+                p.say("Stacking");
+                let onto_canvas = |px: &PixelBuffer, at: (i32, i32)| {
+                    let mut out = PixelBuffer::new(canvas.width(), canvas.height());
+                    out.paste(px, at.0 - canvas.x0, at.1 - canvas.y0);
+                    out
+                };
+                let mut all = vec![onto_canvas(&frames[0].pixels, frames[0].at)];
+                all.extend(moved.iter().map(|(_, px, at)| onto_canvas(px, *at)));
+                let count = all.len();
+                cshop_core::align::mean(&all).map(|px| (px, count))
             });
-            return;
-        }
 
-        let Some(view) = self.doc_mut() else { return };
-        let mut edits: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
-        for (id, px, at) in &moved {
-            let mask = view.doc.tree.get(*id).and_then(|l| l.mask.clone());
-            edits.push(Box::new(ReplaceLayerPixels::new(
-                *id,
-                px.clone(),
-                *at,
-                mask,
-                "Align Layers",
-            )));
-        }
-        for edit in edits {
-            let dirty = view.history.apply(&mut view.doc, edit);
-            view.mark_dirty(dirty);
-        }
-        view.invalidate();
-
-        if stack {
-            self.stack_aligned(&frames[0], &moved, canvas);
-        }
-
-        let done = moved.len();
-        if refused.is_empty() {
-            self.notify(format!("Aligned {done} layers"));
-        } else {
-            // A partial success is still a success, and the ones that did not
-            // work are named so it is clear which to look at.
-            self.notify(format!(
-                "Aligned {done}; {} would not — {}",
-                refused.len(),
-                refused.join("; ")
-            ));
-        }
+            Aligned { moved, refused, stacked: stacked.flatten(), canvas }
+        });
+        self.align_job = Some(job);
     }
 
-    /// Average the aligned frames into one new layer above them.
-    fn stack_aligned(
-        &mut self,
-        reference: &(LayerId, PixelBuffer, (i32, i32)),
-        moved: &[(LayerId, PixelBuffer, (i32, i32))],
-        canvas: cshop_core::geom::IRect,
-    ) {
-        // Every frame drawn into the canvas, so they line up before averaging:
-        // the aligned layers have different offsets and sizes, and averaging
-        // buffers that are not registered would average the wrong pixels.
-        let onto_canvas = |px: &PixelBuffer, at: (i32, i32)| {
-            let mut out = PixelBuffer::new(canvas.width(), canvas.height());
-            out.paste(px, at.0 - canvas.x0, at.1 - canvas.y0);
-            out
-        };
-        let mut frames = vec![onto_canvas(&reference.1, reference.2)];
-        frames.extend(moved.iter().map(|(_, px, at)| onto_canvas(px, *at)));
+    /// Put the aligned frames back where the alignment says they go.
+    pub fn poll_align(&mut self) {
+        let Some(job) = &self.align_job else { return };
+        match job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled => {
+                self.align_job = None;
+                self.notify("Alignment cancelled");
+            }
+            crate::jobs::Poll::Lost => {
+                self.align_job = None;
+                self.fail("The alignment stopped without finishing");
+            }
+            crate::jobs::Poll::Done(Aligned { moved, refused, stacked, canvas }) => {
+                self.align_job = None;
+                if moved.is_empty() {
+                    // Say which layer and why, rather than "alignment failed".
+                    self.fail(match refused.first() {
+                        Some(first) => format!("Nothing could be aligned. {first}"),
+                        None => "Nothing could be aligned".into(),
+                    });
+                    return;
+                }
 
-        let Some(stacked) = cshop_core::align::mean(&frames) else {
-            self.fail("The frames could not be averaged");
-            return;
-        };
-        let Some(view) = self.doc_mut() else { return };
-        let id = view.doc.tree.alloc_id();
-        let mut layer = cshop_core::layer::Layer::new(
-            id,
-            format!("Stacked ({} frames)", frames.len()),
-            cshop_core::layer::LayerKind::raster(stacked),
-        );
-        layer.offset = (canvas.x0, canvas.y0);
-        let pos = new_layer_pos(view);
-        let dirty = view
-            .history
-            .apply(&mut view.doc, Box::new(cshop_core::history::AddLayer::new(layer, pos, "Stack Layers")));
-        view.mark_dirty(dirty);
-        view.invalidate();
+                let Some(view) = self.doc_mut() else { return };
+                for (id, px, at) in &moved {
+                    let mask = view.doc.tree.get(*id).and_then(|l| l.mask.clone());
+                    let dirty = view.history.apply(
+                        &mut view.doc,
+                        Box::new(ReplaceLayerPixels::new(
+                            *id,
+                            px.clone(),
+                            *at,
+                            mask,
+                            "Align Layers",
+                        )),
+                    );
+                    view.mark_dirty(dirty);
+                }
+                view.invalidate();
+
+                if let Some((stacked, count)) = stacked {
+                    let id = view.doc.tree.alloc_id();
+                    let mut layer = cshop_core::layer::Layer::new(
+                        id,
+                        format!("Stacked ({count} frames)"),
+                        cshop_core::layer::LayerKind::raster(stacked),
+                    );
+                    layer.offset = (canvas.x0, canvas.y0);
+                    let pos = new_layer_pos(view);
+                    let dirty = view.history.apply(
+                        &mut view.doc,
+                        Box::new(cshop_core::history::AddLayer::new(layer, pos, "Stack Layers")),
+                    );
+                    view.mark_dirty(dirty);
+                    view.invalidate();
+                }
+
+                let done = moved.len();
+                if refused.is_empty() {
+                    self.notify(format!("Aligned {done} layers"));
+                } else {
+                    // A partial success is still a success, and the ones that
+                    // did not work are named so it is clear which to look at.
+                    self.notify(format!(
+                        "Aligned {done}; {} would not — {}",
+                        refused.len(),
+                        refused.join("; ")
+                    ));
+                }
+            }
+        }
     }
 
     /// Start a warp on the active layer.
@@ -7133,6 +7143,10 @@ impl CShopApp {
     }
 
     fn apply_filter(&mut self, filter: cshop_core::filters::Filter) {
+        if self.filter_job.is_some() {
+            self.notify("A filter is already running");
+            return;
+        }
         let label = filter.name().to_string();
         let context = self.filter_context();
         let Some((id, rect, offset)) = self.filter_region() else {
@@ -7147,45 +7161,191 @@ impl CShopApp {
             return;
         }
 
-        let Some(view) = self.doc_mut() else { return };
+        let Some(view) = self.doc() else { return };
         let Some(px) = view.doc.tree.get(id).and_then(|l| l.pixels()) else { return };
 
         let local = rect.translate(-offset.0, -offset.1);
         let before = px.copy_rect(local);
-        let mut after = filter.apply(&before, &context);
 
-        // Blend by selection coverage, so a feathered selection fades the
-        // filter in rather than cutting it off at a hard edge.
-        if view.doc.has_selection() {
-            for y in 0..after.height() as i32 {
-                for x in 0..after.width() as i32 {
-                    let coverage = view.doc.selection_coverage(rect.x0 + x, rect.y0 + y);
-                    if coverage >= 1.0 {
-                        continue;
-                    }
-                    let a = before.get(x, y).to_f32();
-                    let b = after.get(x, y).to_f32();
-                    let mix = |p: f32, q: f32| p + (q - p) * coverage;
-                    after.set(
-                        x,
-                        y,
-                        cshop_core::color::Rgba::new(
-                            mix(a.r, b.r),
-                            mix(a.g, b.g),
-                            mix(a.b, b.b),
-                            mix(a.a, b.a),
-                        )
-                        .to_u8(),
-                    );
+        // The selection's coverage is read here rather than on the worker: it
+        // belongs to the document, which stays on this thread, and a feathered
+        // edge has to be sampled from the selection as it was when the filter
+        // was asked for rather than as it is when the filter comes back.
+        let coverage = view.doc.has_selection().then(|| {
+            let mut cover = Vec::with_capacity((rect.width() * rect.height()) as usize);
+            for y in 0..rect.height() as i32 {
+                for x in 0..rect.width() as i32 {
+                    cover.push(view.doc.selection_coverage(rect.x0 + x, rect.y0 + y));
                 }
             }
-        }
+            cover
+        });
 
-        let dirty = view
-            .history
-            .apply(&mut view.doc, Box::new(ReplacePixels::new(id, rect, after, label)));
-        view.mark_dirty(dirty);
-        self.last_filter = Some(filter);
+        let run = filter.clone();
+        let job = self.jobs.start(filter.name(), move |p| {
+            let mut after = run.apply_reporting(&before, &context, p);
+            if let Some(cover) = &coverage {
+                blend_by_coverage(&before, &mut after, cover);
+            }
+            (before, after)
+        });
+        self.filter_job = Some(FilterJob { job, id, rect, local, label, filter });
+    }
+
+    /// Resample every layer for a new image size, on a worker.
+    ///
+    /// Only the resampling goes to the worker. What a resize *means* — the
+    /// offsets, the masks, the vector layers redrawn rather than stretched,
+    /// the snapshot undo needs — stays in the history command, so there is
+    /// one description of it rather than two that have to agree.
+    fn start_resize_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        filter: cshop_core::resample::Resampling,
+    ) {
+        if self.resize_job.is_some() {
+            self.notify("A resize is already running");
+            return;
+        }
+        let Some(view) = self.doc() else { return };
+        let (width, height) = (width.max(1), height.max(1));
+        let sx = width as f64 / view.doc.width.max(1) as f64;
+        let sy = height as f64 / view.doc.height.max(1) as f64;
+        let layers: Vec<(LayerId, PixelBuffer)> = view
+            .doc
+            .tree
+            .iter_all()
+            .into_iter()
+            .filter_map(|id| Some((id, view.doc.tree.get(id)?.pixels()?.clone())))
+            .collect();
+        let rows: u64 = layers
+            .iter()
+            .map(|(_, px)| px.height() as u64 + (px.height() as f64 * sy).round().max(1.0) as u64)
+            .sum();
+
+        let job = self.jobs.start("Image Size", move |p| {
+            p.begin("Image Size", rows.max(1));
+            let mut out: Vec<cshop_core::history::Resampled> = Vec::new();
+            for (id, px) in layers {
+                if p.cancelled() {
+                    break;
+                }
+                let w = ((px.width() as f64 * sx).round() as u32).max(1);
+                let h = ((px.height() as f64 * sy).round() as u32).max(1);
+                let from = (px.width(), px.height());
+                // Each layer counts against the one total, so the bar crosses
+                // once for the document rather than once for every layer.
+                let step = cshop_core::progress::Progress::new();
+                let resized = cshop_core::resample::resize_reporting(&px, w, h, filter, &step);
+                p.advance(step.done());
+                out.push((id, from, resized));
+            }
+            out
+        });
+        self.resize_job = Some(ResizeJob { job, width, height, filter });
+    }
+
+    /// Put the resampled layers in once they are all done.
+    pub fn poll_resize(&mut self) {
+        let Some(job) = &self.resize_job else { return };
+        let (width, height, filter) = (job.width, job.height, job.filter);
+        match job.job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled => {
+                self.resize_job = None;
+                self.notify("Resize cancelled");
+            }
+            crate::jobs::Poll::Lost => {
+                self.resize_job = None;
+                self.fail("The resize stopped without finishing");
+            }
+            crate::jobs::Poll::Done(prepared) => {
+                self.resize_job = None;
+                let gpu = self.gpu.clone();
+                let Some(view) = self.doc_mut() else { return };
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(ResizeImage::prepared(width, height, filter, prepared)),
+                );
+                view.mark_dirty(dirty);
+                view.resize_targets(&gpu);
+                view.invalidate();
+                view.zoom_initialised = false;
+            }
+        }
+    }
+
+    /// Put a finished filter onto the layer it was taken from.
+    pub fn poll_filter(&mut self) {
+        let Some(job) = &self.filter_job else { return };
+        match job.job.poll() {
+            crate::jobs::Poll::Waiting => {}
+            crate::jobs::Poll::Cancelled => {
+                let name = job.label.clone();
+                self.filter_job = None;
+                self.notify(format!("{name} cancelled"));
+            }
+            crate::jobs::Poll::Lost => {
+                let name = job.label.clone();
+                self.filter_job = None;
+                self.fail(format!("{name} stopped without finishing"));
+            }
+            crate::jobs::Poll::Done((before, after)) => {
+                let Some(FilterJob { id, rect, local, label, filter, .. }) = self.filter_job.take()
+                else {
+                    return;
+                };
+                let Some(view) = self.doc_mut() else { return };
+                let still_there = view
+                    .doc
+                    .tree
+                    .get(id)
+                    .and_then(|l| l.pixels())
+                    .is_some_and(|px| px.region_matches(local, &before));
+                if !still_there {
+                    // Writing it back now would silently undo whatever was
+                    // done to those pixels while the filter ran.
+                    self.fail(format!(
+                        "{label} was not applied: the layer changed while it was running"
+                    ));
+                    return;
+                }
+                let dirty = view
+                    .history
+                    .apply(&mut view.doc, Box::new(ReplacePixels::new(id, rect, after, label)));
+                view.mark_dirty(dirty);
+                self.last_filter = Some(filter);
+            }
+        }
+    }
+}
+
+/// Fade a filter in by the selection's coverage, so a feathered edge fades
+/// rather than cutting off.
+fn blend_by_coverage(before: &PixelBuffer, after: &mut PixelBuffer, coverage: &[f32]) {
+    for y in 0..after.height() as i32 {
+        for x in 0..after.width() as i32 {
+            let at = y as usize * after.width() as usize + x as usize;
+            let Some(&coverage) = coverage.get(at) else { continue };
+            if coverage >= 1.0 {
+                continue;
+            }
+            let a = before.get(x, y).to_f32();
+            let b = after.get(x, y).to_f32();
+            let mix = |p: f32, q: f32| p + (q - p) * coverage;
+            after.set(
+                x,
+                y,
+                cshop_core::color::Rgba::new(
+                    mix(a.r, b.r),
+                    mix(a.g, b.g),
+                    mix(a.b, b.b),
+                    mix(a.a, b.a),
+                )
+                .to_u8(),
+            );
+        }
     }
 }
 
@@ -7401,17 +7561,56 @@ impl CShopApp {
 struct ModelJob {
     layer: LayerId,
     label: &'static str,
-    done: std::sync::mpsc::Receiver<Result<PixelBuffer, String>>,
+    job: crate::jobs::Job<Result<PixelBuffer, String>>,
 }
 
 /// A content-aware scale on a worker thread: where the carved layers will
 /// arrive, how many seams are done, how many were asked for, and the size the
 /// document is heading for.
 struct CarveJob {
-    done: std::sync::mpsc::Receiver<Vec<(LayerId, PixelBuffer)>>,
-    seams_cut: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    seams_total: u32,
+    job: crate::jobs::Job<Vec<(LayerId, PixelBuffer)>>,
     size: (u32, u32),
+}
+
+/// One layer on its way into an alignment.
+struct Frame {
+    id: LayerId,
+    pixels: PixelBuffer,
+    at: (i32, i32),
+    /// Carried along so a refusal can name the layer without the worker
+    /// reaching back into the document.
+    name: String,
+}
+
+/// What an alignment worked out: where each frame goes, which would not go
+/// anywhere and why, and the average of them if one was asked for.
+struct Aligned {
+    moved: Vec<(LayerId, PixelBuffer, (i32, i32))>,
+    refused: Vec<String>,
+    stacked: Option<(PixelBuffer, usize)>,
+    canvas: IRect,
+}
+
+/// Layers being resampled for a new image size, and the size they are for.
+struct ResizeJob {
+    job: crate::jobs::Job<Vec<cshop_core::history::Resampled>>,
+    width: u32,
+    height: u32,
+    filter: cshop_core::resample::Resampling,
+}
+
+/// A filter running on a worker, and where its answer goes.
+///
+/// `local` is the same region as `rect` in the layer's own coordinates, kept
+/// so the check on the way back does not have to work it out from an offset
+/// that may itself have moved.
+struct FilterJob {
+    job: crate::jobs::Job<(PixelBuffer, PixelBuffer)>,
+    id: LayerId,
+    rect: IRect,
+    local: IRect,
+    label: String,
+    filter: cshop_core::filters::Filter,
 }
 
 /// A warp in progress: the layer as it was, the control points, and what the

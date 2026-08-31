@@ -34,6 +34,7 @@
 use crate::color::Rgba8;
 use crate::mask::MaskBuffer;
 use crate::pixels::PixelBuffer;
+use crate::progress::Progress;
 
 /// Energy added where a mask protects. Large enough that no seam crosses a
 /// protected region while any unprotected route exists, and finite so that a
@@ -63,18 +64,18 @@ impl Carve {
     /// for the height — because a seam is one-dimensional by construction and
     /// there is no such thing as a diagonal one.
     pub fn resize(&self, src: &PixelBuffer, width: u32, height: u32) -> PixelBuffer {
-        self.resize_reporting(src, width, height, None)
+        self.resize_reporting(src, width, height, &Progress::ignored())
     }
 
-    /// The same, counting seams into `progress` as it goes, so something can
-    /// say how far along it is. This takes seconds on a large photograph and
-    /// silence for seconds looks like a hang.
+    /// The same, counting seams as it goes so something can say how far along
+    /// it is, and stopping if it is asked to. This takes seconds on a large
+    /// photograph, and silence for seconds looks like a hang.
     pub fn resize_reporting(
         &self,
         src: &PixelBuffer,
         width: u32,
         height: u32,
-        progress: Option<&std::sync::atomic::AtomicU32>,
+        progress: &Progress,
     ) -> PixelBuffer {
         let mut out = src.clone();
         let mut protect = self.protect.clone();
@@ -97,7 +98,7 @@ fn carve_axis(
     protect: &mut Option<MaskBuffer>,
     remove: &mut Option<MaskBuffer>,
     vertical: bool,
-    progress: Option<&std::sync::atomic::AtomicU32>,
+    progress: &Progress,
 ) -> PixelBuffer {
     let work = if vertical { transpose(src) } else { src.clone() };
     let p = protect.as_ref().map(|m| if vertical { transpose_mask(m) } else { m.clone() });
@@ -113,11 +114,12 @@ fn carve_axis(
                 if field.w <= 1 {
                     break;
                 }
+                if progress.cancelled() {
+                    break;
+                }
                 let seam = field.cheapest_seam();
                 field.remove_seam(&seam);
-                if let Some(p) = progress {
-                    p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
+                progress.advance(1);
             }
         }
         std::cmp::Ordering::Greater => {
@@ -338,11 +340,7 @@ impl Field {
     /// time — a seam inserted beside itself is still the cheapest thing there
     /// — and the result would be one wide smear rather than a stretch spread
     /// across the picture.
-    fn grown_by(
-        &mut self,
-        n: u32,
-        progress: Option<&std::sync::atomic::AtomicU32>,
-    ) -> PixelBuffer {
+    fn grown_by(&mut self, n: u32, progress: &Progress) -> PixelBuffer {
         let (w0, h) = (self.w, self.h);
         let original: Vec<Rgba8> = self.px.clone();
         let n = (n as usize).min(w0.saturating_sub(1));
@@ -356,7 +354,7 @@ impl Field {
         // every row it passes through.
         let mut extra = vec![0u32; w0 * h];
         for _ in 0..n {
-            if self.w <= 1 {
+            if self.w <= 1 || progress.cancelled() {
                 break;
             }
             let seam = self.cheapest_seam();
@@ -364,9 +362,7 @@ impl Field {
                 extra[y * w0 + self.origin[y * self.w + x as usize] as usize] += 1;
             }
             self.remove_seam(&seam);
-            if let Some(p) = progress {
-                p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            progress.advance(1);
         }
 
         // Every seam contributes one insertion to every row, so the rows come

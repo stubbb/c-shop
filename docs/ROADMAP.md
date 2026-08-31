@@ -8,10 +8,11 @@ compositor, and a script surface that something without eyes can drive.
 
 Nothing here was a commitment. It was a menu, ordered by what it would unlock,
 and it has now been worked through end to end — every entry struck out below is
-built, tested and documented. Four things are deliberately still open, and each
-says so where it sits: linked smart objects, blending an aligned panorama,
-loading custom patterns, and colourising a photograph that has none. The first
-three wait on work; the last waits on a model that can be fetched.
+built, tested and documented. Five things are deliberately still open, and each
+says so where it sits: painting at sixteen bits, blending an aligned panorama,
+loading custom patterns, compositing a smart-filtered layer off the drawing
+thread, and colourising a photograph that has no colour. The last waits on a
+model that can be fetched; the rest wait on work.
 
 ## The three worth doing first
 
@@ -26,9 +27,17 @@ dozen opened files, as JSON under the usual configuration directory.
 **Sixteen bits in the layers.** ~~The machinery is already there and stops at
 the layer.~~ Done. A raster layer holds eight bits or sixteen, a sixteen-bit
 file opens, saves and exports without losing a count, and `Image ▸ Mode` moves
-between the two. The tools still paint in eight and say so; compositing is
-capped at half-float, which wgpu's refusal of `Rgba16Unorm` as a colour
-attachment makes a floor rather than a choice.
+between the two. Compositing is capped at half-float, which wgpu's refusal of
+`Rgba16Unorm` as a colour attachment makes a floor rather than a choice.
+
+**Still open: the tools paint in eight bits.** They say so — the window offers
+`Image ▸ Mode` rather than narrowing a layer behind your back — but saying so
+is the honest half of the situation and not the whole of it. The stroke's
+coverage mask is already independent of depth, so what is left is the
+compositing at the end of a stroke and the sampled sources reading and writing
+at the layer's own depth. Not deep, but every path in `paint.rs`, and half of
+it done is worse than none: a brush painting at sixteen bits into a stroke
+buffer that clamps at eight would look right and quantise anyway.
 
 ## Tools people reach for and do not find
 
@@ -268,3 +277,26 @@ not overridden them. Taking a chord takes it from whoever had it — two command
 on one chord means one of them silently never runs — and the displaced command
 is recorded as having none rather than left at its default, which the next run
 would give back.
+
+**Long work off the drawing thread.** ~~A filter, a resize, an alignment and a
+content-aware scale all held the frame while they ran; on twelve megapixels
+that is between a third of a second and eight seconds of a window that stops
+repainting and gets offered to the user for killing.~~ Done. There is one
+mechanism — a named job on a thread, a counter it writes and the status bar
+reads, and a flag it checks to know it has been told to stop — and everything
+slow goes through it, including the eight model runs that were each doing their
+own version of it with a spinner and no way to stop.
+
+Two things came out of the same pass. `resample::transform` and
+`resample::resize` were written a row at a time in parallel, which is a sixfold
+speedup and bit-identical output — a rotation on twelve megapixels went from
+1.2 seconds to 0.18. And a filter now checks that the pixels it read are still
+the pixels that are there before writing its answer back, because otherwise a
+four-second filter silently undoes a brush stroke made while it ran.
+
+**Still open: compositing a smart-filtered layer.** The compositor runs a
+layer's filter stack on the drawing thread whenever the layer is dirty — 144 ms
+for one modest blur on twelve megapixels, 308 ms for two filters — so painting
+on a filtered layer stutters. Moving it to a worker means deciding what the
+canvas shows while the new version is worked out, and showing someone stale
+pixels is a decision about what the program *is*, not a refactor.

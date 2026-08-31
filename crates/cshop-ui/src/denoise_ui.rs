@@ -23,7 +23,6 @@ use crate::theme::Palette;
 use cshop_core::geom::IRect;
 use cshop_core::layer::LayerId;
 use cshop_core::pixels::PixelBuffer;
-use std::sync::Arc;
 
 /// Roughly how many pixels a second the model manages.
 ///
@@ -51,7 +50,7 @@ pub struct DenoiseDialog {
     /// The model's answer at full strength, once there is one.
     pub cleaned: Option<PixelBuffer>,
     /// Live while the model runs.
-    pub progress: Option<Arc<crate::vision::DenoiseProgress>>,
+    pub progress: Option<cshop_core::progress::Progress>,
     /// Set once a result has been shown on the canvas, so cancel knows there
     /// is something to undo by hand.
     pub showing: bool,
@@ -143,16 +142,16 @@ impl DenoiseDialog {
 
         ui.add_space(8.0);
         if let Some(progress) = &self.progress {
-            let f = progress.fraction();
+            let f = progress.fraction().unwrap_or(0.0);
             ui.add(egui::ProgressBar::new(f).show_percentage().desired_height(14.0));
-            let total = progress.total.load(std::sync::atomic::Ordering::Relaxed);
+            let total = progress.total();
             ui.label(
                 egui::RichText::new(if total == 0 {
                     "Starting the model…".to_string()
                 } else {
                     format!(
                         "{} of {total} tiles",
-                        progress.done.load(std::sync::atomic::Ordering::Relaxed)
+                        progress.done()
                     )
                 })
                 .color(p.text_dim)

@@ -278,6 +278,39 @@ impl<S: Sample> PixelBuffer<S> {
     }
 
     /// Paste `src` with its top-left at `(x, y)`, replacing pixels outright.
+    /// Does the region at `rect` still hold exactly `other`?
+    ///
+    /// Asked by a long operation coming back from a worker thread. It read a
+    /// region seconds ago and is about to write it back; if anything has
+    /// touched those pixels since, writing would quietly undo whatever that
+    /// was. Comparing beats a revision counter here because it answers the
+    /// question actually being asked — did *these* pixels change — rather
+    /// than whether anything at all happened, which during a four-second
+    /// filter it usually has.
+    ///
+    /// Row by row and without allocating, since the region can be the whole
+    /// picture.
+    pub fn region_matches(&self, rect: IRect, other: &PixelBuffer<S>) -> bool
+    where
+        S: PartialEq,
+    {
+        if rect.width() != other.width() || rect.height() != other.height() {
+            return false;
+        }
+        (0..rect.height()).all(|row| {
+            let y = rect.y0 + row as i32;
+            if y < 0 || y >= self.height() as i32 {
+                return false;
+            }
+            let from = rect.x0;
+            if from < 0 || from + rect.width() as i32 > self.width() as i32 {
+                return false;
+            }
+            let mine = &self.row(y as u32)[from as usize..(from + rect.width() as i32) as usize];
+            mine == other.row(row)
+        })
+    }
+
     pub fn paste(&mut self, src: &PixelBuffer<S>, x: i32, y: i32) {
         let dst_rect = IRect::at(x, y, src.width(), src.height()).intersect(&self.bounds());
         if dst_rect.is_empty() {

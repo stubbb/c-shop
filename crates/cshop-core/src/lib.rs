@@ -44,6 +44,7 @@ pub mod paint;
 pub mod path;
 pub mod pixels;
 pub mod profile;
+pub mod progress;
 pub mod refine;
 pub mod relight;
 pub mod resample;

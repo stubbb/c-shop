@@ -220,7 +220,7 @@ impl State {
             egui_wgpu::RendererOptions::default(),
         );
 
-        let mut app = CShopApp::new(gpu.clone());
+        let mut app = CShopApp::new(gpu.clone()).with_workers();
         for path in files {
             app.push(Action::OpenPath(std::path::PathBuf::from(path)));
         }

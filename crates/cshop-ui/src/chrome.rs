@@ -2292,15 +2292,44 @@ pub fn document_tabs(app: &mut CShopApp, ui: &mut egui::Ui) {
 
 pub fn status_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
     let p = Palette::DARK;
-    // A carve takes seconds and looks like a hang without this.
-    let carving = app.carve_progress();
+    // Everything running on a worker, in the one place that draws it. A
+    // filter, a resize and an alignment all take seconds on a large picture
+    // and all look like a hang without this.
+    //
+    // Nothing appears for the first fifth of a second. Most operations are
+    // over by then, and a bar that flashes up and vanishes is noise rather
+    // than information — it is only a wait long enough to be noticed that
+    // needs saying anything about.
+    let running = app.jobs.running();
     ui.horizontal_centered(|ui| {
-        if let Some(done) = carving {
-            ui.add(
-                egui::ProgressBar::new(done)
-                    .desired_width(140.0)
-                    .text(format!("Carving {:.0}%", done * 100.0)),
-            );
+        for job in &running {
+            if job.elapsed < std::time::Duration::from_millis(200) {
+                continue;
+            }
+            let what = job.progress.what();
+            match job.progress.fraction() {
+                Some(done) => {
+                    ui.add(
+                        egui::ProgressBar::new(done)
+                            .desired_width(150.0)
+                            .text(format!("{what} {:.0}%", done * 100.0)),
+                    );
+                }
+                // Some work cannot say how far along it is — a model in
+                // another process, most of all — so it says that rather than
+                // guessing at a number.
+                None => {
+                    ui.add(egui::Spinner::new().size(13.0));
+                    ui.label(egui::RichText::new(&what).color(p.text_dim));
+                }
+            }
+            if ui
+                .small_button("✕")
+                .on_hover_text(format!("Stop {what}"))
+                .clicked()
+            {
+                job.progress.cancel();
+            }
             ui.separator();
         }
         match app.doc() {

@@ -4,23 +4,23 @@
 //! it came from and sample there. Mapping forward would leave holes wherever
 //! the transform stretches.
 
-use super::plane::{Plane, Rng};
-use rayon::prelude::*;
+use super::plane::{fill_rows, Plane, Rng};
+use crate::progress::Progress;
 
 /// Run a backward map over the whole plane.
 ///
 /// `map` receives a destination position in pixels and returns the source
 /// position to sample.
-fn warp(src: &Plane, map: impl Fn(f32, f32) -> (f32, f32) + Sync) -> Plane {
+fn warp(src: &Plane, p: &Progress, map: impl Fn(f32, f32) -> (f32, f32) + Sync) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let py = y as f32 + 0.5;
         for x in 0..width {
             let (sx, sy) = map(x as f32 + 0.5, py);
-            let p = src.sample(sx, sy);
+            let sample = src.sample(sx, sy);
             let i = x * 4;
-            row[i..i + 4].copy_from_slice(&p);
+            row[i..i + 4].copy_from_slice(&sample);
         }
     });
     out
@@ -42,10 +42,10 @@ impl Polar {
 }
 
 /// Rotate by an amount that falls off to nothing at the edge of the circle.
-pub fn twirl(src: &Plane, angle_degrees: f32) -> Plane {
+pub fn twirl(src: &Plane, angle_degrees: f32, p: &Progress) -> Plane {
     let g = Polar::of(src);
     let max_angle = angle_degrees.to_radians();
-    warp(src, move |x, y| {
+    warp(src, p, move |x, y| {
         let dx = x - g.cx;
         let dy = y - g.cy;
         let distance = (dx * dx + dy * dy).sqrt();
@@ -61,10 +61,10 @@ pub fn twirl(src: &Plane, angle_degrees: f32) -> Plane {
 }
 
 /// Pull toward the centre (positive) or push outward (negative).
-pub fn pinch(src: &Plane, amount: f32) -> Plane {
+pub fn pinch(src: &Plane, amount: f32, p: &Progress) -> Plane {
     let g = Polar::of(src);
     let amount = amount.clamp(-1.0, 1.0);
-    warp(src, move |x, y| {
+    warp(src, p, move |x, y| {
         let dx = x - g.cx;
         let dy = y - g.cy;
         let distance = (dx * dx + dy * dy).sqrt();
@@ -80,10 +80,10 @@ pub fn pinch(src: &Plane, amount: f32) -> Plane {
 }
 
 /// Bulge the image as if wrapped over a sphere, or dent it inward.
-pub fn spherize(src: &Plane, amount: f32) -> Plane {
+pub fn spherize(src: &Plane, amount: f32, p: &Progress) -> Plane {
     let g = Polar::of(src);
     let amount = amount.clamp(-1.0, 1.0);
-    warp(src, move |x, y| {
+    warp(src, p, move |x, y| {
         let dx = x - g.cx;
         let dy = y - g.cy;
         let distance = (dx * dx + dy * dy).sqrt();
@@ -99,9 +99,9 @@ pub fn spherize(src: &Plane, amount: f32) -> Plane {
 }
 
 /// Sinusoidal displacement along one axis.
-pub fn wave(src: &Plane, amplitude: f32, wavelength: f32, vertical: bool) -> Plane {
+pub fn wave(src: &Plane, amplitude: f32, wavelength: f32, vertical: bool, p: &Progress) -> Plane {
     let wavelength = wavelength.max(1.0);
-    warp(src, move |x, y| {
+    warp(src, p, move |x, y| {
         let phase = if vertical { x } else { y } / wavelength * std::f32::consts::TAU;
         let shift = phase.sin() * amplitude;
         if vertical {
@@ -113,14 +113,14 @@ pub fn wave(src: &Plane, amplitude: f32, wavelength: f32, vertical: bool) -> Pla
 }
 
 /// Convert between rectangular and polar coordinates.
-pub fn polar_coordinates(src: &Plane, to_polar: bool) -> Plane {
+pub fn polar_coordinates(src: &Plane, to_polar: bool, p: &Progress) -> Plane {
     let w = src.width as f32;
     let h = src.height as f32;
     let cx = w / 2.0;
     let cy = h / 2.0;
     let max_radius = cx.hypot(cy);
 
-    warp(src, move |x, y| {
+    warp(src, p, move |x, y| {
         if to_polar {
             // Destination x is the angle, y is the radius.
             let angle = (x / w) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
@@ -140,7 +140,7 @@ pub fn polar_coordinates(src: &Plane, to_polar: bool) -> Plane {
 }
 
 /// Mosaic: average each cell and fill it with that colour.
-pub fn mosaic(src: &Plane, size: u32) -> Plane {
+pub fn mosaic(src: &Plane, size: u32, p: &Progress) -> Plane {
     let size = size.max(1) as i32;
     let mut out = Plane::new(src.width, src.height);
     let (w, h) = (src.width as i32, src.height as i32);
@@ -171,13 +171,19 @@ pub fn mosaic(src: &Plane, size: u32) -> Plane {
             cx += size;
         }
         cy += size;
+        // Counted in rows rather than in bands, so the total is the image's
+        // height like every other filter's.
+        p.advance(size.min(h - cy + size).max(0) as u64);
+        if p.cancelled() {
+            break;
+        }
     }
     out
 }
 
 /// Crystallize: a Voronoi mosaic with jittered cell centres, so the cells look
 /// like crystals rather than a grid.
-pub fn crystallize(src: &Plane, size: u32, seed: u64) -> Plane {
+pub fn crystallize(src: &Plane, size: u32, seed: u64, p: &Progress) -> Plane {
     let size = size.max(2) as i32;
     let (w, h) = (src.width as i32, src.height as i32);
 
@@ -196,6 +202,10 @@ pub fn crystallize(src: &Plane, size: u32, seed: u64) -> Plane {
     // Average the source over each site's cell.
     let mut sums = vec![[0.0f32; 5]; (cols * rows) as usize];
     for y in 0..h {
+        p.advance(1);
+        if p.cancelled() {
+            break;
+        }
         for x in 0..w {
             let (gx, gy) = nearest_site(x, y, size, &site);
             let idx = (gy.clamp(0, rows - 1) * cols + gx.clamp(0, cols - 1)) as usize;
@@ -208,14 +218,19 @@ pub fn crystallize(src: &Plane, size: u32, seed: u64) -> Plane {
     }
 
     let mut out = Plane::new(src.width, src.height);
-    for y in 0..h {
+    let sums = &sums;
+    fill_rows(&mut out, p, |y, row| {
+        let y = y as i32;
         for x in 0..w {
             let (gx, gy) = nearest_site(x, y, size, &site);
             let idx = (gy.clamp(0, rows - 1) * cols + gx.clamp(0, cols - 1)) as usize;
             let n = sums[idx][4].max(1.0);
-            out.set(x, y, [sums[idx][0] / n, sums[idx][1] / n, sums[idx][2] / n, sums[idx][3] / n]);
+            let i = x as usize * 4;
+            for c in 0..4 {
+                row[i + c] = sums[idx][c] / n;
+            }
         }
-    }
+    });
     out
 }
 
@@ -247,11 +262,11 @@ fn nearest_site(
 
 /// Fragment: four offset copies averaged together, as if slightly out of
 /// register.
-pub fn fragment(src: &Plane, distance: i32) -> Plane {
+pub fn fragment(src: &Plane, distance: i32, p: &Progress) -> Plane {
     let d = distance.max(1);
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let mut acc = [0.0f32; 4];

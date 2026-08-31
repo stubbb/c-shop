@@ -28,11 +28,8 @@
 //! rotation a real rotation rather than a shear, and makes the distortion
 //! parameter mean the same thing on a portrait as on a landscape.
 
-use crate::filters::plane::Plane;
-use rayon::prelude::*;
-
-/// How much of the work is done, for a progress bar. Counted in rows.
-pub type Progress = std::sync::Arc<std::sync::atomic::AtomicU32>;
+use crate::filters::plane::{fill_rows, Plane};
+use crate::progress::Progress;
 
 /// The corrections, as a set of numbers that a script or a window can carry.
 ///
@@ -200,12 +197,13 @@ impl Map {
 /// Anything the map sends outside the source comes back empty, which is what
 /// leaves the corners transparent after a rotation — and what
 /// [`largest_opaque_rect`] is for.
-pub fn apply(src: &Plane, lens: Lens, progress: Option<&Progress>) -> Plane {
+pub fn apply(src: &Plane, lens: Lens, progress: &Progress) -> Plane {
     let map = Map::new(src.width, src.height, lens);
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    progress.begin("Lens Correction", src.height as u64);
+    fill_rows(&mut out, progress, |y, row| {
         let dy = y as f32 + 0.5;
         for x in 0..width {
             let dx = x as f32 + 0.5;
@@ -222,9 +220,6 @@ pub fn apply(src: &Plane, lens: Lens, progress: Option<&Progress>) -> Plane {
             }
             let i = x * 4;
             row[i..i + 4].copy_from_slice(&p);
-        }
-        if let Some(p) = progress {
-            p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     });
     out
@@ -258,11 +253,6 @@ fn sample_or_empty(src: &Plane, x: f32, y: f32) -> [f32; 4] {
         }
     }
     out
-}
-
-/// How many rows [`apply`] will report, so a progress bar knows its total.
-pub fn total_rows(height: u32) -> u32 {
-    height
 }
 
 // --- autocrop --------------------------------------------------------------

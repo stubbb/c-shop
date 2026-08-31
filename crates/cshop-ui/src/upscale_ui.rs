@@ -12,7 +12,6 @@
 
 use crate::commands::Action;
 use crate::theme::Palette;
-use std::sync::Arc;
 
 /// Output pixels a second, measured: a 300×400 picture to four times that is
 /// under two seconds, and the cost follows the *output* rather than the input.
@@ -25,7 +24,7 @@ pub struct UpscaleDialog {
     pub layers: usize,
     pub status: String,
     pub unavailable: bool,
-    pub progress: Option<Arc<crate::vision::DenoiseProgress>>,
+    pub progress: Option<cshop_core::progress::Progress>,
 }
 
 impl UpscaleDialog {
@@ -124,15 +123,15 @@ impl UpscaleDialog {
 
         ui.add_space(8.0);
         if let Some(progress) = &self.progress {
-            ui.add(egui::ProgressBar::new(progress.fraction()).show_percentage().desired_height(14.0));
-            let total = progress.total.load(std::sync::atomic::Ordering::Relaxed);
+            ui.add(egui::ProgressBar::new(progress.fraction().unwrap_or(0.0)).show_percentage().desired_height(14.0));
+            let total = progress.total();
             ui.label(
                 egui::RichText::new(if total == 0 {
                     "Starting the model…".to_string()
                 } else {
                     format!(
                         "{} of {total} tiles",
-                        progress.done.load(std::sync::atomic::Ordering::Relaxed)
+                        progress.done()
                     )
                 })
                 .color(p.text_dim)

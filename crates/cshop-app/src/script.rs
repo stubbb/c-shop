@@ -1296,24 +1296,16 @@ impl Runner {
                 anchor: cshop_ui::commands::Anchor::Center,
             });
         } else if cmd.flag("content-aware") {
-            // Carving runs on a worker thread for the interface's sake; a
-            // script has nothing to keep responsive and everything to gain
-            // from the next line seeing the finished picture, so it waits.
+            // Carving takes seconds, and in the window it runs on a worker so
+            // the frame keeps painting. A script has no frame to keep and
+            // everything to gain from the next line seeing the finished
+            // picture, so it runs where it was started — see `Jobs`.
             self.app.dispatch(Action::ContentAwareScale {
                 width,
                 height,
                 protect_selection: !cmd.flag("no-protect"),
             });
             let gpu = self.gpu.clone();
-            let ctx = egui::Context::default();
-            let started = std::time::Instant::now();
-            while self.app.carve_progress().is_some() {
-                self.app.poll_carve(&ctx);
-                if started.elapsed() > std::time::Duration::from_secs(600) {
-                    return Err("the content-aware scale took too long".into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
             if let Some(view) = self.app.doc_mut() {
                 view.resize_targets(&gpu);
             }
@@ -2129,7 +2121,7 @@ impl Runner {
 
         let dir = self.vision_dir();
         cshop_ui::vision::make_scratch(&dir).map_err(|e| format!("could not use {}: {e}", dir.display()))?;
-        let progress = cshop_ui::vision::DenoiseProgress::default();
+        let progress = cshop_core::progress::Progress::new();
         let mut enlarged = Vec::new();
         let mut tiles = 0u32;
         for (i, (id, pixels)) in rasters.iter().enumerate() {
@@ -2246,7 +2238,7 @@ impl Runner {
         cshop_io::save(&input, &patch, 100)
             .map_err(|e| format!("could not write the image for the model: {e}"))?;
 
-        let progress = cshop_ui::vision::DenoiseProgress::default();
+        let progress = cshop_core::progress::Progress::new();
         let answer = cshop_ui::vision::denoise(&input, &output, strength, &progress);
         let answer = match answer {
             Ok(a) => a,
@@ -2726,7 +2718,7 @@ impl Runner {
             .ok_or("that layer has no pixels to correct")?;
 
         let plane = cshop_core::filters::plane::Plane::from_pixels(&source);
-        let out = apply(&plane, lens, None);
+        let out = apply(&plane, lens, &cshop_core::progress::Progress::ignored());
         let crop = (autocrop && lens.moves_pixels())
             .then(|| largest_opaque_rect(&out))
             .filter(|r| !r.is_empty());

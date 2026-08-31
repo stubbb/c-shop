@@ -1,27 +1,27 @@
 //! Sharpening, noise, stylising, and the morphological and convolution
 //! filters conventionally grouped under *Other*.
 
-use super::plane::{convolve_2d, gaussian_blur, Plane, Rng};
-use rayon::prelude::*;
+use super::plane::{convolve_2d, fill_rows, gaussian_blur, Plane, Rng};
+use crate::progress::Progress;
 
 /// Sharpen by adding back the difference from a slight blur.
-pub fn sharpen(src: &Plane, amount: f32) -> Plane {
-    unsharp_mask(src, amount, 1.0, 0.0)
+pub fn sharpen(src: &Plane, amount: f32, p: &Progress) -> Plane {
+    unsharp_mask(src, amount, 1.0, 0.0, p)
 }
 
 /// Unsharp Mask: the general form of sharpening.
 ///
 /// `threshold` protects flat areas — without it, sharpening a photograph
 /// amplifies its sensor noise as enthusiastically as its detail.
-pub fn unsharp_mask(src: &Plane, amount: f32, radius: f32, threshold: f32) -> Plane {
+pub fn unsharp_mask(src: &Plane, amount: f32, radius: f32, threshold: f32, p: &Progress) -> Plane {
     if amount.abs() < 1e-4 {
         return src.clone();
     }
-    let blurred = gaussian_blur(src, (radius / 3.0).max(0.1));
+    let blurred = gaussian_blur(src, (radius / 3.0).max(0.1), p);
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let sharp = src.get(x, y);
@@ -49,12 +49,12 @@ pub fn unsharp_mask(src: &Plane, amount: f32, radius: f32, threshold: f32) -> Pl
 }
 
 /// High Pass: keep only what a blur would remove, centred on mid-grey.
-pub fn high_pass(src: &Plane, radius: f32) -> Plane {
-    let blurred = gaussian_blur(src, (radius / 3.0).max(0.1));
+pub fn high_pass(src: &Plane, radius: f32, p: &Progress) -> Plane {
+    let blurred = gaussian_blur(src, (radius / 3.0).max(0.1), p);
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let sharp = src.get(x, y);
@@ -72,11 +72,11 @@ pub fn high_pass(src: &Plane, radius: f32) -> Plane {
 }
 
 /// Add grain.
-pub fn add_noise(src: &Plane, amount: f32, monochromatic: bool, gaussian: bool, seed: u64) -> Plane {
+pub fn add_noise(src: &Plane, amount: f32, monochromatic: bool, gaussian: bool, seed: u64, p: &Progress) -> Plane {
     let mut out = src.clone();
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let i = x as usize * 4;
@@ -110,7 +110,7 @@ pub fn add_noise(src: &Plane, amount: f32, monochromatic: bool, gaussian: bool, 
 ///
 /// Removes speckle without the softening a blur would cause, because a median
 /// picks an actual neighbouring value rather than averaging across an edge.
-pub fn median(src: &Plane, radius: u32) -> Plane {
+pub fn median(src: &Plane, radius: u32, p: &Progress) -> Plane {
     let r = radius as i32;
     if r == 0 {
         return src.clone();
@@ -118,7 +118,7 @@ pub fn median(src: &Plane, radius: u32) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         let mut window: Vec<f32> = Vec::with_capacity(((r * 2 + 1) * (r * 2 + 1)) as usize);
         for x in 0..width as i32 {
@@ -142,12 +142,12 @@ pub fn median(src: &Plane, radius: u32) -> Plane {
 
 /// Dust & Scratches: a median, but applied only where the neighbourhood varies
 /// by more than `threshold`, so detail below that survives untouched.
-pub fn dust_and_scratches(src: &Plane, radius: u32, threshold: f32) -> Plane {
-    let smoothed = median(src, radius.max(1));
+pub fn dust_and_scratches(src: &Plane, radius: u32, threshold: f32, p: &Progress) -> Plane {
+    let smoothed = median(src, radius.max(1), p);
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let original = src.get(x, y);
@@ -163,7 +163,7 @@ pub fn dust_and_scratches(src: &Plane, radius: u32, threshold: f32) -> Plane {
 }
 
 /// Morphological dilate (`maximum`) or erode (`minimum`).
-pub fn morphology(src: &Plane, radius: u32, maximum: bool) -> Plane {
+pub fn morphology(src: &Plane, radius: u32, maximum: bool, p: &Progress) -> Plane {
     let r = radius as i32;
     if r == 0 {
         return src.clone();
@@ -171,7 +171,7 @@ pub fn morphology(src: &Plane, radius: u32, maximum: bool) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let i = x as usize * 4;
@@ -196,7 +196,7 @@ pub fn morphology(src: &Plane, radius: u32, maximum: bool) -> Plane {
 }
 
 /// Shift the image, optionally wrapping.
-pub fn offset(src: &Plane, dx: i32, dy: i32, wrap: bool) -> Plane {
+pub fn offset(src: &Plane, dx: i32, dy: i32, wrap: bool, _p: &Progress) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let (w, h) = (src.width as i32, src.height as i32);
     for y in 0..h {
@@ -218,11 +218,11 @@ pub fn offset(src: &Plane, dx: i32, dy: i32, wrap: bool) -> Plane {
 
 /// Find Edges: the Sobel gradient magnitude, inverted so edges read dark on
 /// white, which is how it is conventionally presented.
-pub fn find_edges(src: &Plane) -> Plane {
+pub fn find_edges(src: &Plane, p: &Progress) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let i = x as usize * 4;
@@ -247,14 +247,14 @@ pub fn find_edges(src: &Plane) -> Plane {
 }
 
 /// Emboss: a directional gradient over flat grey.
-pub fn emboss(src: &Plane, angle_degrees: f32, height: f32, amount: f32) -> Plane {
+pub fn emboss(src: &Plane, angle_degrees: f32, height: f32, amount: f32, p: &Progress) -> Plane {
     let (sin, cos) = angle_degrees.to_radians().sin_cos();
     let dx = cos * height;
     let dy = -sin * height;
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let py = y as f32 + 0.5;
         for x in 0..width {
             let px = x as f32 + 0.5;
@@ -275,7 +275,7 @@ pub fn emboss(src: &Plane, angle_degrees: f32, height: f32, amount: f32) -> Plan
 
 /// Invert every channel above mid-grey, leaving the rest — the photographic
 /// solarisation effect.
-pub fn solarize(src: &Plane) -> Plane {
+pub fn solarize(src: &Plane, _p: &Progress) -> Plane {
     let mut out = src.clone();
     for chunk in out.data.chunks_exact_mut(4) {
         let a = chunk[3];
@@ -292,12 +292,12 @@ pub fn solarize(src: &Plane) -> Plane {
 }
 
 /// Diffuse: shuffle each pixel with a random neighbour.
-pub fn diffuse(src: &Plane, amount: u32, seed: u64) -> Plane {
+pub fn diffuse(src: &Plane, amount: u32, seed: u64, p: &Progress) -> Plane {
     let r = amount.max(1) as i32;
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let mut rng = Rng::at(seed, x, y);
@@ -311,6 +311,6 @@ pub fn diffuse(src: &Plane, amount: u32, seed: u64) -> Plane {
 }
 
 /// Apply an arbitrary 5x5 kernel.
-pub fn custom(src: &Plane, kernel: &[f32; 25], divisor: f32, offset: f32) -> Plane {
-    convolve_2d(src, kernel, 5, divisor, offset)
+pub fn custom(src: &Plane, kernel: &[f32; 25], divisor: f32, offset: f32, p: &Progress) -> Plane {
+    convolve_2d(src, kernel, 5, divisor, offset, p)
 }

@@ -49,7 +49,7 @@ pub struct LensDialog {
     crop: Option<IRect>,
     /// Set while the full-resolution pass runs, counting rows done and rows
     /// wanted.
-    pub applying: Option<(std::sync::Arc<std::sync::atomic::AtomicU32>, u32)>,
+    pub applying: Option<cshop_core::progress::Progress>,
 }
 
 impl LensDialog {
@@ -91,12 +91,7 @@ impl LensDialog {
 
     /// How far the full-resolution pass has got, 0 to 1.
     pub fn progress(&self) -> f32 {
-        match &self.applying {
-            Some((done, total)) if *total > 0 => {
-                (done.load(std::sync::atomic::Ordering::Relaxed) as f32 / *total as f32).min(1.0)
-            }
-            _ => 0.0,
-        }
+        self.applying.as_ref().and_then(|p| p.fraction()).unwrap_or(0.0)
     }
 
     /// The crop the settings would take, in full-resolution pixels.
@@ -121,7 +116,7 @@ impl LensDialog {
         if self.rendered == Some(want) && self.texture.is_some() {
             return;
         }
-        let out = apply(&self.small, self.lens, None);
+        let out = apply(&self.small, self.lens, &cshop_core::progress::Progress::ignored());
         self.crop = self.autocrop.then(|| largest_opaque_rect(&out)).filter(|r| !r.is_empty());
 
         let pixels = out.to_pixels();

@@ -133,7 +133,7 @@ impl Focus {
                 if r < 0.5 {
                     src.clone()
                 } else {
-                    crate::filters::blur::gaussian(&plane, r).to_pixels()
+                    crate::filters::blur::gaussian(&plane, r, &crate::progress::Progress::ignored()).to_pixels()
                 }
             })
             .collect();

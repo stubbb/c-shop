@@ -154,6 +154,80 @@ bounded rather than proportional:
   whole at fit scale and the label says so rather than implying detail that is
   not there.
 
+## Long work runs on a worker, or in the caller — never in a frame
+
+Applying a filter is not previewing it. On a twelve-megapixel picture a median
+is 3.8 seconds, a surface blur 2.6, a content-aware scale eight, an alignment
+one and a half a pair. Held on the drawing thread each of those is a window
+that stops repainting, stops answering the mouse, and gets offered to the user
+for killing.
+
+So a long operation is a **job** (`cshop-ui/src/jobs.rs`): a named piece of
+work on a thread, a shared counter it writes and the status bar reads, and a
+flag it checks to know it has been told to stop.
+
+**Cancelling does not unwind.** The operation notices the flag where noticing
+is cheap — between rows, between seams, between frames — stops filling the rest
+in, and returns whatever it has. The caller sees the flag and throws it away.
+That keeps every signature the shape it already was rather than threading a
+`Result` through twenty filters to describe a condition only the caller acts
+on. It also means a cancelled run's output is *not a valid picture*, which is
+fine precisely because nothing ever looks at it.
+
+**Progress is counted in rows, against a claim.** `Filter::passes` is a
+hand-written table saying how many sweeps of the image each filter makes, and
+`filter_progress` runs every filter and compares what it counted against what
+was claimed. A table like that drifts the first time somebody adds a second
+blur pass and does not think of it; comparing it against what actually
+happened is what stops it.
+
+### Why there is a way to turn workers off
+
+A worker exists to keep a window responsive. Nothing without a window needs
+one, and everything without a window is worse off for having one: a script
+wants the next line to see the finished picture, and a test wants to dispatch
+an action and then look at the result. So `CShopApp::new` runs jobs where they
+are started, and only `with_workers` — called in exactly one place, the window
+— puts them on threads. `dispatch` collects finished jobs when it is running
+them itself, which is what makes a script's next line see the result with no
+pumping and no sleeping.
+
+The consequence is that the threaded path is the one nothing else exercises, so
+it has tests of its own (`cshop-ui/tests/workers.rs`) that turn workers on
+deliberately and check the three things that mode has to get right: the frame
+keeps being drawn, the work can be stopped, and an answer worked out against
+pixels that have since changed is not written back over them.
+
+### Coming back to a picture that moved
+
+A filter reads a region, takes seconds over it, and writes it back. If those
+pixels changed meanwhile — someone painted on the layer while they waited —
+writing the answer back would quietly undo whatever changed them. So the job
+carries the region it started from and compares it against what is there now
+(`PixelBuffer::region_matches`, which walks rows without allocating), and
+refuses rather than overwriting.
+
+A revision counter would have been less code and the wrong question: during a
+four-second filter *something* has usually happened, and cancelling the filter
+because a different layer was renamed is not a service to anybody. What matters
+is whether these pixels moved.
+
+### What is still synchronous, and why
+
+The compositor runs a layer's smart-filter stack and effects on the drawing
+thread whenever that layer is dirty — 144 ms for one modest blur on twelve
+megapixels, 308 ms for a two-filter stack. That is a stutter while painting on
+a filtered layer rather than a frozen window, and moving it to a worker means
+deciding what the canvas shows while the new version is being worked out. That
+is a decision about what the program looks like, not a refactor, so it has been
+left alone and written down instead.
+
+Interactive commits — the transform tool, the warp tool — stay synchronous too.
+Both preview at full resolution as you drag, and both are now under a fifth of
+a second on twelve megapixels since `resample::transform` and `resample::resize`
+were made to work a row at a time in parallel. Handing the commit to a worker
+would mean the tool's overlay outliving the pixels it was editing.
+
 ## Undo is one step per gesture, not per event
 
 Typing a word, dragging a slider and painting a stroke are each a single

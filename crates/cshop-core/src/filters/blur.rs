@@ -1,32 +1,32 @@
 //! The blur family.
 
-use super::plane::{convolve_1d, gaussian_blur, Plane};
-use rayon::prelude::*;
+use super::plane::{convolve_1d, fill_rows, gaussian_blur, Plane};
+use crate::progress::Progress;
 
 /// Gaussian blur, given a *radius* rather than a standard deviation.
 ///
 /// That radius is roughly three sigma — the point where the curve has
 /// effectively fallen to nothing — so a radius of 3 has to mean sigma 1, not
 /// sigma 3, or every blur comes out three times too strong.
-pub fn gaussian(src: &Plane, radius: f32) -> Plane {
-    gaussian_blur(src, radius / 3.0)
+pub fn gaussian(src: &Plane, radius: f32, p: &Progress) -> Plane {
+    gaussian_blur(src, radius / 3.0, p)
 }
 
 /// Box blur: a flat kernel, run twice per axis so the result is smooth enough
 /// to be useful rather than obviously square.
-pub fn box_blur(src: &Plane, radius: f32) -> Plane {
+pub fn box_blur(src: &Plane, radius: f32, p: &Progress) -> Plane {
     let r = radius.round().max(0.0) as usize;
     if r == 0 {
         return src.clone();
     }
     let width = r * 2 + 1;
     let kernel = vec![1.0 / width as f32; width];
-    let h = convolve_1d(src, &kernel, true);
-    convolve_1d(&h, &kernel, false)
+    let h = convolve_1d(src, &kernel, true, p);
+    convolve_1d(&h, &kernel, false, p)
 }
 
 /// Directional blur along a line.
-pub fn motion(src: &Plane, angle_degrees: f32, distance: f32) -> Plane {
+pub fn motion(src: &Plane, angle_degrees: f32, distance: f32, p: &Progress) -> Plane {
     let distance = distance.max(0.0);
     if distance < 1.0 {
         return src.clone();
@@ -36,7 +36,7 @@ pub fn motion(src: &Plane, angle_degrees: f32, distance: f32) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as f32;
         for x in 0..width {
             let mut acc = [0.0f32; 4];
@@ -70,7 +70,7 @@ pub enum RadialKind {
 }
 
 /// Spin or zoom blur about a point given in `0..=1` of the image.
-pub fn radial(src: &Plane, amount: f32, kind: RadialKind, centre: (f32, f32)) -> Plane {
+pub fn radial(src: &Plane, amount: f32, kind: RadialKind, centre: (f32, f32), p: &Progress) -> Plane {
     let amount = amount.clamp(0.0, 1.0);
     if amount <= 0.001 {
         return src.clone();
@@ -82,7 +82,7 @@ pub fn radial(src: &Plane, amount: f32, kind: RadialKind, centre: (f32, f32)) ->
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let py = y as f32 + 0.5;
         for x in 0..width {
             let px = x as f32 + 0.5;
@@ -122,7 +122,7 @@ pub fn radial(src: &Plane, amount: f32, kind: RadialKind, centre: (f32, f32)) ->
 
 /// Edge-preserving blur: neighbours only contribute when their tone is within
 /// `threshold` of the centre, so flat areas smooth out while edges stay put.
-pub fn surface(src: &Plane, radius: f32, threshold: f32) -> Plane {
+pub fn surface(src: &Plane, radius: f32, threshold: f32, p: &Progress) -> Plane {
     let r = radius.round().max(0.0) as i32;
     if r == 0 {
         return src.clone();
@@ -131,7 +131,7 @@ pub fn surface(src: &Plane, radius: f32, threshold: f32) -> Plane {
     let mut out = Plane::new(src.width, src.height);
     let width = src.width as usize;
 
-    out.data.par_chunks_mut(width * 4).enumerate().for_each(|(y, row)| {
+    fill_rows(&mut out, p, |y, row| {
         let y = y as i32;
         for x in 0..width as i32 {
             let centre = src.luma(x, y);
@@ -166,7 +166,7 @@ pub fn surface(src: &Plane, radius: f32, threshold: f32) -> Plane {
 }
 
 /// Replace everything with the image's mean colour.
-pub fn average(src: &Plane) -> Plane {
+pub fn average(src: &Plane, _p: &Progress) -> Plane {
     let mean = src.mean();
     let mut out = Plane::new(src.width, src.height);
     for chunk in out.data.chunks_exact_mut(4) {
