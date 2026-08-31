@@ -35,6 +35,13 @@ const MASK_THUMB_BIT: u64 = 1 << 63;
 pub struct DocView {
     pub doc: Document,
     pub history: History,
+    /// What the History Brush paints from: a layer's pixels as they were at
+    /// some earlier state, and which state that was.
+    ///
+    /// Captured when the state is marked rather than reconstructed per
+    /// stroke, because reaching an earlier state means walking the history to
+    /// it and back and that is not something to do while the pointer moves.
+    pub history_source: Option<(usize, cshop_core::layer::LayerId, cshop_core::pixels::PixelBuffer)>,
     cache: LayerTextures,
 
     /// Full-document composite in the compositor's working format.
@@ -74,6 +81,7 @@ impl DocView {
         Self {
             doc,
             history: History::new(origin_label),
+            history_source: None,
             cache: LayerTextures::new(),
             composite,
             display,

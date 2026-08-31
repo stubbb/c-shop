@@ -174,6 +174,8 @@ pub enum Action {
     Redo,
     /// Jump to a state in the History panel; `0` is the document as opened.
     HistoryJump(usize),
+    /// Mark a history state as what the History Brush paints from.
+    SetHistorySource(usize),
 
     // --- tools and colour ---
     SelectTool(Tool),

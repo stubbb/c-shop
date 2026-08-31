@@ -20,6 +20,15 @@ pub enum Tool {
     Pencil,
     Eraser,
     CloneStamp,
+    Dodge,
+    Burn,
+    Sponge,
+    Blur,
+    Sharpen,
+    Smudge,
+    HealingBrush,
+    SpotHealing,
+    HistoryBrush,
     PaintBucket,
     Gradient,
     Text,
@@ -45,6 +54,15 @@ impl Tool {
             Tool::Pencil => "Pencil",
             Tool::Eraser => "Eraser",
             Tool::CloneStamp => "Clone Stamp",
+            Tool::Dodge => "Dodge",
+            Tool::Burn => "Burn",
+            Tool::Sponge => "Sponge",
+            Tool::Blur => "Blur",
+            Tool::Sharpen => "Sharpen",
+            Tool::Smudge => "Smudge",
+            Tool::HealingBrush => "Healing Brush",
+            Tool::SpotHealing => "Spot Healing",
+            Tool::HistoryBrush => "History Brush",
             Tool::PaintBucket => "Paint Bucket",
             Tool::Gradient => "Gradient",
             Tool::Text => "Horizontal Type",
@@ -74,6 +92,15 @@ impl Tool {
             Tool::Pencil => "✎",
             Tool::Eraser => "▨",
             Tool::CloneStamp => "⎘",
+            Tool::Dodge => "☀",
+            Tool::Burn => "☁",
+            Tool::Sponge => "◍",
+            Tool::Blur => "💧",
+            Tool::Sharpen => "◣",
+            Tool::Smudge => "☞",
+            Tool::HealingBrush => "⚕",
+            Tool::SpotHealing => "✚",
+            Tool::HistoryBrush => "↺",
             Tool::PaintBucket => "🪣",
             Tool::Gradient => "▤",
             Tool::Text => "T",
@@ -127,6 +154,15 @@ impl Tool {
                 | Tool::Pencil
                 | Tool::Eraser
                 | Tool::CloneStamp
+                | Tool::Dodge
+                | Tool::Burn
+                | Tool::Sponge
+                | Tool::Blur
+                | Tool::Sharpen
+                | Tool::Smudge
+                | Tool::HealingBrush
+                | Tool::SpotHealing
+                | Tool::HistoryBrush
                 | Tool::PaintBucket
                 | Tool::Gradient
                 | Tool::Text
@@ -143,7 +179,40 @@ impl Tool {
     /// Tools that paint with the brush engine, and so answer to the brush
     /// size, hardness and opacity keys.
     pub fn uses_brush(self) -> bool {
-        matches!(self, Tool::Brush | Tool::Pencil | Tool::Eraser | Tool::CloneStamp)
+        matches!(
+            self,
+            Tool::Brush
+                | Tool::Pencil
+                | Tool::Eraser
+                | Tool::CloneStamp
+                | Tool::Dodge
+                | Tool::Burn
+                | Tool::Sponge
+                | Tool::Blur
+                | Tool::Sharpen
+                | Tool::Smudge
+                | Tool::HealingBrush
+                | Tool::SpotHealing
+                | Tool::HistoryBrush
+        )
+    }
+
+    /// Whether this tool repairs by taking texture from elsewhere and tone
+    /// from where it lands. See [`cshop_core::heal`].
+    pub fn heals(self) -> bool {
+        matches!(self, Tool::HealingBrush | Tool::SpotHealing)
+    }
+
+    /// Tools that change the pixels they pass over rather than covering them.
+    /// They read the brush's size, hardness and spacing but ignore its colour.
+    pub fn retouches(self) -> Option<cshop_core::retouch::RetouchKind> {
+        use cshop_core::retouch::RetouchKind;
+        match self {
+            Tool::Dodge => Some(RetouchKind::Dodge),
+            Tool::Burn => Some(RetouchKind::Burn),
+            Tool::Sponge => Some(RetouchKind::Sponge),
+            _ => None,
+        }
     }
 
     pub fn is_selection_tool(self) -> bool {
@@ -182,8 +251,24 @@ pub const TOOL_GROUPS: &[ToolGroup] = &[
     ToolGroup { key: egui::Key::C, label: 'C', tools: &[Tool::Crop] },
     ToolGroup { key: egui::Key::I, label: 'I', tools: &[Tool::Eyedropper] },
     ToolGroup { key: egui::Key::B, label: 'B', tools: &[Tool::Brush, Tool::Pencil] },
+    ToolGroup {
+        key: egui::Key::J,
+        label: 'J',
+        tools: &[Tool::SpotHealing, Tool::HealingBrush],
+    },
     ToolGroup { key: egui::Key::S, label: 'S', tools: &[Tool::CloneStamp] },
     ToolGroup { key: egui::Key::E, label: 'E', tools: &[Tool::Eraser] },
+    ToolGroup { key: egui::Key::Y, label: 'Y', tools: &[Tool::HistoryBrush] },
+    ToolGroup {
+        key: egui::Key::O,
+        label: 'O',
+        tools: &[Tool::Dodge, Tool::Burn, Tool::Sponge],
+    },
+    ToolGroup {
+        key: egui::Key::R,
+        label: 'R',
+        tools: &[Tool::Blur, Tool::Sharpen, Tool::Smudge],
+    },
     ToolGroup { key: egui::Key::G, label: 'G', tools: &[Tool::PaintBucket, Tool::Gradient] },
     ToolGroup { key: egui::Key::T, label: 'T', tools: &[Tool::Text] },
     ToolGroup { key: egui::Key::A, label: 'A', tools: &[Tool::DirectSelect] },

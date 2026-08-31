@@ -102,19 +102,107 @@ impl Brush {
 }
 
 /// What a stroke does to the pixels it covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The first two lay something down or take it away. The third does neither:
+/// it reshapes what is already there, which is why it carries its settings
+/// rather than reading the stroke's colour. See [`crate::retouch`].
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaintMode {
     /// Composite `color` onto the layer.
     Paint,
     /// Reduce alpha, revealing what is underneath.
     Erase,
+    /// Lighten, darken or saturate what the brush passes over.
+    Retouch(crate::retouch::Retouch),
+}
+
+/// A brush whose colour is worked out from the picture underneath it.
+///
+/// Blur and sharpen already exist as filters over a whole layer. What was
+/// missing is applying them *through a brush*, and this is the difference: the
+/// filter is evaluated per painted pixel against a copy of the layer frozen
+/// when the stroke began, so the result is the ordinary stroke machinery —
+/// coverage, flow, opacity, clipping — blending toward a filtered version of
+/// what was already there.
+///
+/// Reading a frozen copy rather than the live layer is what keeps a stroke
+/// from eating itself: a blur that read its own output would smear along the
+/// direction the pointer happened to travel. One stroke blurs once, and a
+/// second stroke over the same place blurs it again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrushFilter {
+    /// Average of a disc of radius `radius`, weighted toward the centre.
+    Blur { radius: f32 },
+    /// Unsharp mask: the pixel plus `amount` of its difference from a blur of
+    /// itself. `amount` above about 2 starts to show halos.
+    Sharpen { radius: f32, amount: f32 },
+}
+
+impl BrushFilter {
+    /// The filtered colour at one pixel of `pixels`.
+    ///
+    /// A tent weight rather than a flat disc, because a flat average of a
+    /// small disc leaves the faint square-ish signature of its own footprint
+    /// on anything with fine detail.
+    fn at(self, pixels: &PixelBuffer, x: i32, y: i32) -> Rgba8 {
+        let base = pixels.get(x, y);
+        match self {
+            BrushFilter::Blur { radius } => blurred(pixels, x, y, radius).unwrap_or(base),
+            BrushFilter::Sharpen { radius, amount } => {
+                let Some(soft) = blurred(pixels, x, y, radius) else { return base };
+                let (b, s) = (base.to_f32(), soft.to_f32());
+                Rgba {
+                    r: (b.r + (b.r - s.r) * amount).clamp(0.0, 1.0),
+                    g: (b.g + (b.g - s.g) * amount).clamp(0.0, 1.0),
+                    b: (b.b + (b.b - s.b) * amount).clamp(0.0, 1.0),
+                    // Sharpening the edge of a layer's own transparency would
+                    // carve a hard rim into it, so alpha is left as it was.
+                    a: b.a,
+                }
+                .to_u8()
+            }
+        }
+    }
+}
+
+/// Tent-weighted average of a disc, in premultiplied colour so a transparent
+/// neighbour contributes nothing rather than dragging its colour in.
+fn blurred(pixels: &PixelBuffer, x: i32, y: i32, radius: f32) -> Option<Rgba8> {
+    let r = radius.max(0.0);
+    let n = r.ceil() as i32;
+    if n <= 0 {
+        return None;
+    }
+    let (mut acc, mut weight) = (Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, 0.0f32);
+    for dy in -n..=n {
+        for dx in -n..=n {
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            if d > r {
+                continue;
+            }
+            let w = 1.0 - d / r;
+            let c = pixels.get(x + dx, y + dy).to_f32();
+            acc.r += c.r * c.a * w;
+            acc.g += c.g * c.a * w;
+            acc.b += c.b * c.a * w;
+            acc.a += c.a * w;
+            weight += w;
+        }
+    }
+    if weight <= 0.0 || acc.a <= 0.0 {
+        return None;
+    }
+    Some(
+        Rgba { r: acc.r / acc.a, g: acc.g / acc.a, b: acc.b / acc.a, a: acc.a / weight }.to_u8(),
+    )
 }
 
 /// Where a stroke's colour comes from.
 ///
 /// The Clone Stamp differs from the Brush only in this: every other control —
 /// size, hardness, opacity, flow, spacing — behaves identically, so they share
-/// the whole stroke machinery rather than duplicating it.
+/// the whole stroke machinery rather than duplicating it. The blur and sharpen
+/// brushes join them on the same terms.
 #[derive(Debug, Clone)]
 pub enum StrokeSource {
     /// One colour everywhere.
@@ -126,6 +214,14 @@ pub enum StrokeSource {
         /// Added to a destination pixel to find its source.
         offset: (i32, i32),
     },
+    /// Worked out from the picture underneath, frozen when the stroke began.
+    Filtered {
+        pixels: PixelBuffer,
+        filter: BrushFilter,
+    },
+    /// Texture from a source, tone from where it lands — the healing brush.
+    /// See [`crate::heal`].
+    Heal(Box<crate::heal::Heal>),
 }
 
 impl StrokeSource {
@@ -135,6 +231,67 @@ impl StrokeSource {
         match self {
             StrokeSource::Solid(c) => *c,
             StrokeSource::Clone { pixels, offset } => pixels.get(x + offset.0, y + offset.1),
+            StrokeSource::Filtered { pixels, filter } => filter.at(pixels, x, y),
+            StrokeSource::Heal(heal) => heal.at(x, y),
+        }
+    }
+
+    /// Tell the source which rectangle is about to be painted.
+    ///
+    /// Most sources need no warning: a colour is a colour, and a clone or a
+    /// filter reads whatever pixel it is asked for. Healing does, because it
+    /// fits a correction to the edge of each dab and so has to know where the
+    /// edge is. Called once per dab, before the dab is stamped.
+    #[inline]
+    fn prepare(&mut self, rect: IRect) {
+        if let StrokeSource::Heal(heal) = self {
+            heal.prepare(rect);
+        }
+    }
+}
+
+/// Places dab centres along a polyline at the brush's spacing.
+///
+/// Split out from the stroke because the smudge tool needs the same spacing
+/// and the same carry across segments, and having two copies of this is how
+/// two tools end up feeling subtly different for no reason anyone can name.
+#[derive(Debug, Clone)]
+pub struct DabWalk {
+    step: f32,
+    last: Option<Vec2>,
+    /// Distance left over from the previous segment, which keeps dab spacing
+    /// even across the joins between pointer samples.
+    carry: f32,
+}
+
+impl DabWalk {
+    pub fn new(brush: &Brush) -> DabWalk {
+        DabWalk { step: brush.step(), last: None, carry: 0.0 }
+    }
+
+    /// Extend to `p`, appending every dab centre that falls on the way.
+    pub fn advance(&mut self, p: Vec2, out: &mut Vec<Vec2>) {
+        match self.last {
+            None => {
+                out.push(p);
+                self.last = Some(p);
+                self.carry = 0.0;
+            }
+            Some(prev) => {
+                let delta = p - prev;
+                let dist = delta.length();
+                if dist <= 1e-6 {
+                    return;
+                }
+                let dir = delta * (1.0 / dist);
+                let mut travelled = self.step - self.carry;
+                while travelled <= dist {
+                    out.push(prev + dir * travelled);
+                    travelled += self.step;
+                }
+                self.carry = dist - (travelled - self.step);
+                self.last = Some(p);
+            }
         }
     }
 }
@@ -153,10 +310,7 @@ pub struct Stroke {
     /// Dabs added since the last [`Stroke::take_recent`], so a live preview can
     /// re-render just the newly painted sliver instead of the whole stroke.
     recent: IRect,
-    last: Option<Vec2>,
-    /// Distance carried over from the previous segment, which keeps dab
-    /// spacing even across the joins between mouse samples.
-    carry: f32,
+    walk: DabWalk,
     /// True once at least one dab has landed.
     started: bool,
 }
@@ -182,8 +336,7 @@ impl Stroke {
             source,
             bounds: IRect::EMPTY,
             recent: IRect::EMPTY,
-            last: None,
-            carry: 0.0,
+            walk: DabWalk::new(&brush),
             started: false,
         }
     }
@@ -270,6 +423,7 @@ impl Stroke {
                 )
             }
             PaintMode::Erase => Rgba { a: src.a * (1.0 - coverage), ..src },
+            PaintMode::Retouch(r) => r.apply(src, coverage),
         };
         out.to_u8()
     }
@@ -312,29 +466,10 @@ impl Stroke {
     /// spacing, so a fast drag produces a continuous line instead of a dotted
     /// one.
     pub fn add_point(&mut self, p: Vec2) {
-        let step = self.brush.step();
-        match self.last {
-            None => {
-                self.stamp(p);
-                self.last = Some(p);
-                self.carry = 0.0;
-            }
-            Some(prev) => {
-                let delta = p - prev;
-                let dist = delta.length();
-                if dist <= 1e-6 {
-                    return;
-                }
-                let dir = delta * (1.0 / dist);
-                // Walk from wherever the previous segment left off.
-                let mut travelled = step - self.carry;
-                while travelled <= dist {
-                    self.stamp(prev + dir * travelled);
-                    travelled += step;
-                }
-                self.carry = dist - (travelled - step);
-                self.last = Some(p);
-            }
+        let mut centres = Vec::new();
+        self.walk.advance(p, &mut centres);
+        for c in centres {
+            self.stamp(c);
         }
     }
 
@@ -354,6 +489,7 @@ impl Stroke {
             return;
         }
 
+        self.source.prepare(rect);
         let flow = self.brush.flow.clamp(0.0, 1.0);
         for y in rect.y0..rect.y1 {
             for x in rect.x0..rect.x1 {
@@ -435,12 +571,250 @@ impl Stroke {
     }
 }
 
+
+/// The smudge tool: colour picked up under the brush and dragged along.
+///
+/// # Why this cannot be a stroke
+///
+/// Every other brush here accumulates coverage into a mask and composites it
+/// onto the layer once, which makes overlapping dabs behave and gives one undo
+/// step for free. Smudging cannot work that way: what it lays down at a pixel
+/// depends on what the brush picked up several dabs ago, so the dabs have to
+/// happen in order and each one has to see the result of the last. It writes
+/// to the layer as it goes, and the caller keeps the original in a
+/// [`crate::snapshot::Snapshot`] so it is still one undo step.
+///
+/// # What it carries
+///
+/// A square of colour the size of the brush, in brush-local coordinates, which
+/// is deliberately *not* moved when the brush moves. That is the whole trick:
+/// the colour held at local position `(i, j)` was picked up from an image
+/// position one dab-step back, so putting it down at `(i, j)` now drags it
+/// forward. Shifting the buffer with the brush would smear nothing anywhere.
+#[derive(Debug, Clone)]
+pub struct Smudge {
+    brush: Brush,
+    /// Premultiplied colour under the brush, `side * side`, brush-local.
+    carried: Vec<Rgba>,
+    side: i32,
+    /// How much of the picture is taken up per dab, `0..=1`. Low values let go
+    /// of what was picked up quickly, so the smear is short.
+    strength: f32,
+    walk: DabWalk,
+    loaded: bool,
+    bounds: IRect,
+}
+
+impl Smudge {
+    /// `strength` is how far each dab drags: `0` does nothing, `1` carries the
+    /// picked-up colour indefinitely.
+    pub fn new(brush: Brush, strength: f32) -> Smudge {
+        let side = (brush.radius().ceil() as i32) * 2 + 1;
+        Smudge {
+            brush,
+            carried: vec![Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }; (side * side).max(1) as usize],
+            side,
+            strength: strength.clamp(0.0, 1.0),
+            walk: DabWalk::new(&brush),
+            loaded: false,
+            bounds: IRect::EMPTY,
+        }
+    }
+
+    /// Everything this stroke has touched so far.
+    pub fn bounds(&self) -> IRect {
+        self.bounds
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bounds.is_empty()
+    }
+
+    /// The rectangle the next `advance` to `p` will touch, so the caller can
+    /// take its undo snapshot before anything is written.
+    pub fn reach(&self, from: Vec2, to: Vec2) -> IRect {
+        let r = self.brush.radius() + 1.0;
+        IRect::new(
+            (from.x.min(to.x) - r).floor() as i32,
+            (from.y.min(to.y) - r).floor() as i32,
+            (from.x.max(to.x) + r).ceil() as i32 + 1,
+            (from.y.max(to.y) + r).ceil() as i32 + 1,
+        )
+    }
+
+    /// Extend the stroke to `p`, smudging as it goes. Returns what changed.
+    pub fn advance(&mut self, pixels: &mut PixelBuffer, p: Vec2, clip: Option<&Clip>) -> IRect {
+        let mut centres = Vec::new();
+        self.walk.advance(p, &mut centres);
+        let mut touched = IRect::EMPTY;
+        for c in centres {
+            touched = touched.union(&self.dab(pixels, c, clip));
+        }
+        self.bounds = self.bounds.union(&touched);
+        touched
+    }
+
+    fn dab(&mut self, pixels: &mut PixelBuffer, centre: Vec2, clip: Option<&Clip>) -> IRect {
+        let r = self.brush.radius();
+        let (x0, y0) = ((centre.x - r).floor() as i32, (centre.y - r).floor() as i32);
+        let rect = IRect::new(x0, y0, x0 + self.side, y0 + self.side).intersect(&pixels.bounds());
+        if rect.is_empty() {
+            return IRect::EMPTY;
+        }
+        let flow = self.brush.flow.clamp(0.0, 1.0) * self.brush.opacity.clamp(0.0, 1.0);
+
+        for y in rect.y0..rect.y1 {
+            for x in rect.x0..rect.x1 {
+                let (lx, ly) = (x - x0, y - y0);
+                let i = (ly * self.side + lx) as usize;
+                let Some(held) = self.carried.get(i).copied() else { continue };
+
+                let d = ((x as f32 + 0.5 - centre.x).powi(2) + (y as f32 + 0.5 - centre.y).powi(2))
+                    .sqrt();
+                let fall = self.brush.falloff(d);
+                if fall <= 0.0 {
+                    continue;
+                }
+
+                let here = pixels.get(x, y).to_f32();
+                let under = Rgba { r: here.r * here.a, g: here.g * here.a, b: here.b * here.a, a: here.a };
+
+                // Pick up first: the brush is always freshening its load, or a
+                // long stroke would drag one colour across the whole layer.
+                let pickup = (1.0 - self.strength) * fall;
+                let held = if self.loaded { mix(held, under, pickup) } else { under };
+                self.carried[i] = held;
+
+                if !self.loaded {
+                    continue; // Nothing to put down until something is held.
+                }
+                let mut w = fall * flow;
+                if let Some(clip) = clip {
+                    w *= clip.coverage(x, y);
+                }
+                if w <= 0.0 {
+                    continue;
+                }
+                let out = mix(under, held, w);
+                // Back to straight colour; a fully transparent result keeps
+                // the hue it had rather than becoming an arbitrary black.
+                let a = out.a.clamp(0.0, 1.0);
+                let straight = if a > 1e-6 {
+                    Rgba { r: out.r / a, g: out.g / a, b: out.b / a, a }
+                } else {
+                    Rgba { a, ..here }
+                };
+                pixels.set(x, y, straight.to_u8());
+            }
+        }
+        self.loaded = true;
+        rect
+    }
+}
+
+#[inline]
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn brush(size: f32) -> Brush {
         Brush { size, hardness: 1.0, opacity: 1.0, flow: 1.0, spacing: 0.1 }
+    }
+
+    fn edge(w: u32, h: u32) -> PixelBuffer {
+        let mut px = PixelBuffer::new(w, h);
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let v = if x < w as i32 / 2 { 0 } else { 255 };
+                px.set(x, y, Rgba8::opaque(v, v, v));
+            }
+        }
+        px
+    }
+
+    #[test]
+    fn smudging_drags_colour_the_way_the_brush_went() {
+        let mut px = edge(64, 32);
+        let dark_before = px.get(20, 16).r;
+        assert_eq!(dark_before, 0, "it starts black on the left");
+
+        // From the white side, across the edge, into the black. Flow well
+        // under one, or the carried colour simply replaces each pixel and the
+        // trail has no shape to measure.
+        let soft = Brush { flow: 0.35, ..brush(16.0) };
+        let mut s = Smudge::new(soft, 0.75);
+        for x in (8..=44).rev() {
+            s.advance(&mut px, Vec2::new(x as f32, 16.0), None);
+        }
+
+        let near = px.get(26, 16).r;
+        let far = px.get(12, 16).r;
+        assert!(near > 40, "white should have been dragged left; at 26 it is {near}");
+        assert!(near < 255, "but mixed with what was there, not replacing it");
+        // The trail fades: the brush lets go of its load as it refreshes.
+        assert!(far < near, "the far end should be fainter: {far} against {near}");
+    }
+
+    #[test]
+    fn smudging_leaves_everything_it_did_not_touch() {
+        let mut px = edge(64, 32);
+        let before = px.clone();
+        let mut s = Smudge::new(brush(10.0), 0.8);
+        for x in 28..40 {
+            s.advance(&mut px, Vec2::new(x as f32, 16.0), None);
+        }
+        // Well clear of a 10px brush walked along y = 16.
+        for y in [0, 1, 30, 31] {
+            for x in [0, 63] {
+                assert_eq!(px.get(x, y), before.get(x, y), "({x}, {y}) should be untouched");
+            }
+        }
+        assert!(!s.is_empty() && s.bounds().y0 >= 10, "and it should know what it touched");
+    }
+
+    /// Strength is the whole control: at zero the brush refreshes its load
+    /// completely at every dab, so it puts back what it just took and the
+    /// picture does not move.
+    #[test]
+    fn no_strength_is_no_smudge() {
+        let mut px = edge(64, 32);
+        let before = px.clone();
+        let mut s = Smudge::new(brush(12.0), 0.0);
+        for x in (12..=44).rev() {
+            s.advance(&mut px, Vec2::new(x as f32, 16.0), None);
+        }
+        let moved = (0..64)
+            .map(|x| (px.get(x, 16).r as i32 - before.get(x, 16).r as i32).abs())
+            .max()
+            .unwrap();
+        assert!(moved <= 2, "nothing should have moved; the worst was {moved}");
+    }
+
+    #[test]
+    fn the_blur_brush_softens_and_the_sharpen_brush_does_not() {
+        let px = edge(64, 32);
+        let soft = BrushFilter::Blur { radius: 4.0 };
+        // Right at the edge, a blur has to land between the two sides.
+        let at = soft.at(&px, 32, 16).r;
+        assert!(at > 40 && at < 215, "a blur across an edge lands between: {at}");
+        // Away from it, there is nothing to average, so nothing changes.
+        assert_eq!(soft.at(&px, 5, 16).r, 0);
+        assert_eq!(soft.at(&px, 60, 16).r, 255);
+
+        // Sharpening pushes the dark side of an edge darker. It is already at
+        // zero here, so measure the bright side instead: it should not dim.
+        let keen = BrushFilter::Sharpen { radius: 3.0, amount: 1.0 };
+        assert!(keen.at(&px, 34, 16).r >= 255 - 1, "the light side of an edge should not dim");
+        assert_eq!(keen.at(&px, 5, 16).r, 0, "and flat areas are left alone");
     }
 
     #[test]

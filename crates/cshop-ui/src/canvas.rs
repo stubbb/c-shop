@@ -1,7 +1,7 @@
 //! The document viewport: the composited image, the checkerboard behind it,
 //! and all pointer interaction.
 
-use crate::app::{CShopApp, SelectionDrag};
+use crate::app::{CShopApp, SelectionDrag, StrokeFrom};
 use crate::commands::Action;
 use crate::theme::Palette;
 
@@ -694,13 +694,48 @@ fn interact(
     };
 
     match app.tool {
-        Tool::Brush | Tool::Pencil | Tool::Eraser | Tool::CloneStamp => {
-            let mode = if app.tool == Tool::Eraser { PaintMode::Erase } else { PaintMode::Paint };
+        Tool::Brush
+        | Tool::Pencil
+        | Tool::Eraser
+        | Tool::CloneStamp
+        | Tool::Dodge
+        | Tool::Burn
+        | Tool::Sponge
+        | Tool::Blur
+        | Tool::Sharpen
+        | Tool::Smudge
+        | Tool::HealingBrush
+        | Tool::SpotHealing
+        | Tool::HistoryBrush => {
+            let alt_held = ui.input(|i| i.modifiers.alt);
+            let mode = match app.tool.retouches() {
+                // Holding Alt swaps dodge for burn and back, which is how the
+                // pair is actually used: you lighten, see you went too far,
+                // and darken the same spot without leaving the stroke.
+                Some(kind) => {
+                    use cshop_core::retouch::RetouchKind;
+                    let kind = match (kind, alt_held) {
+                        (RetouchKind::Dodge, true) => RetouchKind::Burn,
+                        (RetouchKind::Burn, true) => RetouchKind::Dodge,
+                        (RetouchKind::Sponge, true) => RetouchKind::Sponge,
+                        (k, false) => k,
+                    };
+                    let soak = if kind == RetouchKind::Sponge && alt_held {
+                        !app.retouch.soak
+                    } else {
+                        app.retouch.soak
+                    };
+                    PaintMode::Retouch(cshop_core::retouch::Retouch { kind, soak, ..app.retouch })
+                }
+                None if app.tool == Tool::Eraser => PaintMode::Erase,
+                None => PaintMode::Paint,
+            };
             let clone = app.tool == Tool::CloneStamp;
-            let alt = ui.input(|i| i.modifiers.alt);
+            let alt = alt_held;
 
-            // Alt-click sets where the Clone Stamp copies from.
-            if clone && alt {
+            // Alt-click sets where the Clone Stamp and the Healing Brush copy
+            // from. Spot Healing finds its own, so Alt means nothing to it.
+            if (clone || app.tool == Tool::HealingBrush) && alt {
                 if response.clicked_by(egui::PointerButton::Primary)
                     || response.drag_started_by(egui::PointerButton::Primary)
                 {
@@ -710,7 +745,27 @@ fn interact(
             }
 
             if response.drag_started_by(egui::PointerButton::Primary) || (response.clicked_by(egui::PointerButton::Primary) && !app.is_painting()) {
-                app.begin_stroke_with(doc_point, mode, clone);
+                match app.tool {
+                    Tool::Smudge => {
+                        let strength = app.brush_filter_strength;
+                        app.begin_smudge(doc_point, strength);
+                    }
+                    Tool::HealingBrush => {
+                        app.begin_stroke_from(doc_point, mode, StrokeFrom::Heal)
+                    }
+                    Tool::SpotHealing => {
+                        app.begin_stroke_from(doc_point, mode, StrokeFrom::HealSpot)
+                    }
+                    Tool::HistoryBrush => {
+                        app.begin_stroke_from(doc_point, mode, StrokeFrom::History)
+                    }
+                    _ => match app.brush_filter() {
+                        Some(filter) => {
+                            app.begin_stroke_from(doc_point, mode, StrokeFrom::Filter(filter))
+                        }
+                        None => app.begin_stroke_with(doc_point, mode, clone),
+                    },
+                }
             } else if response.dragged_by(egui::PointerButton::Primary) && app.is_painting() {
                 app.continue_stroke(doc_point);
             }

@@ -34,6 +34,11 @@ pub struct Settings {
     pub snap: bool,
     pub grid_spacing: f32,
     pub show_panels: bool,
+    /// Dodge, Burn and Sponge. Its `kind` is along for the ride: which of the
+    /// three a stroke is comes from the selected tool, not from here.
+    pub retouch: cshop_core::retouch::Retouch,
+    /// Blur, Sharpen and Smudge.
+    pub brush_filter_strength: f32,
     /// Most recently opened first.
     pub recent: Vec<PathBuf>,
 }
@@ -52,6 +57,8 @@ impl Default for Settings {
             snap: true,
             grid_spacing: 32.0,
             show_panels: true,
+            retouch: Default::default(),
+            brush_filter_strength: 0.5,
             recent: Vec::new(),
         }
     }
@@ -119,6 +126,11 @@ impl Settings {
             ("snap", Json::Bool(self.snap)),
             ("grid_spacing", Json::Number(self.grid_spacing as f64)),
             ("show_panels", Json::Bool(self.show_panels)),
+            ("retouch_kind", Json::String(self.retouch.kind.name().to_string())),
+            ("retouch_range", Json::String(self.retouch.range.name().to_string())),
+            ("retouch_exposure", Json::Number(self.retouch.exposure as f64)),
+            ("retouch_soak", Json::Bool(self.retouch.soak)),
+            ("brush_filter_strength", Json::Number(self.brush_filter_strength as f64)),
             (
                 "recent",
                 Json::Array(
@@ -149,6 +161,28 @@ impl Settings {
             {
                 s.tool = tool;
             }
+        }
+        if let Some(name) = json.str_field("retouch_kind") {
+            use cshop_core::retouch::RetouchKind::{Burn, Dodge, Sponge};
+            if let Some(k) = [Dodge, Burn, Sponge].into_iter().find(|k| k.name() == name) {
+                s.retouch.kind = k;
+            }
+        }
+        if let Some(name) = json.str_field("retouch_range") {
+            use cshop_core::retouch::Tones;
+            if let Some(t) = [Tones::Shadows, Tones::Midtones, Tones::Highlights]
+                .into_iter()
+                .find(|t| t.name() == name)
+            {
+                s.retouch.range = t;
+            }
+        }
+        if let Some(v) = number("retouch_exposure") {
+            s.retouch.exposure = (v as f32).clamp(0.0, 1.0);
+        }
+        s.retouch.soak = flag("retouch_soak", s.retouch.soak);
+        if let Some(v) = number("brush_filter_strength") {
+            s.brush_filter_strength = (v as f32).clamp(0.0, 1.0);
         }
         if let Some(v) = number("brush_size") {
             s.brush.size = (v as f32).clamp(1.0, 2000.0);

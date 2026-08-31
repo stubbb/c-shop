@@ -1211,6 +1211,150 @@ pub fn options_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
                 );
             }
 
+            Tool::Dodge | Tool::Burn | Tool::Sponge => {
+                use cshop_core::retouch::{RetouchKind, Tones};
+                ui.label("Size:");
+                ui.add(
+                    egui::DragValue::new(&mut app.brush.size)
+                        .range(1.0..=2000.0)
+                        .speed(0.5)
+                        .suffix(" px"),
+                );
+                ui.add_space(6.0);
+                ui.label("Hardness:");
+                ui.add(percent_slider(&mut app.brush.hardness));
+                ui.add_space(6.0);
+
+                let sponge = app.tool == Tool::Sponge;
+                if sponge {
+                    // The sponge acts on colour, so a tonal range means
+                    // nothing to it; it chooses a direction instead.
+                    ui.label("Mode:");
+                    for (soak, name) in [(true, "Saturate"), (false, "Desaturate")] {
+                        if ui.selectable_label(app.retouch.soak == soak, name).clicked() {
+                            app.retouch.soak = soak;
+                        }
+                    }
+                } else {
+                    ui.label("Range:");
+                    for range in [Tones::Shadows, Tones::Midtones, Tones::Highlights] {
+                        if ui.selectable_label(app.retouch.range == range, range.name()).clicked() {
+                            app.retouch.range = range;
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+
+                ui.label(if sponge { "Flow:" } else { "Exposure:" });
+                ui.add(percent_slider(&mut app.retouch.exposure));
+                ui.add_space(6.0);
+
+                ui.label(
+                    egui::RichText::new(match app.tool.retouches() {
+                        Some(RetouchKind::Dodge) => "Alt to burn instead",
+                        Some(RetouchKind::Burn) => "Alt to dodge instead",
+                        _ => "Alt for the other direction",
+                    })
+                    .color(p.text_dim)
+                    .small(),
+                );
+            }
+
+            Tool::HistoryBrush => {
+                ui.label("Size:");
+                ui.add(
+                    egui::DragValue::new(&mut app.brush.size)
+                        .range(1.0..=2000.0)
+                        .speed(0.5)
+                        .suffix(" px"),
+                );
+                ui.add_space(6.0);
+                ui.label("Hardness:");
+                ui.add(percent_slider(&mut app.brush.hardness));
+                ui.add_space(6.0);
+                ui.label("Opacity:");
+                ui.add(percent_slider(&mut app.brush.opacity));
+                ui.add_space(6.0);
+                let source = app
+                    .doc()
+                    .and_then(|v| v.history_source.as_ref().map(|(at, ..)| *at))
+                    .and_then(|at| app.doc().map(|v| v.history.label_at(at)));
+                ui.label(
+                    egui::RichText::new(match source {
+                        Some(name) => format!("Painting back to {name}"),
+                        None => "Mark a state in the History panel to paint back to".into(),
+                    })
+                    .color(p.text_dim)
+                    .small(),
+                );
+            }
+
+            Tool::HealingBrush | Tool::SpotHealing => {
+                ui.label("Size:");
+                ui.add(
+                    egui::DragValue::new(&mut app.brush.size)
+                        .range(1.0..=2000.0)
+                        .speed(0.5)
+                        .suffix(" px"),
+                );
+                ui.add_space(6.0);
+                ui.label("Hardness:");
+                ui.add(percent_slider(&mut app.brush.hardness));
+                ui.add_space(6.0);
+                ui.label("Opacity:");
+                ui.add(percent_slider(&mut app.brush.opacity));
+                ui.add_space(6.0);
+                if app.tool == Tool::HealingBrush {
+                    ui.checkbox(&mut app.clone_aligned, "Aligned");
+                    ui.label(
+                        egui::RichText::new(if app.clone_anchor.is_some() {
+                            "Alt-click to move the source"
+                        } else {
+                            "Alt-click to set the source"
+                        })
+                        .color(p.text_dim)
+                        .small(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("Finds its own source; make the brush a little larger than the mark")
+                            .color(p.text_dim)
+                            .small(),
+                    );
+                }
+            }
+
+            Tool::Blur | Tool::Sharpen | Tool::Smudge => {
+                ui.label("Size:");
+                ui.add(
+                    egui::DragValue::new(&mut app.brush.size)
+                        .range(1.0..=2000.0)
+                        .speed(0.5)
+                        .suffix(" px"),
+                );
+                ui.add_space(6.0);
+                ui.label("Hardness:");
+                ui.add(percent_slider(&mut app.brush.hardness));
+                ui.add_space(6.0);
+                ui.label("Strength:");
+                ui.add(percent_slider(&mut app.brush_filter_strength));
+                ui.add_space(6.0);
+                if app.tool == Tool::Smudge {
+                    ui.label("Flow:");
+                    ui.add(percent_slider(&mut app.brush.flow));
+                    ui.add_space(6.0);
+                }
+                ui.label(
+                    egui::RichText::new(match app.tool {
+                        Tool::Blur => "Softens what is under the brush; the size sets how far it reaches",
+                        Tool::Sharpen => "Puts the edges back; past about half, it starts to halo",
+                        _ => "Drags colour along with the pointer, letting go as it goes",
+                    })
+                    .color(p.text_dim)
+                    .small(),
+                );
+            }
+
             Tool::Zoom => {
                 if ui.button("Fit on Screen").clicked() {
                     app.push(Action::ZoomFit);

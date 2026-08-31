@@ -155,6 +155,105 @@ pub fn tool(painter: &Painter, rect: Rect, tool: Tool, color: Color32) {
             line(painter, rect, color, &[(0.10, 0.94), (0.90, 0.94)]);
         }
 
+        // The darkroom tools these are named after. Dodge is the paddle — a
+        // disc of card on a wire, held between the enlarger and the paper.
+        Tool::Dodge => {
+            let centre = p(rect, 0.62, 0.32);
+            let r = rect.width() * 0.20;
+            painter.circle_stroke(centre, r, stroke(rect, color));
+            line(painter, rect, color, &[(0.48, 0.46), (0.10, 0.92)]);
+        }
+
+        // Burn is the cupped hands: two arcs with the light coming through
+        // the gap between them.
+        Tool::Burn => {
+            for (from, flip) in [(0.30f32, 1.0f32), (0.70, -1.0)] {
+                let mut pts = Vec::new();
+                for i in 0..=16 {
+                    let t = std::f32::consts::PI * (i as f32 / 16.0) * flip;
+                    pts.push(p(rect, from + 0.26 * flip * (1.0 - t.cos()) * 0.5, 0.5 - 0.42 * t.sin()));
+                }
+                painter.add(Shape::line(pts, stroke(rect, color)));
+            }
+            line(painter, rect, color, &[(0.10, 0.94), (0.90, 0.94)]);
+        }
+
+        // A sponge: a rounded body with holes in it.
+        Tool::Sponge => {
+            polygon(
+                painter,
+                rect,
+                color,
+                &[(0.14, 0.34), (0.34, 0.14), (0.72, 0.16), (0.90, 0.40), (0.82, 0.82), (0.30, 0.88)],
+            );
+            for (x, y, r) in [(0.36f32, 0.40f32, 0.07f32), (0.62, 0.36, 0.05), (0.50, 0.64, 0.06)] {
+                painter.circle_filled(p(rect, x, y), rect.width() * r, color);
+            }
+        }
+
+        // A plaster: a rectangle at an angle with a pad in the middle.
+        Tool::HealingBrush => {
+            polygon(
+                painter,
+                rect,
+                color,
+                &[(0.06, 0.36), (0.36, 0.06), (0.94, 0.64), (0.64, 0.94)],
+            );
+            line(painter, rect, color, &[(0.30, 0.60), (0.60, 0.30)]);
+            line(painter, rect, color, &[(0.40, 0.70), (0.70, 0.40)]);
+        }
+
+        // The same idea with a spot marked on it: no source to set.
+        Tool::SpotHealing => {
+            polygon(
+                painter,
+                rect,
+                color,
+                &[(0.06, 0.36), (0.36, 0.06), (0.94, 0.64), (0.64, 0.94)],
+            );
+            painter.circle_filled(p(rect, 0.50, 0.50), rect.width() * 0.11, color);
+        }
+
+        // An arrow curving back on itself: paint the way it was.
+        Tool::HistoryBrush => {
+            let centre = p(rect, 0.50, 0.54);
+            let r = rect.width() * 0.30;
+            let mut pts = Vec::new();
+            for i in 0..=24 {
+                let t = std::f32::consts::TAU * (0.10 + i as f32 / 24.0 * 0.80);
+                pts.push(Pos2::new(centre.x + r * t.sin(), centre.y - r * t.cos()));
+            }
+            painter.add(Shape::line(pts, stroke(rect, color)));
+            polygon(painter, rect, color, &[(0.30, 0.06), (0.30, 0.34), (0.06, 0.20)]);
+        }
+
+        // A water drop, for softening.
+        Tool::Blur => {
+            let mut pts = vec![(0.50f32, 0.06f32)];
+            for i in 0..=20 {
+                let t = std::f32::consts::PI * (-0.5 + i as f32 / 20.0 * 2.0);
+                pts.push((0.50 + 0.30 * t.sin(), 0.60 - 0.32 * t.cos()));
+            }
+            polygon(painter, rect, color, &pts);
+        }
+
+        // A cone: the point that sharpening puts back.
+        Tool::Sharpen => {
+            polygon(painter, rect, color, &[(0.50, 0.06), (0.76, 0.74), (0.24, 0.74)]);
+            line(painter, rect, color, &[(0.14, 0.92), (0.86, 0.92)]);
+        }
+
+        // A fingertip drawing a line away from itself.
+        Tool::Smudge => {
+            polygon(
+                painter,
+                rect,
+                color,
+                &[(0.40, 0.10), (0.62, 0.20), (0.66, 0.52), (0.42, 0.62), (0.30, 0.40)],
+            );
+            line(painter, rect, color, &[(0.30, 0.72), (0.86, 0.88)]);
+        }
+
         // A slanted block with a baseline.
         Tool::Eraser => {
             polygon(painter, rect, color, &[(0.44, 0.06), (0.96, 0.42), (0.58, 0.76), (0.06, 0.40)]);

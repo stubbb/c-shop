@@ -80,8 +80,26 @@ in the Channels panel.
 
 **Painting.** Brush, pencil, eraser and clone stamp sharing one stroke engine —
 size, hardness, opacity, flow and spacing behave identically across all four.
-Paint bucket with tolerance and contiguity; gradients in five shapes with
-editable stops.
+**Dodge, burn and sponge** ride the same engine and reshape what is already
+there instead of covering it: each restricted to shadows, midtones or
+highlights by a falloff rather than a band, so a gradient crossing the range
+does not pick up an edge. Hold Alt and dodge burns. **Blur and sharpen** are
+the same again with the colour worked out from the picture underneath — read
+from a copy frozen when the stroke began, so a slow stroke and a fast one over
+the same path land in the same place. **Smudge** cannot work that way and does
+not pretend to: it writes as it goes, carrying colour under the brush and
+letting go of it as it picks up more. Paint bucket with tolerance and
+contiguity; gradients in five shapes with editable stops.
+
+**Repairing.** A **healing brush** and its **spot form**, which take texture
+from elsewhere and tone from where they land — the difference that lets a mark
+on a cheek or a gradient come out without leaving a disc of slightly-wrong
+brightness behind. The correction is fitted to the ring just outside each dab;
+taking it from a blur of the middle, which is the obvious way round, quietly
+reproduces part of the blemish and measures no better than plain cloning. The
+spot form finds its own source by looking at what is nearby. A **history
+brush** paints one region back to a marked point in the history while the rest
+of the document stays where it is.
 
 **Type.** Re-editable text layers rendered from your installed fonts, with
 point text and wrapping paragraph boxes, real or synthesised bold and italic,

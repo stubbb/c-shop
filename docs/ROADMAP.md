@@ -18,30 +18,34 @@ catches by whichever edge comes closest. Guides are saved with the document.
 Done. Window size, tool, brush, colours, panels, view settings and the last
 dozen opened files, as JSON under the usual configuration directory.
 
-**Sixteen bits in the layers.** The machinery is already there — `Rgba16`, a
-pixel buffer generic over its sample, files and profiles that read and write at
-either depth — and stops at the layer. Until it goes further, `depth=16` on
-export preserves what the compositor worked out rather than what was painted,
-which the documentation says plainly and which is still a gap. This is the
-largest of the three by some way, and the one with the most already built.
+**Sixteen bits in the layers.** ~~The machinery is already there and stops at
+the layer.~~ Done. A raster layer holds eight bits or sixteen, a sixteen-bit
+file opens, saves and exports without losing a count, and `Image ▸ Mode` moves
+between the two. The tools still paint in eight and say so; compositing is
+capped at half-float, which wgpu's refusal of `Rgba16Unorm` as a colour
+attachment makes a floor rather than a choice.
 
 ## Tools people reach for and do not find
 
-**Healing brush, and its spot form.** The clone stamp copies pixels; a healing
-brush copies *texture* and keeps the destination's colour and brightness, which
-is why it works on skin and a clone stamp does not. The inpainting model covers
-"remove this whole object" and leaves the small, precise repair uncovered.
+**Healing brush, and its spot form.** ~~The clone stamp copies pixels; a
+healing brush copies *texture* and keeps the destination's colour and
+brightness.~~ Done, on `J`. The correction is fitted to the ring just outside
+each dab rather than blurred out of the middle of it — the obvious way round
+reproduces a fraction of the blemish, measurably no better than cloning.
 
-**Dodge, burn and sponge.** Lightening and darkening by hand, restricted to
-shadows, midtones or highlights. Old tools, still the fastest way to shape a
-photograph, and a natural fit for the existing stroke engine.
+**Dodge, burn and sponge.** ~~Lightening and darkening by hand, restricted to
+shadows, midtones or highlights.~~ Done. On `O`, sharing the stroke engine, with
+the range as a falloff rather than a band and Alt reversing the direction.
 
-**Blur, sharpen and smudge.** The filters exist; what is missing is applying
-them through a brush rather than to a whole layer or selection.
+**Blur, sharpen and smudge.** ~~The filters exist; what is missing is applying
+them through a brush.~~ Done, on `R`. Blur and sharpen are the ordinary stroke
+reading a frozen copy of the layer; smudge writes as it goes, because what it
+lays down depends on what it picked up.
 
-**A history brush.** Painting a region back to how it was at an earlier point.
-The history already holds the states; this is a way of reaching them locally
-instead of globally.
+**A history brush.** ~~Painting a region back to how it was at an earlier
+point.~~ Done, on `Y`. Mark a state in the History panel and the brush paints
+back to it: the walk to that state and back happens once, when it is marked,
+rather than on every stroke.
 
 ## Being able to change your mind later
 

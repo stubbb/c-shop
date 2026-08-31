@@ -28,6 +28,13 @@ fn everything_remembered_survives_the_trip() {
         snap: false,
         grid_spacing: 64.0,
         show_panels: false,
+        retouch: cshop_core::retouch::Retouch {
+            kind: cshop_core::retouch::RetouchKind::Burn,
+            range: cshop_core::retouch::Tones::Highlights,
+            exposure: 0.35,
+            soak: false,
+        },
+        brush_filter_strength: 0.8,
         window: Some((1234, 900)),
         recent: vec![PathBuf::from("/one.png"), PathBuf::from("/two.psd")],
     };

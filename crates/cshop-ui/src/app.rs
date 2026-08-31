@@ -44,6 +44,39 @@ pub enum StrokeTarget {
     QuickMask(Snapshot<u8>),
 }
 
+/// Where a stroke takes its colour from. See [`CShopApp::begin_stroke_from`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StrokeFrom {
+    /// The foreground colour, as an ordinary brush.
+    Colour,
+    /// Elsewhere in the picture, as the Clone Stamp.
+    Clone,
+    /// The picture underneath, filtered — the Blur and Sharpen brushes.
+    Filter(cshop_core::paint::BrushFilter),
+    /// Texture from elsewhere and tone from where it lands — the Healing
+    /// Brush, whose source is set by Alt-clicking as the Clone Stamp's is.
+    Heal,
+    /// The same, with the source found rather than given — Spot Healing.
+    HealSpot,
+    /// The layer as it was at a marked history state — the History Brush.
+    History,
+}
+
+/// A smudge in progress.
+///
+/// Kept apart from [`ActiveStroke`] because smudging is not a stroke: it
+/// cannot accumulate coverage and composite once, since what each dab lays
+/// down depends on what the one before it picked up. See
+/// [`cshop_core::paint::Smudge`].
+pub struct ActiveSmudge {
+    layer: LayerId,
+    smudge: cshop_core::paint::Smudge,
+    snapshot: Snapshot<Rgba8>,
+    /// Where the pointer was last, so the next segment knows what it will
+    /// touch and can take its undo snapshot before writing.
+    last: Vec2,
+}
+
 /// A stroke in progress.
 pub struct ActiveStroke {
     layer: LayerId,
@@ -165,6 +198,14 @@ pub struct CShopApp {
 
     /// Paint Bucket settings.
     pub bucket: cshop_core::fill::BucketOptions,
+    /// Dodge, Burn and Sponge settings. One set between the three, because
+    /// they are one tool with three signs and the range is the control that
+    /// matters most.
+    pub retouch: cshop_core::retouch::Retouch,
+    /// How hard the Blur, Sharpen and Smudge brushes work, `0..=1`. One
+    /// control between the three, as with the retouching tools: it means the
+    /// same thing in each, and the brush size decides the reach.
+    pub brush_filter_strength: f32,
     /// Gradient settings.
     pub gradient: cshop_core::fill::Gradient,
     /// A gradient being dragged out, in document coordinates.
@@ -192,6 +233,7 @@ pub struct CShopApp {
     histogram_key: Option<(cshop_core::document::DocumentId, usize)>,
 
     stroke: Option<ActiveStroke>,
+    smudge: Option<ActiveSmudge>,
     /// A selection gesture in progress.
     pub drag: Option<SelectionDrag>,
     /// A Free Transform in progress.
@@ -267,6 +309,8 @@ impl CShopApp {
             sample_all_layers: false,
             quick_mask: false,
             bucket: Default::default(),
+            retouch: settings.retouch,
+            brush_filter_strength: settings.brush_filter_strength,
             gradient: Default::default(),
             gradient_drag: None,
             clone_anchor: None,
@@ -280,6 +324,7 @@ impl CShopApp {
             histogram: None,
             histogram_key: None,
             stroke: None,
+            smudge: None,
             drag: None,
             transform: None,
             crop: None,
@@ -608,6 +653,8 @@ impl CShopApp {
             snap: self.snap,
             grid_spacing: self.grid_spacing,
             show_panels: self.show_panels,
+            retouch: self.retouch,
+            brush_filter_strength: self.brush_filter_strength,
             recent: self.settings.recent.clone(),
         }
     }
@@ -1027,6 +1074,38 @@ impl CShopApp {
                     view.mark_dirty(dirty);
                     view.resize_targets(&gpu);
                     view.invalidate();
+                }
+            }
+
+            Action::SetHistorySource(target) => {
+                let gpu = self.gpu.clone();
+                let Some(view) = self.doc_mut() else { return };
+                let Some(id) = view.doc.active else {
+                    self.fail("Select a layer to paint back from");
+                    return;
+                };
+                // Walk to that state, take a copy of the layer, and walk back.
+                // Undo is exact, so this leaves the document precisely where
+                // it was; doing it now rather than per stroke keeps the walk
+                // off the pointer's path.
+                let was = view.history.cursor();
+                let there = view.history.jump_to(&mut view.doc, target);
+                let taken = view.doc.tree.get(id).and_then(|l| l.pixels()).cloned();
+                let back = view.history.jump_to(&mut view.doc, was);
+                view.mark_dirty(there);
+                view.mark_dirty(back);
+                view.resize_targets(&gpu);
+                view.invalidate();
+
+                match taken {
+                    Some(px) => {
+                        let name = view.history.label_at(target);
+                        view.history_source = Some((target, id, px));
+                        self.notify(format!("The History Brush now paints back to {name}"));
+                    }
+                    None => self.fail(
+                        "That layer is not a raster layer at that point in the history",
+                    ),
                 }
             }
 
@@ -2350,7 +2429,127 @@ impl CShopApp {
 
     /// True while a stroke is in progress.
     pub fn is_painting(&self) -> bool {
-        self.stroke.is_some()
+        self.stroke.is_some() || self.smudge.is_some()
+    }
+
+    /// Begin a smudge at a document-space position.
+    ///
+    /// `strength` is how far each dab drags what it picked up: at zero the
+    /// brush puts back exactly what it took and nothing moves.
+    pub fn begin_smudge(&mut self, at: Vec2, strength: f32) {
+        let brush = self.brush;
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let Some(layer) = view.doc.tree.get(id) else { return };
+        if layer.locks.blocks_pixels() {
+            self.fail("The layer is locked");
+            return;
+        }
+        if view.doc.effective_edit_target() != EditTarget::Pixels {
+            self.fail("The Smudge tool drags colour, and a mask has none");
+            return;
+        }
+        let Some(px) = layer.pixels() else {
+            let why = self.why_not("The Smudge tool works on raster layers");
+            self.fail(why);
+            return;
+        };
+        let snapshot = Snapshot::new(px.width(), px.height(), Rgba8::TRANSPARENT);
+        let offset = layer.offset;
+        let local = layer_local(at, offset);
+        self.smudge = Some(ActiveSmudge {
+            layer: id,
+            smudge: cshop_core::paint::Smudge::new(brush, strength),
+            snapshot,
+            last: local,
+        });
+        self.continue_smudge(at);
+    }
+
+    /// Extend the smudge. Unlike a stroke this writes as it goes and is never
+    /// recomputed, so the original has to be taken before each segment.
+    fn continue_smudge(&mut self, at: Vec2) {
+        let Some(active) = self.smudge.as_mut() else { return };
+        let Some(index) = self.active else { return };
+        let view = &mut self.docs[index];
+        let Some(layer) = view.doc.tree.get(active.layer) else { return };
+        let offset = layer.offset;
+        let to = layer_local(at, offset);
+
+        let reach = active.smudge.reach(active.last, to);
+        let Document { tree, selection, .. } = &mut view.doc;
+        let Some(pixels) = tree.get_mut(active.layer).and_then(|l| l.pixels_mut()) else { return };
+        active.snapshot.capture(&*pixels, reach);
+        let clip = selection.as_ref().map(|s| Clip { selection: s, offset });
+        let touched = active.smudge.advance(pixels, to, clip.as_ref());
+        active.last = to;
+        if !touched.is_empty() {
+            let layer = active.layer;
+            view.mark_dirty(Dirty::pixels(layer, touched.translate(offset.0, offset.1)));
+        }
+    }
+
+    /// Finish the smudge and record it as one undo step.
+    fn end_smudge(&mut self) {
+        let Some(active) = self.smudge.take() else { return };
+        let Some(index) = self.active else { return };
+        let view = &mut self.docs[index];
+        if active.smudge.is_empty() {
+            return;
+        }
+        let Some(layer) = view.doc.tree.get(active.layer) else { return };
+        let offset = layer.offset;
+        let Some(pixels) = layer.pixels() else { return };
+        let rect = active.smudge.bounds().intersect(&pixels.bounds());
+        if rect.is_empty() {
+            return;
+        }
+        // The layer already shows the finished smudge. Take it, put the
+        // original back, and let the command lay it down again so the entry's
+        // own "before" is the truth.
+        let after = pixels.copy_rect(rect);
+        let before = active.snapshot.copy_rect(rect);
+        if let Some(px) = view.doc.tree.get_mut(active.layer).and_then(|l| l.pixels_mut()) {
+            px.paste(&before, rect.x0, rect.y0);
+        }
+        if after.pixels() == before.pixels() {
+            return; // A smudge that moved nothing is not an undo step.
+        }
+        let doc_rect = rect.translate(offset.0, offset.1);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(ReplacePixels::new(active.layer, doc_rect, after, "Smudge Tool")),
+        );
+        view.mark_dirty(dirty);
+    }
+
+    /// What the Blur or Sharpen brush should do, given the current brush.
+    ///
+    /// The reach comes from the brush size rather than a separate radius, so
+    /// there is one thing to adjust and it is the one already under the
+    /// pointer: a big brush blurs broadly, a small one softens a detail.
+    pub fn brush_filter(&self) -> Option<cshop_core::paint::BrushFilter> {
+        use cshop_core::paint::BrushFilter;
+        let strength = self.brush_filter_strength.clamp(0.0, 1.0);
+        match self.tool {
+            Tool::Blur => {
+                Some(BrushFilter::Blur { radius: (self.brush.size * 0.25 * strength).clamp(1.0, 50.0) })
+            }
+            Tool::Sharpen => Some(BrushFilter::Sharpen {
+                radius: (self.brush.size * 0.10).clamp(1.0, 8.0),
+                amount: strength * 2.0,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Where a stroke about to begin takes its colour from.
+    ///
+    /// The Clone Stamp and the Blur and Sharpen brushes are the ordinary brush
+    /// with this one thing changed; everything else about them — size,
+    /// hardness, opacity, flow, spacing, clipping, undo — is shared.
+    pub fn begin_stroke_from(&mut self, at: Vec2, mode: PaintMode, from: StrokeFrom) {
+        self.begin_stroke_inner(at, mode, from)
     }
 
     /// Begin a stroke at a document-space position.
@@ -2364,6 +2563,14 @@ impl CShopApp {
 
     /// Begin a stroke, optionally as a Clone Stamp.
     pub fn begin_stroke_with(&mut self, at: Vec2, mode: PaintMode, clone: bool) {
+        self.begin_stroke_inner(
+            at,
+            mode,
+            if clone { StrokeFrom::Clone } else { StrokeFrom::Colour },
+        )
+    }
+
+    fn begin_stroke_inner(&mut self, at: Vec2, mode: PaintMode, from: StrokeFrom) {
         let brush = self.brush;
         let sample_all = self.sample_all_layers;
         // On a mask, black conceals and white reveals, so the eraser is simply
@@ -2371,6 +2578,49 @@ impl CShopApp {
         // operation.
         let quick_mask = self.quick_mask;
         let (foreground, background) = (self.foreground, self.background);
+
+        // The Clone Stamp and the Healing Brush both copy from somewhere the
+        // pointer is not, and both settle where from before the layer is
+        // touched — partly because they share the rule, and partly because
+        // reading it afterwards would mean reading the app while the layer it
+        // owns is borrowed.
+        let anchored = match from {
+            StrokeFrom::Clone | StrokeFrom::Heal => {
+                let Some(anchor) = self.clone_anchor else {
+                    self.notify(match from {
+                        StrokeFrom::Heal => "Alt-click to set the source to heal from first",
+                        _ => "Alt-click to set the clone source first",
+                    });
+                    return;
+                };
+                // Non-aligned strokes each restart from the anchor; aligned
+                // ones keep the offset the first stroke set.
+                Some(match (self.clone_aligned, self.clone_offset) {
+                    (true, Some(existing)) => existing,
+                    _ => {
+                        let o = (
+                            (anchor.x - at.x).round() as i32,
+                            (anchor.y - at.y).round() as i32,
+                        );
+                        self.clone_offset = Some(o);
+                        o
+                    }
+                })
+            }
+            _ => None,
+        };
+        // Likewise the History Brush's marked state, read before the layer it
+        // will paint over is borrowed.
+        let from_history = match from {
+            StrokeFrom::History => match self.doc().and_then(|v| v.history_source.clone()) {
+                Some(found) => Some(found),
+                None => {
+                    self.notify("Mark a state in the History panel to paint back to first");
+                    return;
+                }
+            },
+            _ => None,
+        };
 
         let Some(view) = self.doc_mut() else { return };
         let Some(id) = view.doc.active else { return };
@@ -2400,6 +2650,14 @@ impl CShopApp {
         match view.doc.effective_edit_target() {
             // --- painting the layer's mask ---------------------------------
             EditTarget::Mask => {
+                if matches!(mode, PaintMode::Retouch(_)) {
+                    self.fail(
+                        "Dodge, Burn and Sponge shape colour, and a mask has none. \
+                         Paint the mask with the brush, or turn the mask off to \
+                         retouch the layer.",
+                    );
+                    return;
+                }
                 let mask = layer.mask.as_ref().expect("effective_edit_target checked this");
                 let (mw, mh) = (mask.data.width(), mask.data.height());
                 let snapshot = Snapshot::new(mw, mh, 0);
@@ -2426,33 +2684,53 @@ impl CShopApp {
 
                 // The Clone Stamp is the brush with its colour coming from
                 // somewhere else; every other control behaves identically.
-                let source = if clone {
-                    let Some(anchor) = self.clone_anchor else {
-                        self.notify("Alt-click to set the clone source first");
-                        return;
-                    };
-                    let Some(pixels) = self.sample_source(sample_all) else { return };
-                    // Non-aligned strokes each restart from the anchor;
-                    // aligned ones keep the offset the first stroke set.
-                    let offset = match (self.clone_aligned, self.clone_offset) {
-                        (true, Some(existing)) => existing,
-                        _ => {
-                            let o = (
-                                (anchor.x - at.x).round() as i32,
-                                (anchor.y - at.y).round() as i32,
-                            );
-                            self.clone_offset = Some(o);
-                            o
-                        }
-                    };
-                    // The source is in document space; the stroke is layer
-                    // space, so fold the layer's own offset in.
-                    StrokeSource::Clone {
-                        pixels,
-                        offset: (offset.0 + layer_offset.0, offset.1 + layer_offset.1),
+                let source = match from {
+                    StrokeFrom::Colour => StrokeSource::Solid(foreground),
+                    // Blur and sharpen read the layer as it was when the
+                    // stroke began, so a stroke cannot chase its own output.
+                    StrokeFrom::Filter(filter) => {
+                        StrokeSource::Filtered { pixels: px.clone(), filter }
                     }
-                } else {
-                    StrokeSource::Solid(foreground)
+                    // Spot healing needs no source: it looks for one near
+                    // where the stroke starts.
+                    StrokeFrom::HealSpot => StrokeSource::Heal(Box::new(
+                        cshop_core::heal::Heal::spot(
+                            px.clone(),
+                            {
+                                let l = layer_local(at, layer_offset);
+                                (l.x.round() as i32, l.y.round() as i32)
+                            },
+                            brush.radius(),
+                        ),
+                    )),
+                    // The History Brush is the Clone Stamp copying from the
+                    // same place in a different time, so it is the same
+                    // source with no offset at all.
+                    StrokeFrom::History => {
+                        let (_, from_layer, pixels) =
+                            from_history.expect("settled above for a history stroke");
+                        if from_layer != id {
+                            self.fail("That history state was taken from another layer");
+                            return;
+                        }
+                        StrokeSource::Clone { pixels, offset: (0, 0) }
+                    }
+                    StrokeFrom::Heal => StrokeSource::Heal(Box::new(
+                        cshop_core::heal::Heal::within(
+                            px.clone(),
+                            anchored.expect("settled above for a healing stroke"),
+                        ),
+                    )),
+                    StrokeFrom::Clone => {
+                        let offset = anchored.expect("settled above for a clone stroke");
+                        let Some(pixels) = self.sample_source(sample_all) else { return };
+                        // The source is in document space; the stroke is layer
+                        // space, so fold the layer's own offset in.
+                        StrokeSource::Clone {
+                            pixels,
+                            offset: (offset.0 + layer_offset.0, offset.1 + layer_offset.1),
+                        }
+                    }
                 };
 
                 let Some(view) = self.doc_mut() else { return };
@@ -2473,6 +2751,10 @@ impl CShopApp {
 
     /// Extend the stroke to a new document-space position.
     pub fn continue_stroke(&mut self, at: Vec2) {
+        if self.smudge.is_some() {
+            self.continue_smudge(at);
+            return;
+        }
         let Some(active) = self.stroke.as_mut() else { return };
         let Some(index) = self.active else { return };
         let view = &mut self.docs[index];
@@ -4342,6 +4624,10 @@ impl CShopApp {
 
     /// Finish the stroke and record it as one undo step.
     pub fn end_stroke(&mut self) {
+        if self.smudge.is_some() {
+            self.end_smudge();
+            return;
+        }
         let Some(active) = self.stroke.take() else { return };
         let Some(index) = self.active else { return };
         let view = &mut self.docs[index];
@@ -4351,12 +4637,26 @@ impl CShopApp {
 
         // Name the step after the tool rather than after
         // the blend mode — a clone stroke is not a brush stroke.
-        let label = match active.tool {
-            Tool::Eraser => "Eraser Tool",
-            Tool::Pencil => "Pencil Tool",
-            Tool::CloneStamp => "Clone Stamp",
-            _ if matches!(active.stroke.mode(), PaintMode::Erase) => "Eraser Tool",
-            _ => "Brush Tool",
+        // Named for what the stroke did rather than for which button was down:
+        // Alt swaps dodge for burn part-way through, and the step should say
+        // which one it turned out to be.
+        let label = match active.stroke.mode() {
+            PaintMode::Retouch(r) => match r.kind {
+                cshop_core::retouch::RetouchKind::Dodge => "Dodge Tool",
+                cshop_core::retouch::RetouchKind::Burn => "Burn Tool",
+                cshop_core::retouch::RetouchKind::Sponge => "Sponge Tool",
+            },
+            PaintMode::Erase => "Eraser Tool",
+            PaintMode::Paint => match active.tool {
+                Tool::Pencil => "Pencil Tool",
+                Tool::CloneStamp => "Clone Stamp",
+                Tool::HealingBrush => "Healing Brush",
+                Tool::HistoryBrush => "History Brush",
+                Tool::SpotHealing => "Spot Healing",
+                Tool::Blur => "Blur Tool",
+                Tool::Sharpen => "Sharpen Tool",
+                _ => "Brush Tool",
+            },
         };
 
         match active.target {

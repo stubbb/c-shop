@@ -317,7 +317,26 @@ fn history_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
     let origin = view.history.origin().to_string();
     let labels = view.history.labels();
     let cursor = view.history.cursor();
+    let marked = view.history_source.as_ref().map(|(at, ..)| *at);
     let mut jump = None;
+    let mut mark = None;
+
+    // A state's name, with a marker in front when the History Brush paints
+    // back to it. Clicking the name goes there; the marker column sets where
+    // the brush paints from, which is a different thing and needs its own
+    // target rather than a modifier nobody would guess.
+    let brush_mark = |ui: &mut egui::Ui, state: usize, marked: Option<usize>| {
+        let on = marked == Some(state);
+        let glyph = if on { "◉" } else { "○" };
+        let hint = if on {
+            "The History Brush paints back to this state"
+        } else {
+            "Paint back to this state with the History Brush"
+        };
+        ui.add(egui::Label::new(egui::RichText::new(glyph).monospace()).sense(egui::Sense::click()))
+            .on_hover_text(hint)
+            .clicked()
+    };
 
     egui::ScrollArea::vertical()
         .id_salt("history-scroll")
@@ -327,9 +346,14 @@ fn history_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             // Row 0 is the document as it was opened or created.
-            if ui.selectable_label(cursor == 0, origin.clone()).clicked() {
-                jump = Some(0);
-            }
+            ui.horizontal(|ui| {
+                if brush_mark(ui, 0, marked) {
+                    mark = Some(0);
+                }
+                if ui.selectable_label(cursor == 0, origin.clone()).clicked() {
+                    jump = Some(0);
+                }
+            });
             for (i, label) in labels.iter().enumerate() {
                 let applied = i < cursor;
                 let text = if applied {
@@ -338,14 +362,22 @@ fn history_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
                     // Undone states stay listed but dimmed, so redo is discoverable.
                     egui::RichText::new(label).color(p.text_dim)
                 };
-                if ui.selectable_label(cursor == i + 1, text).clicked() {
-                    jump = Some(i + 1);
-                }
+                ui.horizontal(|ui| {
+                    if brush_mark(ui, i + 1, marked) {
+                        mark = Some(i + 1);
+                    }
+                    if ui.selectable_label(cursor == i + 1, text).clicked() {
+                        jump = Some(i + 1);
+                    }
+                });
             }
         });
 
     if let Some(target) = jump {
         app.push(Action::HistoryJump(target));
+    }
+    if let Some(target) = mark {
+        app.push(Action::SetHistorySource(target));
     }
 
     ui.add_space(4.0);

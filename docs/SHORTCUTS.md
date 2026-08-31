@@ -20,8 +20,12 @@ named but nothing runs it.
 | `C` | Crop |
 | `I` | Eyedropper |
 | `B` | Brush / Pencil |
+| `J` | Spot Healing / Healing Brush |
 | `S` | Clone Stamp |
 | `E` | Eraser |
+| `Y` | History Brush |
+| `O` | Dodge / Burn / Sponge |
+| `R` | Blur / Sharpen / Smudge |
 | `G` | Paint Bucket / Gradient |
 | `T` | Type |
 | `P` | Pen |
@@ -117,7 +121,8 @@ together intersect.
 | `Shift+[` / `Shift+]` | Softer / harder brush |
 | `1`–`9`, `0` | Opacity 10%–100% |
 | `Alt`+wheel | Resize the brush |
-| `Alt`+click | Set the clone stamp source |
+| `Alt`+click | Set the clone stamp or healing brush source |
+| Hold `Alt` | Dodge burns and burn dodges; the sponge reverses |
 
 ## Type
 

@@ -215,6 +215,15 @@ impl History {
     }
 
     /// Entry labels, oldest first, for the History panel.
+    /// The name of one state, counting the opened document as state zero —
+    /// the same numbering the history panel and `jump_to` use.
+    pub fn label_at(&self, state: usize) -> String {
+        match state.checked_sub(1) {
+            None => self.origin.clone(),
+            Some(i) => self.entries.get(i).map_or_else(|| self.origin.clone(), |c| c.name()),
+        }
+    }
+
     pub fn labels(&self) -> Vec<String> {
         self.entries.iter().map(|c| c.name()).collect()
     }
