@@ -291,12 +291,13 @@ does nothing where it does not.
 
 ![The same lamp, with and without lighten only](docs/example-relight-lighten.jpg)
 
-Same lamp both times, at ambient 0.30. In the middle 97% of the frame ended
-darker than it started, and the bench went with it — the slats behind the dog
-and the grain in front of him are gone. On the right not one pixel is darker,
-and the dog is lit identically. Under the flag, ambient stops being a darkener
-and becomes a *threshold*: the lamp has to beat `1 - ambient` before it shows,
-so the light lands only on what most faces it.
+Same lamp both times, from the right at ambient 0.30. In the middle 89% of the
+frame ended darker than it started, and the bench went with it — the rail
+behind the dog and the plank seams in front of him are gone. On the right not
+one pixel is darker, and the dog carries the same rim light either way. Under
+the flag, ambient stops being a darkener and becomes a *threshold*: the lamp
+has to beat `1 - ambient` before it shows, so the light lands only on what most
+faces it.
 
 It is not physical relighting: no cast shadows, no idea how shiny anything is,
 and the new lamp is added to whatever already lit the picture. On a subject it
@@ -476,7 +477,7 @@ Every commit is a version, starting at 0.001 and incrementing by one.
 There are no dates in it: dates say when someone was at a keyboard, and
 versions say what the program is.
 
-**Where it is now.** 0.073 — 1140 tests, and the roadmap worked through end to
+**Where it is now.** 0.074 — 1140 tests, and the roadmap worked through end to
 end. The last four additions were a colour-managed canvas with soft proofing,
 long operations moved onto workers with progress and cancellation, smart
 objects that several layers can share, and a relight that never takes light

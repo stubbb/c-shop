@@ -7,6 +7,10 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.074** — *Show the lighten-only example whole, and light it harder.* The
+  crop was answering a problem the framing had; the full frame with a stronger
+  lamp from the right answers it better, since what the flag saves is the
+  bench and the trees rather than a detail of them.
 - **0.073** — *Show the lighten-only lamp on a picture where it can be seen.*
   The garden it was demonstrated on has soft depth everywhere; a dog on a
   bench has a boundary, so the shadow detail the flag saves is the bench
