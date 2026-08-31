@@ -32,6 +32,10 @@ pub struct RelightDialog {
     pub before: PixelBuffer,
     /// How far away everything is, once that is known.
     pub depth: Option<Arc<DepthMap>>,
+    /// The same, softened for the softness now chosen. Kept because softening
+    /// is a pass over the whole picture and moving the lamp is not: the light
+    /// has to stay instant to drag.
+    softened: Option<(u32, Arc<DepthMap>)>,
     /// Set once a lighting has been shown on the canvas.
     pub showing: bool,
 }
@@ -51,6 +55,7 @@ impl RelightDialog {
             busy: !unavailable,
             before,
             depth: None,
+            softened: None,
             showing: false,
         }
     }
@@ -64,9 +69,22 @@ impl RelightDialog {
     }
 
     /// The picture as this lamp would light it.
-    pub fn lit(&self) -> Option<PixelBuffer> {
-        let depth = self.depth.as_ref()?;
-        Some(cshop_core::relight::apply(&self.before, depth, self.lamp))
+    ///
+    /// Takes `&mut self` because the softened shape is worked out on demand
+    /// and then kept: azimuth, strength and colour cost nothing, and softness
+    /// costs one pass over the picture.
+    pub fn lit(&mut self) -> Option<PixelBuffer> {
+        let depth = self.depth.clone()?;
+        let radius = depth.softening_radius(self.lamp.softness);
+        let shape = match &self.softened {
+            Some((had, map)) if *had == radius => map.clone(),
+            _ => {
+                let map = Arc::new(depth.smoothed(radius));
+                self.softened = Some((radius, map.clone()));
+                map
+            }
+        };
+        Some(cshop_core::relight::apply(&self.before, &shape, self.lamp))
     }
 
     /// The lamp as a point on the pad: the middle is straight on, the rim is
@@ -215,6 +233,20 @@ impl RelightDialog {
                     .on_hover_text(
                         "How much shape to read into the depth. The depth has no unit, so \
                          this is a choice rather than a measurement.",
+                    )
+                    .drag_stopped();
+                ui.end_row();
+
+                ui.label("Softness");
+                moved |= ui
+                    .add(
+                        egui::Slider::new(&mut self.lamp.softness, 0.0..=0.12)
+                            .fixed_decimals(3),
+                    )
+                    .on_hover_text(
+                        "How far to soften the shape before lighting it. The model draws a \
+                         cliff at the edge of an object, and lighting a cliff outlines it; \
+                         softening turns that outline into shading.",
                     )
                     .drag_stopped();
                 ui.end_row();

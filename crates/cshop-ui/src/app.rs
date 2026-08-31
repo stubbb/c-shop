@@ -1432,8 +1432,11 @@ impl CShopApp {
                 }
             }
             Action::RelightPreview => {
-                let lit = match &self.dialog {
-                    Dialog::Relight(d) => d.lit().map(|p| (d.layer, p)),
+                let lit = match &mut self.dialog {
+                    Dialog::Relight(d) => {
+                        let layer = d.layer;
+                        d.lit().map(|p| (layer, p))
+                    }
                     _ => None,
                 };
                 if let Some((id, pixels)) = lit {
@@ -3076,7 +3079,8 @@ impl CShopApp {
                         d.depth = Some(std::sync::Arc::new(map));
                         d.busy = false;
                         d.status = "Move the lamp; the shape is worked out.".into();
-                        d.lit().map(|p| (d.layer, p))
+                        let layer = d.layer;
+                        d.lit().map(|p| (layer, p))
                     }
                     _ => None,
                 };
@@ -3104,8 +3108,11 @@ impl CShopApp {
 
     /// Commit the lighting that is showing, as one entry.
     fn keep_relight(&mut self) {
-        let taken = match &self.dialog {
-            Dialog::Relight(d) => d.lit().map(|after| (d.layer, d.before.clone(), after)),
+        let taken = match &mut self.dialog {
+            Dialog::Relight(d) => {
+                let (layer, before) = (d.layer, d.before.clone());
+                d.lit().map(|after| (layer, before, after))
+            }
             _ => None,
         };
         let Some((id, before, after)) = taken else {

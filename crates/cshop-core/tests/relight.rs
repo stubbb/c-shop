@@ -139,6 +139,7 @@ fn a_coloured_lamp_tints_only_what_it_lights() {
             ambient: 1.0,
             relief: 1.0,
             color: Rgba8::opaque(255, 40, 40),
+            ..Default::default()
         },
     );
     let c = out.get(32, 32);
@@ -182,4 +183,82 @@ fn depth_becomes_a_mask_the_right_way_round() {
         let sum = near.get(x, 16) as i32 + far.get(x, 16) as i32;
         assert!((sum - 255).abs() <= 1, "at {x} they sum to {sum}, not 255");
     }
+}
+
+// --- the edge of an object -------------------------------------------------
+
+/// A depth map with a cliff down the middle: near on the left, far on the
+/// right, with nothing in between. That is what the edge of any object looks
+/// like to a depth model, and it is where the lighting used to draw a black
+/// line round everything.
+fn cliff(w: u32, h: u32) -> DepthMap {
+    let data = (0..h)
+        .flat_map(|_| (0..w).map(move |x| if x < w / 2 { 1.0 } else { 0.0 }))
+        .collect();
+    DepthMap::from_values(w, h, data).unwrap()
+}
+
+/// Whatever the settings, a step in the depth may not light as a black line.
+/// It is not a wall; nothing in the picture says how the near thing joins the
+/// far one behind it.
+#[test]
+fn the_edge_of_an_object_shades_rather_than_being_outlined() {
+    let src = flat(80, 40);
+    let depth = cliff(80, 40);
+    let lamp = Relight {
+        azimuth: 0.0,
+        elevation: 20.0,
+        intensity: 1.6,
+        ambient: 0.4,
+        relief: 4.0,
+        ..Default::default()
+    };
+    let out = apply(&src, &depth, lamp);
+
+    // The flat left and right must be lit, and nothing along the join may be
+    // driven to black — that is the outline.
+    let darkest = (0..40)
+        .flat_map(|y| (0..80).map(move |x| (x, y)))
+        .map(|(x, y)| luma(&out, x, y))
+        .fold(f32::MAX, f32::min);
+    assert!(
+        darkest > 30.0,
+        "something on the step went to {darkest}, which is an outline rather than shading"
+    );
+}
+
+/// Softening spreads the step over many pixels, which is what turns a hard
+/// line into a gradient the eye reads as a turning surface.
+#[test]
+fn softening_spreads_the_step_out() {
+    // Square, because the radius is a fraction of the picture's shorter side:
+    // on a 200 by 40 strip a five percent softening is two pixels, which is
+    // right and would make this test look like it had failed.
+    let depth = cliff(200, 200);
+    assert_eq!(depth.softening_radius(0.05), 10);
+    let soft = depth.smoothed(10);
+
+    // How many columns are neither fully near nor fully far, along one row.
+    let transition = |m: &DepthMap| {
+        (0..200).filter(|&x| { let v = m.at(x, 100); v > 0.02 && v < 0.98 }).count()
+    };
+    assert!(transition(&depth) <= 2, "a cliff is a cliff: {}", transition(&depth));
+    assert!(
+        transition(&soft) > 20,
+        "softened by ten, it should be a slope tens of pixels wide: {}",
+        transition(&soft)
+    );
+
+    // And it is still a step overall, not a flat field: the far side stays far.
+    assert!(soft.at(2, 100) > 0.9, "the near side is still near");
+    assert!(soft.at(197, 100) < 0.1, "and the far side still far");
+}
+
+/// Softening by nothing is the picture unchanged, so the control has a
+/// meaningful zero.
+#[test]
+fn softening_by_nothing_changes_nothing() {
+    let depth = ramp_x(32, 32);
+    assert_eq!(depth.smoothed(0).data, depth.data);
+    assert_eq!(depth.softening_radius(0.0), 0);
 }

@@ -48,6 +48,15 @@ pub struct Relight {
     pub relief: f32,
     /// The colour of the lamp.
     pub color: Rgba8,
+    /// How far to soften the shape before lighting it, as a fraction of the
+    /// picture's shorter side.
+    ///
+    /// A depth model draws a *cliff* at the edge of an object — the dog is
+    /// here and the trees are four metres behind it — and differentiating a
+    /// cliff gives an enormous slope, which lights as a hard black outline
+    /// traced round everything. Softening the shape first turns that outline
+    /// into shading, which is what an edge actually looks like.
+    pub softness: f32,
 }
 
 impl Default for Relight {
@@ -59,6 +68,7 @@ impl Default for Relight {
             ambient: 1.0,
             relief: 1.0,
             color: Rgba8::WHITE,
+            softness: 0.02,
         }
     }
 }
@@ -86,6 +96,15 @@ impl Relight {
         [-ca * horizontal, -sa * horizontal, e.sin().max(0.02)]
     }
 }
+
+/// How far a surface may lean away from the camera before the lighting stops
+/// believing it.
+///
+/// At 3 the steepest surface is about seventy-two degrees off square, which is
+/// as oblique as anything in a photograph reads. Beyond that it is not a
+/// surface, it is the edge of one object in front of another, and shading it
+/// as though it were a wall is what draws the black outline.
+const MAX_SLOPE: f32 = 3.0;
 
 /// Depth, one number a pixel, where 1 is nearest the camera.
 #[derive(Debug, Clone)]
@@ -128,11 +147,71 @@ impl DepthMap {
         self
     }
 
+    /// Soften the shape, so that an edge shades instead of being outlined.
+    ///
+    /// Two box blurs rather than one: run twice, a box approaches a Gaussian
+    /// closely enough that nothing downstream can tell, and each pass is a
+    /// running sum — the cost is the same whatever the radius, which matters
+    /// because the useful radius on a large photograph is large.
+    pub fn smoothed(&self, radius: u32) -> DepthMap {
+        if radius == 0 {
+            return self.clone();
+        }
+        let mut out = self.clone();
+        for _ in 0..2 {
+            out = out.box_blurred(radius);
+        }
+        out
+    }
+
+    fn box_blurred(&self, radius: u32) -> DepthMap {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let r = radius as i32;
+        let span = (2 * r + 1) as f32;
+        let mut mid = vec![0.0f32; w * h];
+
+        // Along each row, then each column: two one-dimensional passes cost
+        // what one two-dimensional one would have cost per pixel of radius.
+        for y in 0..h {
+            let row = &self.data[y * w..(y + 1) * w];
+            let mut sum: f32 = (-r..=r).map(|i| row[i.clamp(0, w as i32 - 1) as usize]).sum();
+            for x in 0..w {
+                mid[y * w + x] = sum / span;
+                let leaving = row[(x as i32 - r).clamp(0, w as i32 - 1) as usize];
+                let arriving = row[(x as i32 + r + 1).clamp(0, w as i32 - 1) as usize];
+                sum += arriving - leaving;
+            }
+        }
+
+        let mut out = vec![0.0f32; w * h];
+        for x in 0..w {
+            let at = |y: i32| mid[y.clamp(0, h as i32 - 1) as usize * w + x];
+            let mut sum: f32 = (-r..=r).map(at).sum();
+            for y in 0..h {
+                out[y * w + x] = sum / span;
+                sum += at(y as i32 + r + 1) - at(y as i32 - r);
+            }
+        }
+        DepthMap { width: self.width, height: self.height, data: out }
+    }
+
+    /// The radius that [`Relight::softness`] asks for on a picture this size.
+    pub fn softening_radius(&self, softness: f32) -> u32 {
+        let side = self.width.min(self.height) as f32;
+        (side * softness.clamp(0.0, 0.25)).round().max(0.0) as u32
+    }
+
     /// The surface normal at a pixel, from how fast the depth is changing.
     ///
     /// Sampled two pixels either side rather than one: depth from a model is
     /// smooth but not clean, and the wider stencil is markedly steadier
     /// without losing anything a photograph's shading would show.
+    ///
+    /// The slope is capped. Even softened, the edge of an object is a step
+    /// rather than a slope — nothing in the picture says how the back of the
+    /// dog joins the trees behind it — and without a cap that step lights as
+    /// a black line drawn round the subject. Capped, it becomes a steep piece
+    /// of shading, which is what the eye expects at a turning surface.
     #[inline]
     pub fn normal_at(&self, x: i32, y: i32, relief: f32) -> [f32; 3] {
         let dx = (self.at(x + 2, y) - self.at(x - 2, y)) * 0.25;
@@ -140,7 +219,14 @@ impl DepthMap {
         // The scale turns a unitless depth change into something comparable
         // with one pixel of distance across the frame.
         let s = relief * self.width.min(self.height) as f32 * 0.05;
-        let n = [-dx * s, -dy * s, 1.0];
+        let (mut nx, mut ny) = (-dx * s, -dy * s);
+        let lateral = (nx * nx + ny * ny).sqrt();
+        if lateral > MAX_SLOPE {
+            let k = MAX_SLOPE / lateral;
+            nx *= k;
+            ny *= k;
+        }
+        let n = [nx, ny, 1.0];
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
         [n[0] / len, n[1] / len, n[2] / len]
     }

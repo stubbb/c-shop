@@ -1430,6 +1430,9 @@ impl Runner {
         if let Some(v) = cmd.f32("relief")? {
             lamp.relief = v.clamp(0.0, 8.0);
         }
+        if let Some(v) = cmd.f32("softness")? {
+            lamp.softness = v.clamp(0.0, 0.25);
+        }
         if let Some(c) = cmd.color("color")? {
             lamp.color = c;
         }
@@ -1446,6 +1449,9 @@ impl Runner {
             .and_then(|v| v.doc.active)
             .ok_or("there is no active layer to light")?;
         let map = self.depth_of(id)?;
+        // Softened before it is differentiated, or the cliff at the edge of
+        // every object lights as an outline drawn round it.
+        let map = map.smoothed(map.softening_radius(lamp.softness));
         let source = self
             .app
             .doc()
@@ -1465,8 +1471,9 @@ impl Runner {
         view.mark_dirty(dirty);
         view.invalidate();
         Ok(format!(
-            "lit from {:.0}° at {:.0}° up, intensity {:.2}, ambient {:.2}, relief {:.2}",
-            lamp.azimuth, lamp.elevation, lamp.intensity, lamp.ambient, lamp.relief
+            "lit from {:.0}° at {:.0}° up, intensity {:.2}, ambient {:.2}, relief {:.2}, \
+             softness {:.3}",
+            lamp.azimuth, lamp.elevation, lamp.intensity, lamp.ambient, lamp.relief, lamp.softness
         ))
     }
 

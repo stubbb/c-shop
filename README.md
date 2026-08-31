@@ -324,6 +324,10 @@ The lamp is a dot on a circle rather than two numbers, and the window says
 of a second and does not change while the lamp moves, so it is worked out once
 and dragging the light after that is arithmetic.
 
+A depth model draws a cliff at the edge of an object, and lighting a cliff
+outlines it — so the shape is softened before it is lit and the slope is
+capped, which turns that outline into shading. `softness` is the control.
+
 It is not physical relighting: no cast shadows, no idea how shiny anything is,
 and the new lamp is added to whatever already lit the picture. On a subject it
 is convincing; on a scene whose lighting is the point it will look like what it
@@ -341,14 +345,20 @@ Three of them compose into the thing people actually want:
 ```
 open dog.jpg
 detect class=dog             # → found 1: dog 90% at 4,274 569x450
-segment class=dog expand=6   # the dog becomes the selection
-inpaint                      # → filled in 574x455 at 0,272
+segment class=dog expand=20  # the dog becomes the selection,
+                             #   with room round it
+inpaint                      # → filled in 588x483 at 0,258
 ```
 
 ![The dog, and the bench without it](docs/example-fill-in.jpg)
 
-Seven seconds, and nobody had to say where anything was. There is no seam
-because nothing outside the hole is replaced — the model hands the rest back
+Seven seconds, and nobody had to say where anything was. The `expand=20` is the
+part worth copying: a mask that hugs an object leaves the object's own edge
+behind for the model to continue, and what you get is a faint outline of the
+thing you removed. Give it room. Too much room is a different mistake — at 40
+this one starts eating the hand.
+
+There is no seam because nothing outside the hole is replaced — the model hands the rest back
 bit for bit, and a test asserts that not one pixel outside the selection may
 differ.
 
@@ -445,7 +455,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-824 tests, and the interesting ones are not unit tests:
+827 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:

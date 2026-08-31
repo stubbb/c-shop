@@ -216,6 +216,21 @@ anything. `depth mask invert` is the other way round, which is what haze does.
 entries beside it — **Layer to Mask** and **Mask to Selection** — are what make
 masks, layers and selections interchangeable rather than dead ends.
 
+### Why the edges need softening
+
+A depth model draws a *cliff* at the edge of an object: the dog is here and the
+trees are four metres behind it, with nothing in between. Differentiating a
+cliff gives an enormous slope, and an enormous slope lights as a hard black
+line — so the first version of this traced a jagged outline round everything in
+the picture.
+
+Two things fix it, and both are on by default. The shape is **softened** before
+it is differentiated, which turns the cliff into a slope the eye reads as a
+turning surface; `softness` is that control, as a fraction of the shorter side.
+And the slope is **capped**, because past about seventy degrees it is not a
+surface at all — it is one object in front of another, and nothing in the
+picture says how they join.
+
 ### From depth to shape
 
 Depth alone lights nothing. What a lamp responds to is which way a surface
@@ -258,15 +273,21 @@ people actually want:
 ```
 open dog.jpg
 detect class=dog             # → found 1: dog 90% at 4,274 569x450
-segment class=dog expand=6   # the dog becomes the selection
-inpaint                      # → filled in 574x455 at 0,272
+segment class=dog expand=20  # the dog becomes the selection,
+                             #   with room round it
+inpaint                      # → filled in 588x483 at 0,258
 ```
 
 ![The dog, and the bench without it](example-fill-in.jpg)
 
 Seven seconds, three models, and nobody had to say where anything was. The
 bench slats continue through where the dog sat and the foliage behind is
-rebuilt. **Edit ▸ Fill In Selection** does the same by hand, on whatever is
+rebuilt.
+
+The `expand=20` matters more than it looks. A mask that hugs an object leaves
+that object's own edge inside the picture, and the model dutifully continues
+it — so what survives is a faint outline of the thing that was removed. At 6 it
+leaves fur on the bench; at 20 it does not; at 40 it starts eating the hand. **Edit ▸ Fill In Selection** does the same by hand, on whatever is
 selected.
 
 ### How it avoids a seam

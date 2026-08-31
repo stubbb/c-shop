@@ -79,7 +79,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `combine OP` | Fold shape layers into one path: `union subtract intersect exclude`. `layers=0,2` picks them by the index `info` reports; without it, every shape in the document. |
 | `detect [class= conf=]` | Find objects, and report each into the run's facts. Needs the [vision pack](VISION.md). |
 | `depth [mask] [invert]` | How far away everything is, as a layer to look at or as a mask on the layer it was measured from. Needs the [vision pack](VISION.md). |
-| `relight [azimuth= elevation= intensity= ambient= relief= color=]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
+| `relight [azimuth= elevation= intensity= ambient= relief= softness= color=]` | Light the picture again from a guess at its shape. Needs the [vision pack](VISION.md). |
 | `inpaint` | Make the selection disappear, inventing what was behind it. Needs the [vision pack](VISION.md). |
 | `separate [classes= min= feather=]` | Split the active layer into one layer per kind of thing in it. Needs the [vision pack](VISION.md). |
 | `upscale [scale=]` | Enlarge the whole image with a model, 1 to 4 times. Needs the [vision pack](VISION.md). |
@@ -216,7 +216,10 @@ relight azimuth=200 elevation=18 intensity=1.5 ambient=0.45 relief=1.6
 `azimuth` is where the lamp is on a circle round the picture: **0° is to the
 left** and it goes clockwise, so 90° is above and 180° is to the right.
 `elevation` is how high, from level with the subject to straight in front.
-`ambient` is what survives where the lamp does not reach — at 1 the lamp can
+`softness` is how far to soften the shape before lighting it — the model draws
+a cliff at the edge of every object and lighting a cliff outlines it, so this
+defaults to 0.02 rather than 0 and is worth raising on a picture with a lot of
+cut-out edges. `ambient` is what survives where the lamp does not reach — at 1 the lamp can
 only add light, below it the unlit side falls away. `relief` is how much shape
 to read into the depth; the depth has no unit, so that is a choice rather than
 a measurement.
@@ -237,7 +240,8 @@ actually asked for:
 
 ```
 detect class=car
-segment class=car expand=6
+segment class=car expand=20   # room round it: a mask that hugs the car
+                              # leaves the car's own edge to be continued
 inpaint            # → filled in 574x455 at 0,272
 ```
 
