@@ -463,14 +463,11 @@ impl CShopApp {
         // room; everything else is a column of fields.
         let max_width = if matches!(dialog, Dialog::Filter(_)) { 780.0 } else { 620.0 };
 
-        // The Layer Style dialog applies as it goes, so the canvas is its
-        // preview — which is no use behind a dimmed modal sitting over the
-        // middle of it. That one gets a window the user can push aside; the
-        // rest stay modal.
-        // Both of these use the canvas as their preview — the Segment window
-        // uses it as its input as well — so neither may sit behind a dimmed
-        // sheet over the middle of it.
-        let movable = matches!(dialog, Dialog::LayerStyle(_) | Dialog::Segment(_));
+        // Anything whose answer shows up on the canvas gets a window that can
+        // be pushed aside, and its own name to remember where it was put.
+        // Sharing one name — which they used to — means moving one of them
+        // moves where all the others will next appear.
+        let movable = window_key(&dialog);
 
         let gpu = self.gpu.clone();
         let mut body = |ui: &mut egui::Ui| {
@@ -514,17 +511,18 @@ impl CShopApp {
             }
         };
 
-        if movable {
+        if let Some(key) = movable {
             egui::Window::new(title)
-                // A fixed id, so dragging it somewhere keeps it there across
-                // frames and across openings.
-                .id(egui::Id::new("layer-style-window"))
+                // Its own id, so dragging it somewhere keeps it there across
+                // frames and across openings — and does not drag the others
+                // with it.
+                .id(egui::Id::new(key))
                 .frame(frame)
                 .collapsible(false)
                 .resizable(false)
                 .constrain(true)
                 // Out of the middle of the canvas to begin with, since the
-                // point is to watch what the effects do.
+                // point is to watch what it does.
                 .default_pos(egui::pos2(60.0, 90.0))
                 .show(ctx, |ui| body(ui));
         } else {
@@ -5458,6 +5456,41 @@ pub enum LensOutcome {
     /// for — measured on the real result rather than on the preview.
     Done { pixels: Box<PixelBuffer>, crop: Option<IRect> },
     Failed(String),
+}
+
+/// Which windows can be pushed aside, and what each is called.
+///
+/// `None` means a modal: the four questions that have to be answered before
+/// anything else makes sense — where to save, how big a new document is, what
+/// to call a layer, and the about box.
+///
+/// Everything else shows its answer on the canvas, one way or another. A
+/// window that dims the picture and sits over the middle of it is no use for
+/// judging what it just did, which is the whole reason these have previews.
+///
+/// The name is also the id the window remembers its position under, so each
+/// keeps its own place rather than inheriting wherever the last one was put.
+fn window_key(dialog: &Dialog) -> Option<&'static str> {
+    Some(match dialog {
+        Dialog::NewDocument(_) | Dialog::FileBrowser(_) | Dialog::Rename(_) | Dialog::About => {
+            return None
+        }
+        Dialog::None => return None,
+        Dialog::LayerStyle(_) => "window-layer-style",
+        Dialog::Segment(_) => "window-segment",
+        Dialog::Filter(_) => "window-filter",
+        Dialog::Adjustment(_) => "window-adjustment",
+        Dialog::Lens(_) => "window-lens",
+        Dialog::Denoise(_) => "window-denoise",
+        Dialog::Relight(_) => "window-relight",
+        Dialog::Separate(_) => "window-separate",
+        Dialog::Upscale(_) => "window-upscale",
+        Dialog::ColorProfile(_) => "window-colour-profile",
+        Dialog::Modify(_) => "window-modify",
+        Dialog::ImageSize(_) => "window-image-size",
+        Dialog::Fill(_) => "window-fill",
+        Dialog::ColorPicker(_) => "window-colour-picker",
+    })
 }
 
 pub enum SegmentOutcome {

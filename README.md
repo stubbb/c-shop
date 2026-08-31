@@ -79,7 +79,8 @@ colour and geometry, and a shared global light. Every effect is a function of
 how far a pixel sits from the layer's edge, so one distance field drives all of
 them. Fill opacity scales the layer's own pixels and not its effects, which is
 what makes a stroke-only layer possible. The Layer Style window applies as you
-work and can be dragged aside, so the canvas is the preview.
+work and can be dragged aside, so the canvas is the preview — as can every
+other window whose answer shows up there.
 
 **Shapes.** Rectangles, rounded rectangles, ellipses, polygons, stars and
 lines, drawn from signed distance fields so fill and stroke stay perfectly
@@ -444,7 +445,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-812 tests, and the interesting ones are not unit tests:
+815 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
