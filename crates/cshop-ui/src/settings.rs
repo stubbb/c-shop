@@ -39,6 +39,10 @@ pub struct Settings {
     pub retouch: cshop_core::retouch::Retouch,
     /// Blur, Sharpen and Smudge.
     pub brush_filter_strength: f32,
+    /// Shortcuts that have been changed, by command name. Only the changed
+    /// ones, so a new build's defaults reach everyone who has not overridden
+    /// them.
+    pub shortcuts: Vec<(String, String)>,
     /// Most recently opened first.
     pub recent: Vec<PathBuf>,
 }
@@ -59,6 +63,7 @@ impl Default for Settings {
             show_panels: true,
             retouch: Default::default(),
             brush_filter_strength: 0.5,
+            shortcuts: Vec::new(),
             recent: Vec::new(),
         }
     }
@@ -132,6 +137,20 @@ impl Settings {
             ("retouch_soak", Json::Bool(self.retouch.soak)),
             ("brush_filter_strength", Json::Number(self.brush_filter_strength as f64)),
             (
+                "shortcuts",
+                Json::Array(
+                    self.shortcuts
+                        .iter()
+                        .map(|(name, chord)| {
+                            Json::object(vec![
+                                ("command", Json::String(name.clone())),
+                                ("chord", Json::String(chord.clone())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
                 "recent",
                 Json::Array(
                     self.recent
@@ -161,6 +180,15 @@ impl Settings {
             {
                 s.tool = tool;
             }
+        }
+        if let Some(list) = json.get("shortcuts").and_then(Json::as_array) {
+            s.shortcuts = list
+                .iter()
+                .filter_map(|e| {
+                    Some((e.str_field("command")?.to_string(), e.str_field("chord")?.to_string()))
+                })
+                .take(512)
+                .collect();
         }
         if let Some(name) = json.str_field("retouch_kind") {
             use cshop_core::retouch::RetouchKind::{Burn, Dodge, Sponge};

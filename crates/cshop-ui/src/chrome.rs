@@ -577,6 +577,13 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::DeleteLayer);
                 ui.close();
             }
+            if item_enabled(ui, "Keyboard Shortcuts…", "", true)
+                .on_hover_text("Every chord, and where to change them")
+                .clicked()
+            {
+                app.push(Action::ShowShortcuts);
+                ui.close();
+            }
             ui.separator();
             ui.menu_button("Transform", |ui| {
                 if item_enabled(ui, "Free Transform", &k::FREE_TRANSFORM.label(), has_doc).clicked() {
@@ -981,6 +988,58 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
         });
 
         ui.menu_button("View", |ui| {
+            // Colour first, because it changes what everything below it looks
+            // like rather than where it is.
+            let display_name = app
+                .display_profile
+                .as_ref()
+                .map(|p| p.name().to_string())
+                .unwrap_or_else(|| "sRGB (assumed)".into());
+            ui.menu_button("Screen Profile", |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Showing for: {display_name}"))
+                        .color(Palette::DARK.text_dim)
+                        .small(),
+                );
+                ui.separator();
+                if ui.button("sRGB (assume)").clicked() {
+                    app.push(Action::SetDisplayProfile(None));
+                    ui.close();
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for (name, path) in crate::profile_ui::discover() {
+                        if ui.button(&name).clicked() {
+                            app.push(Action::SetDisplayProfile(Some(path)));
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            let proofing = app.proof_profile.is_some();
+            ui.menu_button(if proofing { "Proof Colours ✓" } else { "Proof Colours" }, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Shows the picture as another space would render it — what a \
+                         press can reach and what it cannot",
+                    )
+                    .color(Palette::DARK.text_dim)
+                    .small(),
+                );
+                ui.separator();
+                if item_enabled(ui, "Off", "", proofing).clicked() {
+                    app.push(Action::SetProofProfile(None));
+                    ui.close();
+                }
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for (name, path) in crate::profile_ui::discover() {
+                        if ui.button(&name).clicked() {
+                            app.push(Action::SetProofProfile(Some(path)));
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            ui.separator();
             if item_enabled(ui, "Zoom In", &k::ZOOM_IN.label(), has_doc).clicked() {
                 app.push(Action::ZoomIn);
                 ui.close();

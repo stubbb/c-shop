@@ -24,6 +24,19 @@ pub struct Chord {
 }
 
 impl Chord {
+    /// What a command gets when its chord is taken by another.
+    ///
+    /// One chord means one command — two on the same chord means one of them
+    /// silently never runs — so rebinding displaces whatever held it. The
+    /// displaced command has to be recorded as *having no chord* rather than
+    /// simply left at its default, or the next run would give it back.
+    pub const UNBOUND: Chord =
+        Chord { ctrl: true, shift: true, alt: true, key: Key::F35 };
+
+    pub fn is_bound(&self) -> bool {
+        !(self.ctrl && self.shift && self.alt && self.key == Key::F35)
+    }
+
     pub const fn plain(key: Key) -> Chord {
         Chord { ctrl: false, shift: false, alt: false, key }
     }
@@ -52,8 +65,30 @@ impl Chord {
         m.command == self.ctrl && m.shift == self.shift && m.alt == self.alt && i.key_pressed(self.key)
     }
 
+    /// Read a chord back from how it is written, so a rebinding survives the
+    /// settings file. Unknown key names are refused rather than guessed at.
+    pub fn parse(text: &str) -> Option<Chord> {
+        let mut chord = Chord { ctrl: false, shift: false, alt: false, key: Key::A };
+        let mut key = None;
+        for part in text.split('+') {
+            let part = part.trim();
+            match part.to_ascii_lowercase().as_str() {
+                "" => continue,
+                "ctrl" | "cmd" | "command" => chord.ctrl = true,
+                "shift" => chord.shift = true,
+                "alt" | "option" => chord.alt = true,
+                _ => key = Key::from_name(part),
+            }
+        }
+        chord.key = key?;
+        Some(chord)
+    }
+
     /// How the chord is written in a menu, e.g. `Ctrl+Shift+S`.
     pub fn label(&self) -> String {
+        if !self.is_bound() {
+            return "—".into();
+        }
         let mut s = String::new();
         if self.ctrl {
             s.push_str("Ctrl+");
@@ -161,12 +196,16 @@ pub mod keys {
 /// The action is built on demand because some carry owned data — an adjustment
 /// to open a dialog for — which cannot live in a `const`.
 pub struct Binding {
+    /// What the command is called, for the shortcuts window and for the
+    /// settings file. Stable: it is the key a rebinding is stored under, so
+    /// renaming one silently drops whatever someone had bound to it.
+    pub name: &'static str,
     pub chord: Chord,
     pub make: fn() -> Action,
 }
 
-const fn bind(chord: Chord, make: fn() -> Action) -> Binding {
-    Binding { chord, make }
+const fn bind(name: &'static str, chord: Chord, make: fn() -> Action) -> Binding {
+    Binding { name, chord, make }
 }
 
 /// Every chord that maps straight to one command.
@@ -175,45 +214,65 @@ const fn bind(chord: Chord, make: fn() -> Action) -> Binding {
 /// things during a transform, a crop and a drag; the arrows nudge; the tool
 /// letters cycle within their group; and the brackets and digits adjust the
 /// brush. Those stay in the input handler where the state they depend on is.
+/// Every chord as it is bound now, with whatever has been changed applied.
+///
+/// Overrides are keyed by name rather than by position, so adding a command
+/// does not shuffle everyone's rebindings along by one.
+pub fn bindings_with(overrides: &std::collections::HashMap<String, Chord>) -> Vec<Binding> {
+    let mut out = bindings();
+    if overrides.is_empty() {
+        return out;
+    }
+    for binding in &mut out {
+        if let Some(chord) = overrides.get(binding.name) {
+            binding.chord = *chord;
+        }
+    }
+    // A command whose chord was taken by another has none, and something with
+    // no chord must not be listening for one.
+    out.retain(|b| b.chord.is_bound());
+    out
+}
+
 pub fn bindings() -> Vec<Binding> {
     use cshop_core::adjust::Adjustment;
     use keys as k;
 
     vec![
-        bind(k::NEW, || Action::NewDocument),
-        bind(k::OPEN, || Action::ShowOpenDialog),
-        bind(k::SAVE, || Action::Save),
-        bind(k::SAVE_AS, || Action::ShowSaveAsDialog),
-        bind(k::CLOSE, || Action::CloseDocument(usize::MAX)),
-        bind(k::QUIT, || Action::Quit),
-        bind(k::UNDO, || Action::Undo),
-        bind(k::REDO, || Action::Redo),
-        bind(k::REDO_LEGACY, || Action::Redo),
-        bind(k::STEP_BACKWARD, || Action::Undo),
-        bind(k::COPY, || Action::Copy),
-        bind(k::COPY_MERGED, || Action::CopyMerged),
-        bind(k::CUT, || Action::Cut),
-        bind(k::PASTE, || Action::Paste),
-        bind(k::PASTE_IN_PLACE, || Action::PasteInPlace),
-        bind(k::FILL, || Action::ShowFillDialog),
-        bind(k::FILL_F5, || Action::ShowFillDialog),
-        bind(k::FILL_FOREGROUND, || Action::fill_foreground(false)),
-        bind(k::FILL_BACKGROUND, || Action::fill_background(false)),
-        bind(k::FILL_FOREGROUND_LOCKED, || Action::fill_foreground(true)),
-        bind(k::FILL_BACKGROUND_LOCKED, || Action::fill_background(true)),
-        bind(k::FREE_TRANSFORM, || Action::BeginTransform),
-        bind(k::IMAGE_SIZE, || Action::ShowImageSize),
-        bind(k::CANVAS_SIZE, || Action::ShowCanvasSize),
-        bind(k::LEVELS, || {
+        bind("New", k::NEW, || Action::NewDocument),
+        bind("Open", k::OPEN, || Action::ShowOpenDialog),
+        bind("Save", k::SAVE, || Action::Save),
+        bind("Save as", k::SAVE_AS, || Action::ShowSaveAsDialog),
+        bind("Close", k::CLOSE, || Action::CloseDocument(usize::MAX)),
+        bind("Quit", k::QUIT, || Action::Quit),
+        bind("Undo", k::UNDO, || Action::Undo),
+        bind("Redo", k::REDO, || Action::Redo),
+        bind("Redo (legacy)", k::REDO_LEGACY, || Action::Redo),
+        bind("Step Backward", k::STEP_BACKWARD, || Action::Undo),
+        bind("Copy", k::COPY, || Action::Copy),
+        bind("Copy Merged", k::COPY_MERGED, || Action::CopyMerged),
+        bind("Cut", k::CUT, || Action::Cut),
+        bind("Paste", k::PASTE, || Action::Paste),
+        bind("Paste in Place", k::PASTE_IN_PLACE, || Action::PasteInPlace),
+        bind("Fill", k::FILL, || Action::ShowFillDialog),
+        bind("Fill (F5)", k::FILL_F5, || Action::ShowFillDialog),
+        bind("Fill Foreground", k::FILL_FOREGROUND, || Action::fill_foreground(false)),
+        bind("Fill Background", k::FILL_BACKGROUND, || Action::fill_background(false)),
+        bind("Fill Foreground Locked", k::FILL_FOREGROUND_LOCKED, || Action::fill_foreground(true)),
+        bind("Fill Background Locked", k::FILL_BACKGROUND_LOCKED, || Action::fill_background(true)),
+        bind("Free Transform", k::FREE_TRANSFORM, || Action::BeginTransform),
+        bind("Image Size", k::IMAGE_SIZE, || Action::ShowImageSize),
+        bind("Canvas Size", k::CANVAS_SIZE, || Action::ShowCanvasSize),
+        bind("Levels", k::LEVELS, || {
             Action::ShowAdjustmentDialog(Box::new(Adjustment::Levels {
                 rgb: Default::default(),
                 channels: Default::default(),
             }))
         }),
-        bind(k::CURVES, || {
+        bind("Curves", k::CURVES, || {
             Action::ShowAdjustmentDialog(Box::new(Adjustment::Curves { curves: Default::default() }))
         }),
-        bind(k::HUE_SATURATION, || {
+        bind("Hue Saturation", k::HUE_SATURATION, || {
             Action::ShowAdjustmentDialog(Box::new(Adjustment::HueSaturation {
                 hue: 0.0,
                 saturation: 0.0,
@@ -221,7 +280,7 @@ pub fn bindings() -> Vec<Binding> {
                 colorize: false,
             }))
         }),
-        bind(k::COLOR_BALANCE, || {
+        bind("Color Balance", k::COLOR_BALANCE, || {
             Action::ShowAdjustmentDialog(Box::new(Adjustment::ColorBalance {
                 shadows: [0.0; 3],
                 midtones: [0.0; 3],
@@ -231,7 +290,7 @@ pub fn bindings() -> Vec<Binding> {
         }),
         // Desaturate is Hue/Saturation pulled to the bottom of its range, which
         // is what a Desaturate menu entry amounts to.
-        bind(k::DESATURATE, || {
+        bind("Desaturate", k::DESATURATE, || {
             Action::ApplyAdjustment(Box::new(Adjustment::HueSaturation {
                 hue: 0.0,
                 saturation: -1.0,
@@ -239,32 +298,32 @@ pub fn bindings() -> Vec<Binding> {
                 colorize: false,
             }))
         }),
-        bind(k::INVERT, || Action::ApplyAdjustment(Box::new(Adjustment::Invert))),
-        bind(k::NEW_LAYER, || Action::NewLayer),
-        bind(k::LAYER_VIA_COPY, || Action::LayerViaCopy),
-        bind(k::MERGE_DOWN, || Action::MergeDown),
-        bind(k::CLIPPING_MASK, || Action::ToggleClippingMask),
-        bind(k::LAYER_FORWARD, || Action::ReorderActiveLayer(1)),
-        bind(k::LAYER_BACKWARD, || Action::ReorderActiveLayer(-1)),
-        bind(k::LAYER_TO_FRONT, || Action::ReorderActiveLayer(i32::MAX)),
-        bind(k::LAYER_TO_BACK, || Action::ReorderActiveLayer(i32::MIN)),
-        bind(k::SELECT_LAYER_ABOVE, || Action::StepActiveLayer(1)),
-        bind(k::SELECT_LAYER_BELOW, || Action::StepActiveLayer(-1)),
-        bind(k::SELECT_ALL, || Action::SelectAll),
-        bind(k::DESELECT, || Action::Deselect),
-        bind(k::RESELECT, || Action::Reselect),
-        bind(k::INVERSE, || Action::InverseSelection),
-        bind(k::FEATHER, || Action::ShowModifyDialog(crate::chrome::ModifyKind::Feather)),
-        bind(k::LAST_FILTER, || Action::RepeatLastFilter),
-        bind(k::ZOOM_IN, || Action::ZoomIn),
-        bind(k::ZOOM_IN_EQUALS, || Action::ZoomIn),
-        bind(k::ZOOM_OUT, || Action::ZoomOut),
-        bind(k::ZOOM_FIT, || Action::ZoomFit),
-        bind(k::ZOOM_ACTUAL, || Action::ZoomActual),
-        bind(k::TOGGLE_PANELS, || Action::TogglePanels),
-        bind(k::SWAP_COLORS, || Action::SwapColors),
-        bind(k::RESET_COLORS, || Action::ResetColors),
-        bind(k::QUICK_MASK, || Action::ToggleQuickMask),
+        bind("Invert", k::INVERT, || Action::ApplyAdjustment(Box::new(Adjustment::Invert))),
+        bind("New Layer", k::NEW_LAYER, || Action::NewLayer),
+        bind("Layer Via Copy", k::LAYER_VIA_COPY, || Action::LayerViaCopy),
+        bind("Merge Down", k::MERGE_DOWN, || Action::MergeDown),
+        bind("Clipping Mask", k::CLIPPING_MASK, || Action::ToggleClippingMask),
+        bind("Layer Forward", k::LAYER_FORWARD, || Action::ReorderActiveLayer(1)),
+        bind("Layer Backward", k::LAYER_BACKWARD, || Action::ReorderActiveLayer(-1)),
+        bind("Layer to Front", k::LAYER_TO_FRONT, || Action::ReorderActiveLayer(i32::MAX)),
+        bind("Layer to Back", k::LAYER_TO_BACK, || Action::ReorderActiveLayer(i32::MIN)),
+        bind("Select Layer Above", k::SELECT_LAYER_ABOVE, || Action::StepActiveLayer(1)),
+        bind("Select Layer Below", k::SELECT_LAYER_BELOW, || Action::StepActiveLayer(-1)),
+        bind("Select All", k::SELECT_ALL, || Action::SelectAll),
+        bind("Deselect", k::DESELECT, || Action::Deselect),
+        bind("Reselect", k::RESELECT, || Action::Reselect),
+        bind("Inverse", k::INVERSE, || Action::InverseSelection),
+        bind("Feather", k::FEATHER, || Action::ShowModifyDialog(crate::chrome::ModifyKind::Feather)),
+        bind("Last Filter", k::LAST_FILTER, || Action::RepeatLastFilter),
+        bind("Zoom in", k::ZOOM_IN, || Action::ZoomIn),
+        bind("Zoom in Equals", k::ZOOM_IN_EQUALS, || Action::ZoomIn),
+        bind("Zoom Out", k::ZOOM_OUT, || Action::ZoomOut),
+        bind("Zoom Fit", k::ZOOM_FIT, || Action::ZoomFit),
+        bind("Zoom Actual", k::ZOOM_ACTUAL, || Action::ZoomActual),
+        bind("Toggle Panels", k::TOGGLE_PANELS, || Action::TogglePanels),
+        bind("Swap Colors", k::SWAP_COLORS, || Action::SwapColors),
+        bind("Reset Colors", k::RESET_COLORS, || Action::ResetColors),
+        bind("Quick Mask", k::QUICK_MASK, || Action::ToggleQuickMask),
     ]
 }
 

@@ -36,6 +36,11 @@ named but nothing runs it.
 
 Pressing a letter again cycles through the tools sharing that slot.
 
+Every chord below can be changed, on `Edit ▸ Keyboard Shortcuts…`, which also
+lists them all inside the program rather than only here. Taking a chord takes
+it from whatever held it, since two commands on one chord means one of them
+never runs.
+
 ## File and edit
 
 | Chord | Command |

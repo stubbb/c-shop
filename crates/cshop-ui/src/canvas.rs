@@ -769,6 +769,9 @@ fn interact(
         | Tool::SpotHealing
         | Tool::HistoryBrush => {
             let alt_held = ui.input(|i| i.modifiers.alt);
+            // Read before the stroke starts, so a pen that touches down
+            // lightly starts light rather than ramping down from full.
+            app.pen_pressure = pen_pressure(ui);
             let mode = match app.tool.retouches() {
                 // Holding Alt swaps dodge for burn and back, which is how the
                 // pair is actually used: you lighten, see you went too far,
@@ -828,7 +831,7 @@ fn interact(
                     },
                 }
             } else if response.dragged_by(egui::PointerButton::Primary) && app.is_painting() {
-                app.continue_stroke(doc_point);
+                app.continue_stroke_pressed(doc_point, pen_pressure(ui));
             }
             if response.drag_stopped_by(egui::PointerButton::Primary)
                 || ui.input(|i| i.pointer.primary_released())
@@ -1434,6 +1437,26 @@ fn warp_interact(
     if rerender {
         app.refresh_warp();
     }
+}
+
+/// How hard the pen is pressed, or one for a mouse.
+///
+/// Pressure arrives as a touch event's force, which is `None` on every device
+/// that cannot measure it — which is most of them, and all mice. A device that
+/// does not say is treated as pressing fully, so a brush behaves exactly as it
+/// always did unless something is actually reporting.
+fn pen_pressure(ui: &egui::Ui) -> f32 {
+    ui.input(|i| {
+        i.events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                egui::Event::Touch { force, .. } => *force,
+                _ => None,
+            })
+            .unwrap_or(1.0)
+    })
+    .clamp(0.0, 1.0)
 }
 
 /// The line a gradient is being dragged along.

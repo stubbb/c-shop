@@ -27,6 +27,7 @@ pub mod panels;
 pub mod properties;
 pub mod theme;
 pub mod settings;
+pub mod shortcut_ui;
 pub mod shortcuts;
 pub mod text_tool;
 pub mod tools;

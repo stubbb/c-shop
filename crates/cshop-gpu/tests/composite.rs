@@ -497,7 +497,7 @@ fn presenting_an_opaque_colour_is_lossless() {
         );
         h.cache.sync(&h.ctx, &doc, &cshop_core::document::Dirty::NONE);
         h.compositor.composite(&h.ctx, &doc, &h.cache, &work, doc.bounds());
-        h.compositor.present(&h.ctx, &work, &display);
+        h.compositor.present(&h.ctx, &work, &display, &identity_table(&h.ctx));
 
         let got = cshop_gpu::readback::read_srgb8(&h.ctx, &display).get(0, 0);
         // A mid-grey that comes back as 186 means a stray sRGB encode; 55 means
@@ -530,7 +530,7 @@ fn presenting_a_translucent_colour_premultiplies_in_gamma() {
         GpuTexture::render_target(&h.ctx, "display", 2, 2, cshop_gpu::texture::DISPLAY_FORMAT);
     h.cache.sync(&h.ctx, &doc, &cshop_core::document::Dirty::NONE);
     h.compositor.composite(&h.ctx, &doc, &h.cache, &work, doc.bounds());
-    h.compositor.present(&h.ctx, &work, &display);
+    h.compositor.present(&h.ctx, &work, &display, &identity_table(&h.ctx));
 
     let got = cshop_gpu::readback::read_srgb8(&h.ctx, &display).get(0, 0);
     assert_eq!(got.a, 128, "alpha must survive unchanged");
@@ -828,4 +828,10 @@ fn an_adjustment_inside_a_group_stays_inside_it() {
     // proves the adjustment did not leak.
     let out = h.run(&doc)[0];
     assert!(out.r < 0.01 && out.a > 0.99, "expected inverted white over black, got {out:?}");
+}
+
+/// A colour transform that changes nothing, which is what the present pass
+/// gets for a document already in the display's own space.
+fn identity_table(ctx: &cshop_gpu::context::GpuContext) -> cshop_gpu::texture::ColourTable {
+    cshop_gpu::texture::ColourTable::identity(ctx, 33)
 }

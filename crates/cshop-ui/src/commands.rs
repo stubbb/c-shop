@@ -385,6 +385,24 @@ pub enum Action {
     SetDepth(u8),
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
+    /// Open the list of shortcuts.
+    ShowShortcuts,
+    /// Bind a command to a chord, or `None` to put it back to the default.
+    SetShortcut(String, Option<crate::shortcuts::Chord>),
+    /// Put every shortcut back.
+    ResetShortcuts,
+
+    /// Take the selection's shape as the brush's tip.
+    DefineBrush,
+    /// Go back to the round one.
+    ClearBrushTip,
+
+    /// Tell the canvas what screen it is being shown on. `None` assumes sRGB.
+    SetDisplayProfile(Option<std::path::PathBuf>),
+    /// Show the picture as the given space would render it — a press, usually.
+    /// `None` turns proofing off.
+    SetProofProfile(Option<std::path::PathBuf>),
+
     /// Find the sky and put a different one in.
     ReplaceSky,
     /// Smooth skin without smoothing eyes and hair.

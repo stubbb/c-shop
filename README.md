@@ -124,6 +124,20 @@ rather than the small rectangle that changed. Both formats write back out
 whole; before this, opening one gave back its first frame and dropped the rest
 in silence.
 
+**A colour-managed canvas.** A document carries a profile, and until now the
+canvas showed its numbers directly — right for sRGB and a lie for anything
+else. The colour engine runs on the processor and the canvas is drawn on the
+card, so a three-dimensional table bridges them: built once when the profiles
+change, read once per pixel per frame. A document already in the screen's own
+space gets the identity table and is shown exactly as it was, unchanged.
+Soft proofing follows from the same machinery — document, through the press,
+onto the screen — which is what shows you what the press cannot reach.
+
+**Pressure, and brushes made from a selection.** Which of size and flow a pen's
+pressure drives is a choice, and a device that cannot measure it presses fully,
+so nothing changes for a mouse. A selection's shape becomes a brush tip, fitted
+to the brush size with its own proportions kept.
+
 **Depth.** The depth model's answer drives three effects that are impossible
 without it and ordinary with it: haze that thickens with distance, a shallow
 depth of field applied to a photograph that was not taken with one, and a shift

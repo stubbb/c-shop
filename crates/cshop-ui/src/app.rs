@@ -202,6 +202,24 @@ pub struct CShopApp {
 
     /// Paint Bucket settings.
     pub bucket: cshop_core::fill::BucketOptions,
+    /// Shortcuts that have been changed from the defaults, by command name.
+    pub shortcut_overrides: std::collections::HashMap<String, crate::shortcuts::Chord>,
+
+    /// How hard the pen was last pressing, so a stroke starts at the pressure
+    /// the pen touched down with rather than ramping from full.
+    pub pen_pressure: f32,
+
+    /// The shape the brush stamps, when it is not the built-in disc. Named,
+    /// so the options bar can say which one is loaded.
+    pub brush_tip: Option<(String, std::sync::Arc<cshop_core::paint::Tip>)>,
+
+    /// The screen's own profile, when one has been chosen. Without it the
+    /// canvas assumes sRGB, which is what most screens are and what every
+    /// screen was assumed to be until now.
+    pub display_profile: Option<cshop_core::profile::Profile>,
+    /// The space to pretend to be, when soft proofing.
+    pub proof_profile: Option<cshop_core::profile::Profile>,
+
     /// Dodge, Burn and Sponge settings. One set between the three, because
     /// they are one tool with three signs and the range is the control that
     /// matters most.
@@ -320,6 +338,17 @@ impl CShopApp {
             sample_all_layers: false,
             quick_mask: false,
             bucket: Default::default(),
+            shortcut_overrides: settings
+                .shortcuts
+                .iter()
+                .filter_map(|(name, text)| {
+                    Some((name.clone(), crate::shortcuts::Chord::parse(text)?))
+                })
+                .collect(),
+            pen_pressure: 1.0,
+            brush_tip: None,
+            display_profile: None,
+            proof_profile: None,
             retouch: settings.retouch,
             brush_filter_strength: settings.brush_filter_strength,
             gradient: Default::default(),
@@ -540,6 +569,7 @@ impl CShopApp {
             Dialog::Rename(_) => "Rename Layer",
             Dialog::Segment(d) => d.title(),
             Dialog::DepthFx(d) => d.title(),
+            Dialog::Shortcuts(d) => d.title(),
             Dialog::ColorRange(_) => "Colour Range",
             Dialog::RefineEdge(_) => "Refine Edge",
             Dialog::Fill(_) => "Fill",
@@ -607,6 +637,9 @@ impl CShopApp {
             Dialog::Segment(d) => close = d.ui(ui, &mut actions),
                 Dialog::Filter(d) => close = d.ui(ui, &mut actions),
                 Dialog::DepthFx(d) => close = d.ui(ui, &mut actions),
+                Dialog::Shortcuts(d) => {
+                    close = d.ui(ui, &self.shortcut_overrides, &mut actions)
+                }
                 Dialog::ColorRange(d) => close = d.ui(ui, &mut actions),
                 Dialog::RefineEdge(d) => close = d.ui(ui, &mut actions),
                 Dialog::About => {
@@ -676,6 +709,16 @@ impl CShopApp {
             snap: self.snap,
             grid_spacing: self.grid_spacing,
             show_panels: self.show_panels,
+            shortcuts: {
+                let mut out: Vec<(String, String)> = self
+                    .shortcut_overrides
+                    .iter()
+                    .map(|(name, chord)| (name.clone(), chord.label()))
+                    .collect();
+                // Sorted so the settings file does not churn between runs.
+                out.sort();
+                out
+            },
             retouch: self.retouch,
             brush_filter_strength: self.brush_filter_strength,
             recent: self.settings.recent.clone(),
@@ -744,7 +787,7 @@ impl CShopApp {
             let plain = !i.modifiers.command && !i.modifiers.alt;
 
             // Everything that maps straight to one command.
-            for binding in crate::shortcuts::bindings() {
+            for binding in crate::shortcuts::bindings_with(&self.shortcut_overrides) {
                 if binding.chord.pressed(i) {
                     queued.push((binding.make)());
                 }
@@ -1830,6 +1873,80 @@ impl CShopApp {
                     "Now 8 bits a channel".to_string()
                 });
             }
+            Action::ShowShortcuts => {
+                self.dialog =
+                    Dialog::Shortcuts(Box::default());
+            }
+            Action::SetShortcut(name, chord) => {
+                match chord {
+                    Some(chord) => {
+                        // One chord, one command: whatever held it loses it,
+                        // because two commands on one chord means one of them
+                        // silently never runs.
+                        let clashing: Vec<String> =
+                            crate::shortcuts::bindings_with(&self.shortcut_overrides)
+                                .iter()
+                                .filter(|b| b.chord == chord && b.name != name)
+                                .map(|b| b.name.to_string())
+                                .collect();
+                        for other in clashing {
+                            self.shortcut_overrides
+                                .insert(other, crate::shortcuts::Chord::UNBOUND);
+                        }
+                        self.shortcut_overrides.insert(name, chord);
+                    }
+                    None => {
+                        self.shortcut_overrides.remove(&name);
+                    }
+                }
+            }
+            Action::ResetShortcuts => {
+                self.shortcut_overrides.clear();
+                self.notify("Every shortcut is back to what it was");
+            }
+            Action::DefineBrush => self.define_brush(),
+            Action::ClearBrushTip => {
+                self.brush_tip = None;
+                self.notify("Back to the round brush");
+            }
+            Action::SetDisplayProfile(path) => {
+                let chosen = match path {
+                    None => None,
+                    Some(p) => match cshop_core::profile::Profile::load(&p) {
+                        Ok(profile) => Some(profile),
+                        Err(e) => {
+                            self.fail(format!("could not read that profile: {e}"));
+                            return;
+                        }
+                    },
+                };
+                let name = chosen.as_ref().map(|p| p.name().to_string());
+                self.display_profile = chosen;
+                self.refresh_colour_tables();
+                self.notify(match name {
+                    Some(n) => format!("The canvas is now shown for {n}"),
+                    None => "The canvas assumes an sRGB screen".into(),
+                });
+            }
+            Action::SetProofProfile(path) => {
+                let chosen = match path {
+                    None => None,
+                    Some(p) => match cshop_core::profile::Profile::load(&p) {
+                        Ok(profile) => Some(profile),
+                        Err(e) => {
+                            self.fail(format!("could not read that profile: {e}"));
+                            return;
+                        }
+                    },
+                };
+                let name = chosen.as_ref().map(|p| p.name().to_string());
+                self.proof_profile = chosen;
+                self.refresh_colour_tables();
+                self.notify(match name {
+                    Some(n) => format!("Proofing for {n}"),
+                    None => "Proofing off".into(),
+                });
+            }
             Action::ReplaceSky => self.replace_sky(),
             Action::RetouchSkin => self.retouch_skin(),
             Action::ShowDepthFx => self.show_depth_fx(),
@@ -2032,7 +2149,15 @@ impl CShopApp {
     // -----------------------------------------------------------------------
 
     fn add_document(&mut self, doc: Document, origin: &str) {
-        let view = DocView::new(&self.gpu, doc, origin);
+        let mut view = DocView::new(&self.gpu, doc, origin);
+        // The canvas transform depends on the document's profile, so a new
+        // document needs its own — otherwise a wide-gamut file opens showing
+        // the last document's colours.
+        view.set_display_profile(
+            &self.gpu,
+            self.display_profile.as_ref(),
+            self.proof_profile.as_ref(),
+        );
         self.docs.push(view);
         self.active = Some(self.docs.len() - 1);
     }
@@ -2933,8 +3058,9 @@ impl CShopApp {
                 let Some(view) = self.doc_mut() else { return };
                 let Some(px) = view.doc.tree.get(id).and_then(|l| l.pixels()) else { return };
                 let mut stroke =
-                    Stroke::with_source(px.width(), px.height(), brush, mode, source);
-                stroke.add_point(layer_local(at, layer_offset));
+                    Stroke::with_source(px.width(), px.height(), brush, mode, source)
+                        .with_tip(self.brush_tip.as_ref().map(|(_, t)| t.clone()));
+                stroke.add_point_pressed(layer_local(at, layer_offset), self.pen_pressure);
                 self.stroke = Some(ActiveStroke {
                     tool: self.tool,
                     layer: id,
@@ -2943,11 +3069,19 @@ impl CShopApp {
                 });
             }
         }
-        self.continue_stroke(at);
+        // At the pen's own pressure, not at full: this is the same point
+        // again, and putting it in at full would ramp the whole first segment
+        // down from a press that never happened.
+        self.continue_stroke_pressed(at, self.pen_pressure);
     }
 
     /// Extend the stroke to a new document-space position.
     pub fn continue_stroke(&mut self, at: Vec2) {
+        self.continue_stroke_pressed(at, 1.0)
+    }
+
+    /// The same, with how hard the pen is pressed.
+    pub fn continue_stroke_pressed(&mut self, at: Vec2, pressure: f32) {
         if self.smudge.is_some() {
             self.continue_smudge(at);
             return;
@@ -2964,7 +3098,7 @@ impl CShopApp {
             _ => return,
         };
 
-        active.stroke.add_point(layer_local(at, offset));
+        active.stroke.add_point_pressed(layer_local(at, offset), pressure);
         let recent = active.stroke.take_recent();
         if recent.is_empty() {
             return;
@@ -3708,6 +3842,89 @@ impl CShopApp {
                     self.show_relight(id, &pixels);
                 }
             }
+        }
+    }
+
+    /// Take the selection's shape as the brush's tip.
+    ///
+    /// The selection rather than the pixels under it, because what a brush
+    /// needs is coverage and that is exactly what a selection is. A layer's
+    /// own transparency works too, which is what to use for a cut-out shape,
+    /// and is what happens when there is no selection.
+    fn define_brush(&mut self) {
+        let Some(view) = self.doc() else { return };
+        let (coverage, name) = match &view.doc.selection {
+            Some(selection) => {
+                let bounds = selection.bounds();
+                if bounds.is_empty() {
+                    self.notify("That selection is empty");
+                    return;
+                }
+                let mut m = cshop_core::mask::MaskBuffer::hide_all(
+                    bounds.width(),
+                    bounds.height(),
+                );
+                for y in 0..bounds.height() as i32 {
+                    for x in 0..bounds.width() as i32 {
+                        m.set(x, y, selection.coverage(bounds.x0 + x, bounds.y0 + y));
+                    }
+                }
+                (m, format!("{}x{}", bounds.width(), bounds.height()))
+            }
+            None => {
+                let Some(px) = view.doc.active_layer().and_then(|l| l.pixels()) else {
+                    self.notify("Select the shape to make a brush from, or use a layer with pixels");
+                    return;
+                };
+                let mut m =
+                    cshop_core::mask::MaskBuffer::hide_all(px.width(), px.height());
+                for y in 0..px.height() as i32 {
+                    for x in 0..px.width() as i32 {
+                        m.set(x, y, px.get(x, y).a);
+                    }
+                }
+                (m, "the layer".to_string())
+            }
+        };
+        // Bounded: a tip is stamped for every dab, and one the size of a
+        // photograph would make a stroke take minutes.
+        if coverage.width() > 1024 || coverage.height() > 1024 {
+            self.fail("That is too large for a brush tip; select something under 1024 pixels");
+            return;
+        }
+        match cshop_core::paint::Tip::new(coverage) {
+            Some(tip) => {
+                self.brush_tip = Some((name.clone(), std::sync::Arc::new(tip)));
+                self.notify(format!("The brush now stamps {name}"));
+            }
+            None => self.fail("There is nothing in that shape to make a brush from"),
+        }
+    }
+
+    /// What the canvas is showing, colour transform and all.
+    ///
+    /// The same path the screen is given, so a test can check what a viewer
+    /// sees rather than what the compositor produced — which are different
+    /// things as soon as a document is not in the screen's own space.
+    pub fn render_display(
+        &mut self,
+        gpu: &cshop_gpu::context::GpuContext,
+        index: usize,
+    ) -> PixelBuffer {
+        let compositor = &mut self.compositor;
+        self.docs[index].present_through_table(gpu, compositor)
+    }
+
+    /// Rebuild every open document's canvas transform.
+    ///
+    /// Every document, because the display profile is a property of the screen
+    /// and applies to all of them, and each has its own profile to come from.
+    pub fn refresh_colour_tables(&mut self) {
+        let gpu = self.gpu.clone();
+        let display = self.display_profile.clone();
+        let proof = self.proof_profile.clone();
+        for view in &mut self.docs {
+            view.set_display_profile(&gpu, display.as_ref(), proof.as_ref());
         }
     }
 
@@ -7287,6 +7504,7 @@ fn window_key(dialog: &Dialog) -> Option<&'static str> {
         Dialog::LayerStyle(_) => "window-layer-style",
         Dialog::Segment(_) => "window-segment",
         Dialog::DepthFx(_) => "window-depth-fx",
+        Dialog::Shortcuts(_) => "window-shortcuts",
         Dialog::ColorRange(_) => "window-color-range",
         Dialog::RefineEdge(_) => "window-refine-edge",
         Dialog::Filter(_) => "window-filter",

@@ -366,3 +366,54 @@ fn a_different_colour_is_a_different_profile() {
         assert!(!other.same_transform(&srgb));
     }
 }
+
+/// The canvas is drawn on the graphics card and the colour engine runs on the
+/// processor. A table is what both can use.
+#[test]
+fn a_lookup_table_stands_in_for_the_colour_engine() {
+    let srgb = Profile::srgb();
+    let Some(wide) = maybe(&format!("{COLORD}/WideGamutRGB.icc"))
+        .or_else(|| maybe(&format!("{GS}/a98.icc")))
+    else {
+        return;
+    };
+
+    let size = 33u32;
+    let lut = wide.lut3d(&srgb, size, RenderingIntent::RelativeColorimetric);
+    assert_eq!(lut.len(), (size * size * size * 4) as usize);
+
+    // Sampling the table at a grid point has to give what the engine gives,
+    // since a grid point is not interpolated.
+    let at = |r: usize, g: usize, b: usize| {
+        let i = ((b * size as usize + g) * size as usize + r) * 4;
+        Rgba8::opaque(lut[i], lut[i + 1], lut[i + 2])
+    };
+    let step = |i: usize| ((i as f32 / (size - 1) as f32) * 255.0).round() as u8;
+    for (r, g, b) in [(0usize, 0usize, 0usize), (32, 32, 32), (24, 8, 16), (8, 30, 4)] {
+        let mut direct = [Rgba8::opaque(step(r), step(g), step(b))];
+        wide.convert_rgba8(&srgb, &mut direct, RenderingIntent::RelativeColorimetric).unwrap();
+        assert_eq!(at(r, g, b), direct[0], "the table and the engine should agree at ({r}, {g}, {b})");
+    }
+}
+
+/// A document in sRGB shown on an sRGB display needs no transform at all, and
+/// running one anyway would cost the rounding for nothing.
+#[test]
+fn a_table_between_the_same_profile_is_the_identity() {
+    let srgb = Profile::srgb();
+    let size = 17u32;
+    let lut = srgb.lut3d(&srgb, size, RenderingIntent::RelativeColorimetric);
+    let step = |i: u32| ((i as f32 / (size - 1) as f32) * 255.0).round() as u8;
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let i = (((b * size + g) * size + r) * 4) as usize;
+                assert_eq!(
+                    [lut[i], lut[i + 1], lut[i + 2]],
+                    [step(r), step(g), step(b)],
+                    "({r}, {g}, {b}) should have come through unchanged"
+                );
+            }
+        }
+    }
+}

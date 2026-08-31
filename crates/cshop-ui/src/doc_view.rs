@@ -32,9 +32,23 @@ const THUMB_SIZE: u32 = 36;
 /// never otherwise in use.
 const MASK_THUMB_BIT: u64 = 1 << 63;
 
+/// How many steps a side the canvas's colour table has.
+///
+/// Thirty-three is what every colour-management system uses, for the same
+/// reason: a transform between well-behaved profiles is smooth enough that
+/// straight lines between thirty-three points are within a level everywhere,
+/// and the table is 144 kilobytes rather than megabytes.
+const LUT_SIZE: u32 = 33;
+
 pub struct DocView {
     pub doc: Document,
     pub history: History,
+    /// The transform from this document's profile to the display's, on the
+    /// card. See [`DocView::set_display_profile`].
+    colour_table: Option<cshop_gpu::texture::ColourTable>,
+    /// What that table was built for, so it is not rebuilt every frame.
+    table_for: Option<(cshop_core::profile::Profile, Option<cshop_core::profile::Profile>)>,
+
     /// What the History Brush paints from: a layer's pixels as they were at
     /// some earlier state, and which state that was.
     ///
@@ -82,6 +96,8 @@ impl DocView {
             doc,
             history: History::new(origin_label),
             history_source: None,
+            colour_table: None,
+            table_for: None,
             cache: LayerTextures::new(),
             composite,
             display,
@@ -202,7 +218,10 @@ impl DocView {
             self.needs_full = false;
         }
         if needs_composite || self.needs_present {
-            compositor.present(gpu, &self.composite, &self.display);
+            let table = self
+                .colour_table
+                .get_or_insert_with(|| cshop_gpu::texture::ColourTable::identity(gpu, LUT_SIZE));
+            compositor.present(gpu, &self.composite, &self.display, table);
             self.needs_present = false;
         }
 
@@ -245,6 +264,109 @@ impl DocView {
         self.needs_full = false;
         // The display copy is now stale; rebuild it on the next UI sync.
         self.needs_present = true;
+    }
+
+    /// Point the canvas at a display profile, and optionally proof through a
+    /// third.
+    ///
+    /// Until this exists a document's numbers go straight to the screen, which
+    /// is right for sRGB and a lie for everything else: a wide-gamut file
+    /// shows oversaturated, and a CMYK proof shows nothing at all. The
+    /// transform is built once here and read per pixel in the present pass.
+    ///
+    /// `proof` is the space to *pretend* to be — a press, usually. The picture
+    /// then goes document → press → display, which is what soft proofing is:
+    /// seeing what the press can and cannot reach, on a screen that can reach
+    /// more.
+    pub fn set_display_profile(
+        &mut self,
+        gpu: &GpuContext,
+        display: Option<&cshop_core::profile::Profile>,
+        proof: Option<&cshop_core::profile::Profile>,
+    ) {
+        use cshop_core::profile::{Profile, RenderingIntent};
+        let display = display.cloned().unwrap_or_else(Profile::srgb);
+        let key = (display.clone(), proof.cloned());
+        if self.table_for.as_ref() == Some(&key) && self.colour_table.is_some() {
+            return;
+        }
+
+        let intent = RenderingIntent::RelativeColorimetric;
+        let data = match proof {
+            // Through the press and back: what the press cannot reach comes
+            // back as the nearest thing it can, which is the whole point of
+            // looking.
+            Some(press) => {
+                let grid = identity_grid(LUT_SIZE);
+                let through = match press.space() {
+                    // A press is four inks, and the ordinary conversion
+                    // refuses a destination that is not three channels — so
+                    // this has to go out as ink and come back as colour, which
+                    // is also exactly what the press will do to it.
+                    cshop_core::profile::Space::Cmyk => self
+                        .doc
+                        .profile
+                        .rgba8_to_inks(press, &grid, intent)
+                        .and_then(|inks| press.inks_to_rgba8(&display, &inks, intent)),
+                    _ => {
+                        let mut copy = grid.clone();
+                        self.doc
+                            .profile
+                            .convert_rgba8(press, &mut copy, intent)
+                            .and_then(|_| press.convert_rgba8(&display, &mut copy, intent))
+                            .map(|_| copy)
+                    }
+                };
+                match through {
+                    Ok(out) => out.iter().flat_map(|c| [c.r, c.g, c.b, 255]).collect(),
+                    Err(e) => {
+                        // A proof that cannot be made is worth saying so about
+                        // rather than showing the picture unproofed and
+                        // letting someone trust it.
+                        log::warn!("cannot proof through {}: {e}", press.name());
+                        self.doc.profile.lut3d(&display, LUT_SIZE, intent)
+                    }
+                }
+            }
+            None => self.doc.profile.lut3d(&display, LUT_SIZE, intent),
+        };
+        self.colour_table = Some(cshop_gpu::texture::ColourTable::new(gpu, LUT_SIZE, &data));
+        self.table_for = Some(key);
+        self.needs_present = true;
+    }
+
+    /// Draw the canvas as the screen is given it, through the colour table.
+    ///
+    /// Split out so the app can call it with its own compositor rather than
+    /// building a second one, and so a test can read back what a viewer would
+    /// actually see rather than what the compositor produced.
+    pub fn present_through_table(
+        &mut self,
+        gpu: &GpuContext,
+        compositor: &mut cshop_gpu::compositor::Compositor,
+    ) -> cshop_core::pixels::PixelBuffer {
+        self.sync_composite_only(gpu, compositor);
+        let table = self
+            .colour_table
+            .get_or_insert_with(|| cshop_gpu::texture::ColourTable::identity(gpu, LUT_SIZE));
+        compositor.present(gpu, &self.composite, &self.display, table);
+        // The display texture is eight bits a channel, not the compositor's
+        // sixteen-bit working format, so it needs its own reader.
+        let px = cshop_gpu::readback::read_srgb8(gpu, &self.display);
+        // The display texture is premultiplied; what a caller wants to compare
+        // is the colour, not the colour times its coverage.
+        let mut out = px.clone();
+        for y in 0..px.height() as i32 {
+            for x in 0..px.width() as i32 {
+                let c = px.get(x, y);
+                if c.a == 0 {
+                    continue;
+                }
+                let un = |v: u8| ((v as u32 * 255 + c.a as u32 / 2) / c.a as u32).min(255) as u8;
+                out.set(x, y, cshop_core::color::Rgba8::new(un(c.r), un(c.g), un(c.b), c.a));
+            }
+        }
+        out
     }
 
     /// Read the flattened document back from the GPU.
@@ -508,4 +630,19 @@ impl DocView {
         )
         .intersect(&self.doc.bounds())
     }
+}
+
+/// The grid a colour table starts from: every combination, evenly spaced.
+fn identity_grid(size: u32) -> Vec<cshop_core::color::Rgba8> {
+    let n = size as usize;
+    let step = |i: usize| ((i as f32 / (n - 1) as f32) * 255.0).round() as u8;
+    let mut out = Vec::with_capacity(n * n * n);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                out.push(cshop_core::color::Rgba8::opaque(step(r), step(g), step(b)));
+            }
+        }
+    }
+    out
 }

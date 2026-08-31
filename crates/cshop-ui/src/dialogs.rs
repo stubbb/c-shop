@@ -45,6 +45,8 @@ pub enum Dialog {
     /// Boxed: both carry a preview of the picture they select from.
     ColorRange(Box<crate::select_ui::ColorRangeDialog>),
     RefineEdge(Box<crate::select_ui::RefineEdgeDialog>),
+    /// The list of every chord, and where they are changed.
+    Shortcuts(Box<crate::shortcut_ui::ShortcutDialog>),
     About,
 }
 

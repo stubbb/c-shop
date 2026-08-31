@@ -48,6 +48,27 @@ impl Clip<'_> {
     }
 }
 
+/// What a pen's pressure drives.
+///
+/// Pressure is one number and there are three things it could plausibly
+/// change, so which ones is a choice rather than a default. Size alone is the
+/// pencil; flow alone is the airbrush; both together is most brushes.
+/// Nothing by default, until someone says so: a mouse reports full pressure
+/// always, and a brush that quietly ignores its size setting because a tablet
+/// happens to be plugged in is worse than one that needs a checkbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pressure {
+    pub size: bool,
+    pub flow: bool,
+    pub opacity: bool,
+}
+
+impl Pressure {
+    pub fn any(self) -> bool {
+        self.size || self.flow || self.opacity
+    }
+}
+
 /// Brush shape and dynamics.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Brush {
@@ -61,11 +82,20 @@ pub struct Brush {
     pub flow: f32,
     /// Distance between dabs as a fraction of the diameter.
     pub spacing: f32,
+    /// Which of the above a pen's pressure drives.
+    pub pressure: Pressure,
 }
 
 impl Default for Brush {
     fn default() -> Self {
-        Self { size: 30.0, hardness: 0.8, opacity: 1.0, flow: 1.0, spacing: 0.1 }
+        Self {
+            size: 30.0,
+            hardness: 0.8,
+            opacity: 1.0,
+            flow: 1.0,
+            spacing: 0.1,
+            pressure: Pressure::default(),
+        }
     }
 }
 
@@ -296,6 +326,80 @@ impl DabWalk {
     }
 }
 
+/// A brush tip made from a picture rather than from a formula.
+///
+/// The built-in tip is a disc with a falloff: two numbers, and every stroke it
+/// makes looks like every other. A tip taken from a selection is a shape —
+/// a leaf, a spatter, a piece of texture — and stamping it along a stroke is
+/// how a brush stops looking like a brush.
+///
+/// Held behind a pointer because a stroke may be started many times a second
+/// and a tip is a picture; copying one per stroke would be the most expensive
+/// thing about painting with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tip {
+    /// Coverage, normalised so its strongest pixel is full — otherwise a tip
+    /// taken from something faint would paint faintly however hard you
+    /// pressed, and the opacity control would appear broken.
+    coverage: MaskBuffer,
+}
+
+impl Tip {
+    /// Build a tip from coverage, normalising it.
+    pub fn new(coverage: MaskBuffer) -> Option<Tip> {
+        let strongest = coverage.as_bytes().iter().copied().max().unwrap_or(0);
+        if coverage.width() == 0 || coverage.height() == 0 || strongest == 0 {
+            return None;
+        }
+        let mut out = MaskBuffer::hide_all(coverage.width(), coverage.height());
+        for y in 0..coverage.height() as i32 {
+            for x in 0..coverage.width() as i32 {
+                let v = coverage.get(x, y) as u32 * 255 / strongest as u32;
+                out.set(x, y, v.min(255) as u8);
+            }
+        }
+        Some(Tip { coverage: out })
+    }
+
+    /// A tip from a picture's own transparency — what a cut-out shape gives.
+    pub fn from_alpha(px: &PixelBuffer) -> Option<Tip> {
+        let mut m = MaskBuffer::hide_all(px.width(), px.height());
+        for y in 0..px.height() as i32 {
+            for x in 0..px.width() as i32 {
+                m.set(x, y, px.get(x, y).a);
+            }
+        }
+        Tip::new(m)
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.coverage.width(), self.coverage.height())
+    }
+
+    /// Coverage at a point of the dab, given the dab's radius.
+    ///
+    /// The tip's longer side is fitted to the dab's diameter and its shape is
+    /// kept. Stretching it to fill the square instead would mean a wide, thin
+    /// tip stamped as a square — which is the one thing a shaped brush must
+    /// not do, since the shape is the entire reason for having one.
+    #[inline]
+    fn at(&self, dx: f32, dy: f32, radius: f32) -> f32 {
+        let (w, h) = (self.coverage.width() as f32, self.coverage.height() as f32);
+        let longest = w.max(h);
+        if longest <= 0.0 || radius <= 0.0 {
+            return 0.0;
+        }
+        // Pixels of the tip per pixel of the dab.
+        let per = longest / (radius * 2.0);
+        let u = dx * per + w / 2.0;
+        let v = dy * per + h / 2.0;
+        if u < 0.0 || v < 0.0 || u >= w || v >= h {
+            return 0.0;
+        }
+        self.coverage.get(u as i32, v as i32) as f32 / 255.0
+    }
+}
+
 /// Accumulates dabs for one stroke, then commits them in a single operation.
 #[derive(Debug)]
 pub struct Stroke {
@@ -311,6 +415,11 @@ pub struct Stroke {
     /// re-render just the newly painted sliver instead of the whole stroke.
     recent: IRect,
     walk: DabWalk,
+    /// The shape each dab stamps, when it is not the built-in disc.
+    tip: Option<std::sync::Arc<Tip>>,
+    /// Pressure at the last point, so a segment can interpolate along itself
+    /// rather than stepping at every sample the pointer happens to send.
+    last_pressure: f32,
     /// True once at least one dab has landed.
     started: bool,
 }
@@ -337,8 +446,16 @@ impl Stroke {
             bounds: IRect::EMPTY,
             recent: IRect::EMPTY,
             walk: DabWalk::new(&brush),
+            tip: None,
+            last_pressure: 1.0,
             started: false,
         }
+    }
+
+    /// Stamp a shape rather than a disc.
+    pub fn with_tip(mut self, tip: Option<std::sync::Arc<Tip>>) -> Self {
+        self.tip = tip;
+        self
     }
 
     pub fn bounds(&self) -> IRect {
@@ -466,16 +583,39 @@ impl Stroke {
     /// spacing, so a fast drag produces a continuous line instead of a dotted
     /// one.
     pub fn add_point(&mut self, p: Vec2) {
+        self.add_point_pressed(p, 1.0);
+    }
+
+    /// The same, with how hard the pen is pressed, `0..=1`.
+    ///
+    /// The pressure is interpolated along the segment rather than applied at
+    /// its end: a pointer sends a handful of samples a second and a stroke
+    /// lays down dabs far faster than that, so stepping the pressure at each
+    /// sample makes a visibly banded line.
+    pub fn add_point_pressed(&mut self, p: Vec2, pressure: f32) {
+        let from = self.last_pressure;
+        let to = pressure.clamp(0.0, 1.0);
         let mut centres = Vec::new();
         self.walk.advance(p, &mut centres);
-        for c in centres {
-            self.stamp(c);
+        let n = centres.len().max(1) as f32;
+        for (i, c) in centres.into_iter().enumerate() {
+            let t = (i + 1) as f32 / n;
+            self.stamp_pressed(c, from + (to - from) * t);
         }
+        self.last_pressure = to;
     }
 
     /// Stamp one dab, accumulating coverage rather than replacing it.
-    fn stamp(&mut self, centre: Vec2) {
-        let r = self.brush.radius();
+    fn stamp_pressed(&mut self, centre: Vec2, pressure: f32) {
+        // A brush that ignores pressure gets full pressure, whatever the pen
+        // said — so a stroke made with the settings off is the stroke it would
+        // have been with a mouse.
+        let driven = self.brush.pressure;
+        let k = if driven.any() { pressure.clamp(0.0, 1.0) } else { 1.0 };
+        // Never quite nothing: a dab of zero radius is not a lighter mark, it
+        // is a gap in the line.
+        let scale = if driven.size { 0.05 + 0.95 * k } else { 1.0 };
+        let r = self.brush.radius() * scale;
         let rect = IRect::new(
             (centre.x - r).floor() as i32,
             (centre.y - r).floor() as i32,
@@ -490,13 +630,18 @@ impl Stroke {
         }
 
         self.source.prepare(rect);
-        let flow = self.brush.flow.clamp(0.0, 1.0);
+        let flow = self.brush.flow.clamp(0.0, 1.0) * if driven.flow { k } else { 1.0 };
         for y in rect.y0..rect.y1 {
             for x in rect.x0..rect.x1 {
                 // Sample at the pixel centre.
                 let dx = x as f32 + 0.5 - centre.x;
                 let dy = y as f32 + 0.5 - centre.y;
-                let dab = self.brush.falloff((dx * dx + dy * dy).sqrt());
+                // A tip stamps its own shape; without one the dab is the
+                // built-in disc and its falloff.
+                let dab = match &self.tip {
+                    Some(tip) => tip.at(dx, dy, r),
+                    None => self.brush.falloff((dx * dx + dy * dy).sqrt()),
+                };
                 if dab <= 0.0 {
                     continue;
                 }
@@ -727,7 +872,7 @@ mod tests {
     use super::*;
 
     fn brush(size: f32) -> Brush {
-        Brush { size, hardness: 1.0, opacity: 1.0, flow: 1.0, spacing: 0.1 }
+        Brush { size, hardness: 1.0, opacity: 1.0, flow: 1.0, spacing: 0.1, ..Default::default() }
     }
 
     fn edge(w: u32, h: u32) -> PixelBuffer {
@@ -815,6 +960,150 @@ mod tests {
         let keen = BrushFilter::Sharpen { radius: 3.0, amount: 1.0 };
         assert!(keen.at(&px, 34, 16).r >= 255 - 1, "the light side of an edge should not dim");
         assert_eq!(keen.at(&px, 5, 16).r, 0, "and flat areas are left alone");
+    }
+
+    /// A tip taken from a picture stamps that picture's shape. The built-in
+    /// disc makes every stroke look like every other, which is the whole
+    /// reason to want another one.
+    #[test]
+    fn a_custom_tip_stamps_its_own_shape() {
+        // A tip that is a horizontal bar: wide and thin.
+        let mut bar = MaskBuffer::hide_all(32, 32);
+        for y in 14..18 {
+            for x in 0..32 {
+                bar.set(x, y, 255);
+            }
+        }
+        let tip = std::sync::Arc::new(Tip::new(bar).expect("a tip with something in it"));
+
+        let mut px = PixelBuffer::new(64, 64);
+        let mut s = Stroke::new(64, 64, brush(24.0), PaintMode::Paint, Rgba8::BLACK)
+            .with_tip(Some(tip));
+        s.add_point(Vec2::new(32.0, 32.0));
+        s.commit(&mut px, None);
+
+        let tall = (0..64).filter(|&y| px.get(32, y).a > 8).count();
+        let wide = (0..64).filter(|&x| px.get(x, 32).a > 8).count();
+        assert!(wide > tall * 3, "a bar-shaped tip makes a bar: {wide} across, {tall} down");
+    }
+
+    /// A tip taken from something faint has to paint at full strength, or the
+    /// opacity control appears broken.
+    #[test]
+    fn a_faint_tip_is_normalised_to_full_strength() {
+        let mut faint = MaskBuffer::hide_all(8, 8);
+        for y in 2..6 {
+            for x in 2..6 {
+                faint.set(x, y, 40);
+            }
+        }
+        let tip = Tip::new(faint).unwrap();
+        let mut px = PixelBuffer::new(32, 32);
+        let mut s = Stroke::new(32, 32, brush(16.0), PaintMode::Paint, Rgba8::BLACK)
+            .with_tip(Some(std::sync::Arc::new(tip)));
+        s.add_point(Vec2::new(16.0, 16.0));
+        s.commit(&mut px, None);
+        assert!(px.get(16, 16).a > 240, "it should paint fully: {:?}", px.get(16, 16));
+    }
+
+    #[test]
+    fn a_tip_of_nothing_is_refused_rather_than_painting_nothing() {
+        assert!(Tip::new(MaskBuffer::hide_all(8, 8)).is_none());
+        assert!(Tip::new(MaskBuffer::hide_all(0, 0)).is_none());
+    }
+
+    /// The tip's longer side is fitted to the brush's size, so the size
+    /// control means the same thing whatever the tip was made from.
+    #[test]
+    fn the_brush_size_still_governs_a_custom_tip() {
+        let mut square = MaskBuffer::hide_all(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                square.set(x, y, 255);
+            }
+        }
+        let tip = std::sync::Arc::new(Tip::new(square).unwrap());
+        let width = |size: f32| {
+            let mut px = PixelBuffer::new(96, 96);
+            let mut s = Stroke::new(96, 96, brush(size), PaintMode::Paint, Rgba8::BLACK)
+                .with_tip(Some(tip.clone()));
+            s.add_point(Vec2::new(48.0, 48.0));
+            s.commit(&mut px, None);
+            (0..96).filter(|&x| px.get(x, 48).a > 8).count()
+        };
+        let (small, large) = (width(12.0), width(40.0));
+        assert!(large > small * 2, "{small} against {large}");
+    }
+
+    /// Pressure is one number and which of the three it drives is a choice.
+    /// A brush that ignores it must lay down exactly what a mouse would.
+    #[test]
+    fn a_brush_that_ignores_pressure_paints_as_though_there_were_none() {
+        let mut light = PixelBuffer::new(64, 64);
+        let mut heavy = PixelBuffer::new(64, 64);
+        for (px, pressure) in [(&mut light, 0.2f32), (&mut heavy, 1.0)] {
+            let mut s = Stroke::new(64, 64, brush(16.0), PaintMode::Paint, Rgba8::BLACK);
+            s.add_point_pressed(Vec2::new(16.0, 32.0), pressure);
+            s.add_point_pressed(Vec2::new(48.0, 32.0), pressure);
+            s.commit(px, None);
+        }
+        assert_eq!(light.pixels(), heavy.pixels(), "with pressure off, it must not matter");
+    }
+
+    #[test]
+    fn pressure_drives_the_size_when_it_is_asked_to() {
+        let width = |pressure: f32| {
+            let mut b = brush(20.0);
+            b.pressure = Pressure { size: true, flow: false, opacity: false };
+            let mut px = PixelBuffer::new(64, 64);
+            let mut s = Stroke::new(64, 64, b, PaintMode::Paint, Rgba8::BLACK);
+            s.add_point_pressed(Vec2::new(16.0, 32.0), pressure);
+            s.add_point_pressed(Vec2::new(48.0, 32.0), pressure);
+            s.commit(&mut px, None);
+            (0..64).filter(|&y| px.get(32, y).a > 8).count()
+        };
+        let (light, heavy) = (width(0.25), width(1.0));
+        assert!(heavy > light * 2, "a harder press should be wider: {light} against {heavy}");
+        assert!(light > 0, "and a light one should still mark: {light}");
+    }
+
+    /// One dab, because flow is what a dab deposits and overlapping dabs
+    /// accumulate: stroke far enough at any flow above nothing and the
+    /// coverage saturates, which is what flow is *for* and would hide the
+    /// difference being measured here.
+    #[test]
+    fn pressure_drives_the_flow_when_it_is_asked_to() {
+        let darkness = |pressure: f32| {
+            let mut b = brush(16.0);
+            b.flow = 0.5;
+            b.pressure = Pressure { size: false, flow: true, opacity: false };
+            let mut px = PixelBuffer::new(64, 64);
+            let mut s = Stroke::new(64, 64, b, PaintMode::Paint, Rgba8::BLACK);
+            s.add_point_pressed(Vec2::new(32.0, 32.0), pressure);
+            s.commit(&mut px, None);
+            px.get(32, 32).a as i32
+        };
+        let (heavy, light) = (darkness(1.0), darkness(0.2));
+        assert!(heavy > light + 20, "a harder press should deposit more: {light} then {heavy}");
+        assert!(light > 0, "and a light one should still mark");
+    }
+
+    /// A pointer sends a handful of samples a second and a stroke lays down
+    /// dabs far faster, so pressure has to interpolate along a segment or the
+    /// line comes out banded.
+    #[test]
+    fn pressure_changes_along_a_segment_and_not_at_its_end() {
+        let mut b = brush(20.0);
+        b.pressure = Pressure { size: true, flow: false, opacity: false };
+        let mut px = PixelBuffer::new(128, 64);
+        let mut s = Stroke::new(128, 64, b, PaintMode::Paint, Rgba8::BLACK);
+        s.add_point_pressed(Vec2::new(10.0, 32.0), 0.15);
+        s.add_point_pressed(Vec2::new(118.0, 32.0), 1.0);
+        s.commit(&mut px, None);
+
+        let width_at = |x: i32| (0..64).filter(|&y| px.get(x, y).a > 8).count();
+        let (a, b_, c) = (width_at(25), width_at(64), width_at(105));
+        assert!(a < b_ && b_ < c, "the line should widen along its length: {a}, {b_}, {c}");
     }
 
     #[test]

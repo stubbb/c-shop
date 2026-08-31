@@ -134,7 +134,8 @@ impl ProfileDialog {
 /// CMYK and grey profiles are left out on purpose: a document works in RGB, so
 /// offering a press profile here would only offer a way to fail. Ink is made
 /// on the way out, not on the way in.
-fn discover() -> Vec<(String, PathBuf)> {
+/// Every ICC profile installed on this machine, by name.
+pub fn discover() -> Vec<(String, PathBuf)> {
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     let mut roots: Vec<PathBuf> = SEARCH.iter().map(PathBuf::from).collect();
     if let Some(home) = std::env::var_os("HOME") {

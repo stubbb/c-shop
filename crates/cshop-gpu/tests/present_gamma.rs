@@ -57,7 +57,7 @@ fn the_displayed_canvas_keeps_the_document_s_brightness() {
 
     // And the texture egui draws must round-trip to the same number.
     let display = GpuTexture::render_target(&ctx, "display", 8, 8, DISPLAY_FORMAT);
-    compositor.present(&ctx, &work, &display);
+    compositor.present(&ctx, &work, &display, &identity_table(&ctx));
     // The display texture is not sRGB-aware, so what egui samples is exactly
     // what is stored: the document's own number.
     let shown = read_srgb8(&ctx, &display);
@@ -77,7 +77,7 @@ fn the_displayed_canvas_keeps_the_document_s_brightness() {
     doc.tree.push(cshop_core::layer::Layer::raster(id, "l", px), None);
     textures.sync(&ctx, &doc, &Default::default());
     compositor.composite(&ctx, &doc, &textures, &work, doc.bounds());
-    compositor.present(&ctx, &work, &display);
+    compositor.present(&ctx, &work, &display, &identity_table(&ctx));
     let shown = read_srgb8(&ctx, &display);
     let p = shown.get(4, 4);
     assert_eq!(p.a, 128, "alpha should survive, got {p:?}");
@@ -85,4 +85,10 @@ fn the_displayed_canvas_keeps_the_document_s_brightness() {
         (p.r as i32 - 64).abs() <= 2,
         "premultiplied half-covered mid grey should be about 64, got {p:?}"
     );
+}
+
+/// A colour transform that changes nothing, which is what the present pass
+/// gets for a document already in the display's own space.
+fn identity_table(ctx: &cshop_gpu::context::GpuContext) -> cshop_gpu::texture::ColourTable {
+    cshop_gpu::texture::ColourTable::identity(ctx, 33)
 }

@@ -164,3 +164,88 @@ impl GpuTexture {
         );
     }
 }
+
+/// A colour transform on the card: `size³` samples with a linear filter over
+/// them.
+///
+/// Built on the processor by the colour engine and uploaded when the profiles
+/// change, which is rarely — opening a document, choosing a display profile,
+/// switching soft proofing on. Between those it is read once per pixel per
+/// frame and costs nothing worth measuring.
+pub struct ColourTable {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+    pub size: u32,
+}
+
+impl ColourTable {
+    /// Upload a table. `data` is `size³` RGBA bytes, blue slowest.
+    pub fn new(ctx: &crate::context::GpuContext, size: u32, data: &[u8]) -> ColourTable {
+        let size = size.clamp(2, 64);
+        let extent = wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: size,
+        };
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("colour table"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let wanted = (size * size * size * 4) as usize;
+        let mut bytes = data.to_vec();
+        bytes.resize(wanted, 255);
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+            extent,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("colour table"),
+            // Linear between the grid points, clamped at the ends: a colour
+            // outside the cube does not exist, and wrapping one round to the
+            // other side would be spectacular.
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        ColourTable { texture, view, sampler, size }
+    }
+
+    /// The table that changes nothing, for a document already in the display's
+    /// own space.
+    pub fn identity(ctx: &crate::context::GpuContext, size: u32) -> ColourTable {
+        let size = size.clamp(2, 64);
+        let n = size as usize;
+        let step = |i: usize| ((i as f32 / (n - 1) as f32) * 255.0).round() as u8;
+        let mut data = Vec::with_capacity(n * n * n * 4);
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    data.extend_from_slice(&[step(r), step(g), step(b), 255]);
+                }
+            }
+        }
+        ColourTable::new(ctx, size, &data)
+    }
+}

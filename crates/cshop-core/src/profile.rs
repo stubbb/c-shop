@@ -247,6 +247,49 @@ impl Profile {
 
     /// Re-encode pixels from this profile into `dst`, keeping their appearance.
     ///
+    /// A three-dimensional lookup table taking this profile's colours to
+    /// another's.
+    ///
+    /// # Why a table
+    ///
+    /// The colour engine runs on the processor and the canvas is drawn on the
+    /// graphics card. Converting every pixel of a large document on the
+    /// processor for every frame is not possible; putting an ICC engine into a
+    /// shader is not either. A table is the bridge both can use: built once on
+    /// the processor when the profiles change, sampled per pixel on the card.
+    ///
+    /// # Why it is accurate enough
+    ///
+    /// A colour transform between two well-behaved profiles is smooth, so a
+    /// grid with a few dozen steps a side and straight lines between them is
+    /// within a level or so everywhere — which is the same argument that makes
+    /// every other colour-management system in the world use one. Where it is
+    /// least accurate is at a gamut boundary, where the transform has a corner
+    /// in it; that is also where nobody can say what the right answer is.
+    ///
+    /// Returned as `size³` RGBA bytes in the order blue-slowest, then green,
+    /// then red — which is what a 3D texture wants.
+    pub fn lut3d(&self, to: &Profile, size: u32, intent: RenderingIntent) -> Vec<u8> {
+        let size = size.clamp(2, 64);
+        let n = size as usize;
+        let mut grid: Vec<Rgba8> = Vec::with_capacity(n * n * n);
+        let step = |i: usize| ((i as f32 / (n - 1) as f32) * 255.0).round() as u8;
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    grid.push(Rgba8::opaque(step(r), step(g), step(b)));
+                }
+            }
+        }
+        // An identity transform is a common case — a document in sRGB shown on
+        // an sRGB display — and running it through the engine would cost the
+        // rounding for nothing.
+        if !self.same_transform(to) {
+            let _ = self.convert_rgba8(to, &mut grid, intent);
+        }
+        grid.iter().flat_map(|c| [c.r, c.g, c.b, 255]).collect()
+    }
+
     /// Alpha rides through untouched: it is coverage, not colour, and has no
     /// business in a colour transform.
     pub fn convert_rgba8(

@@ -31,7 +31,7 @@
 
 use crate::context::GpuContext;
 use crate::layers::LayerTextures;
-use crate::texture::{GpuTexture, DISPLAY_FORMAT, LAYER_FORMAT, MASK_FORMAT};
+use crate::texture::{ColourTable, GpuTexture, DISPLAY_FORMAT, LAYER_FORMAT, MASK_FORMAT};
 use bytemuck::{Pod, Zeroable};
 use cshop_core::blend::BlendMode;
 use cshop_core::document::Document;
@@ -206,7 +206,25 @@ impl Compositor {
         // --- present pipeline ----------------------------------------------
         let present_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("present bind layout"),
-            entries: &[texture_entry(0)],
+            entries: &[
+                texture_entry(0),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let present_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("present.wgsl"),
@@ -526,14 +544,36 @@ impl Compositor {
 
     /// Convert a working-format composite into the 8-bit sRGB premultiplied
     /// texture egui draws.
-    pub fn present(&self, ctx: &GpuContext, src: &GpuTexture, dest: &GpuTexture) {
+    /// Draw the working buffer into something egui can show, through a colour
+    /// transform.
+    ///
+    /// `lut` is the transform from the document's profile to the display's,
+    /// as a three-dimensional table. Passing an identity table is what a
+    /// document in the display's own space wants, and costs one texture read.
+    pub fn present(
+        &self,
+        ctx: &GpuContext,
+        src: &GpuTexture,
+        dest: &GpuTexture,
+        lut: &ColourTable,
+    ) {
         let bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("present"),
             layout: &self.present_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&src.view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&src.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&lut.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&lut.sampler),
+                },
+            ],
         });
         let mut encoder = ctx
             .device

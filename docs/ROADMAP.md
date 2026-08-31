@@ -1,12 +1,17 @@
 # What could come next
 
-A list of what this editor does not have yet, why each would matter *here*
+A list of what this editor did not have yet, why each would matter *here*
 rather than in general, and roughly what it would cost. Compiled by working
 through what the established editors offer and asking, of each, whether it
 earns its place in a program with this one's shape: a single binary, a GPU
 compositor, and a script surface that something without eyes can drive.
 
-Nothing here is a commitment. It is a menu, ordered by what it would unlock.
+Nothing here was a commitment. It was a menu, ordered by what it would unlock,
+and it has now been worked through end to end — every entry struck out below is
+built, tested and documented. Four things are deliberately still open, and each
+says so where it sits: linked smart objects, blending an aligned panorama,
+loading custom patterns, and colourising a photograph that has none. The first
+three wait on work; the last waits on a model that can be fetched.
 
 ## The three worth doing first
 
@@ -222,16 +227,44 @@ one wins, which is what occlusion is.
 
 ## Under the floor
 
-**A colour-managed canvas.** Documents carry a profile and the canvas shows
-their numbers directly, which is right for sRGB and a lie for anything else.
-This also brings soft proofing — seeing a picture as a press would print it,
-which the CMYK work set up and did not finish.
+**A colour-managed canvas.** ~~The canvas shows a document's numbers directly,
+which is right for sRGB and a lie for anything else.~~ Done, on
+`View ▸ Screen Profile` and `View ▸ Proof Colours`. The colour engine runs on
+the processor and the canvas is drawn on the card, and neither can do the
+other's job — so a three-dimensional table is built once when the profiles
+change and read once per pixel per frame. A document in the screen's own space
+gets the identity table and is shown exactly as before, which is a test.
 
-**Pressure from a tablet.** The stroke engine has opacity, flow and hardness
-and no way for a pen to drive any of them.
+Soft proofing came with it: document → press → screen, so what the press cannot
+reach comes back as the nearest thing it can. Proofing through four inks needs
+the ink path rather than the ordinary conversion, which refuses a destination
+that is not three channels — swallowing that error showed the picture unproofed
+and let someone trust it.
 
-**Custom brushes and patterns**, defined from a selection rather than chosen
-from the built-in set.
+**Pressure from a tablet.** ~~The stroke engine has opacity, flow and hardness
+and no way for a pen to drive any of them.~~ Done. Which of them pressure
+drives is a choice rather than a default — size alone is the pencil, flow alone
+the airbrush — and a device that cannot measure pressure presses fully, so a
+brush behaves exactly as it always did unless something is actually reporting.
+Pressure interpolates along each segment, because a pointer sends a handful of
+samples a second and a stroke lays down dabs far faster; stepping at each
+sample makes a visibly banded line.
 
-**Choosing your own shortcuts**, and seeing them written down somewhere other
-than the reference document.
+**Custom brushes**, ~~defined from a selection rather than chosen from the
+built-in set.~~ Done. The selection's coverage becomes the tip, normalised so
+something faint still paints at full strength, and its longer side is fitted to
+the brush size with its shape kept — stretching it to fill the dab's square
+instead makes a wide, thin tip stamp as a square, which is the one thing a
+shaped brush must not do.
+
+Custom *patterns* are still generated rather than loaded — a tile taken from a
+selection needs somewhere to keep it and a way to pick it, which is a library
+rather than a brush.
+
+**Choosing your own shortcuts.** ~~And seeing them written down somewhere other
+than the reference document.~~ Done, on `Edit ▸ Keyboard Shortcuts…`. Only the
+changed ones are stored, so a later build's new defaults reach everyone who has
+not overridden them. Taking a chord takes it from whoever had it — two commands
+on one chord means one of them silently never runs — and the displaced command
+is recorded as having none rather than left at its default, which the next run
+would give back.

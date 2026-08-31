@@ -18,7 +18,7 @@ fn everything_remembered_survives_the_trip() {
             hardness: 0.25,
             opacity: 0.5,
             flow: 0.75,
-            spacing: 0.2,
+            spacing: 0.2, ..Default::default()
         },
         foreground: Rgba8::opaque(0x12, 0x34, 0x56),
         background: Rgba8::opaque(0xab, 0xcd, 0xef),
@@ -35,6 +35,7 @@ fn everything_remembered_survives_the_trip() {
             soak: false,
         },
         brush_filter_strength: 0.8,
+        shortcuts: vec![("Undo".into(), "Ctrl+G".into())],
         window: Some((1234, 900)),
         recent: vec![PathBuf::from("/one.png"), PathBuf::from("/two.psd")],
     };
