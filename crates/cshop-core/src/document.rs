@@ -153,6 +153,12 @@ pub struct Document {
     /// An order over the layers, when this document is an animation. See
     /// [`crate::timeline`].
     pub timeline: Option<crate::timeline::Timeline>,
+    /// The pictures the smart objects here are placements of.
+    ///
+    /// Document-level rather than per layer so that several layers can place
+    /// the same picture and changing it changes all of them. See
+    /// [`crate::smart`].
+    pub sources: crate::smart::SourceStore,
 }
 
 impl Clone for Document {
@@ -179,6 +185,7 @@ impl Clone for Document {
             guides: self.guides.clone(),
             states: self.states.clone(),
             timeline: self.timeline.clone(),
+            sources: self.sources.clone(),
         }
     }
 }
@@ -232,6 +239,7 @@ impl Document {
             guides: Vec::new(),
             states: Vec::new(),
             timeline: None,
+            sources: Default::default(),
         }
     }
 
@@ -314,7 +322,110 @@ impl Document {
             guides: Vec::new(),
             states: Vec::new(),
             timeline: None,
+            sources: Default::default(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Smart objects
+    //
+    // A smart object holds an identifier rather than a picture, so it cannot
+    // re-render itself. These are the four places that lend it the store and
+    // the layer at the same time, which is a thing only the document can do.
+    // -----------------------------------------------------------------------
+
+    /// Re-render one smart layer at a new placement.
+    ///
+    /// Hands back how far the raster's top-left moved, so the caller can
+    /// absorb it into the layer's offset and the picture stay where it was.
+    pub fn place_smart(
+        &mut self,
+        id: LayerId,
+        placement: crate::transform::Transform,
+        filter: crate::resample::Resampling,
+    ) -> Option<(i32, i32)> {
+        let sources = &self.sources;
+        let smart = self.tree.get_mut(id)?.smart_mut()?;
+        Some(smart.place(placement, filter, sources))
+    }
+
+    /// Re-render one smart layer at the placement it already has.
+    pub fn refresh_smart(&mut self, id: LayerId, filter: crate::resample::Resampling) {
+        let sources = &self.sources;
+        if let Some(smart) = self.tree.get_mut(id).and_then(|l| l.smart_mut()) {
+            smart.refresh(filter, sources);
+        }
+    }
+
+    /// Every layer placing a given picture, in tree order.
+    ///
+    /// One of these is an ordinary smart object; two or more are linked, and
+    /// what makes them linked is only that they name the same picture.
+    pub fn layers_using(&self, source: crate::smart::SourceId) -> Vec<LayerId> {
+        self.tree
+            .iter_all()
+            .into_iter()
+            .filter(|id| {
+                self.tree.get(*id).and_then(|l| l.smart()).is_some_and(|s| s.source() == source)
+            })
+            .collect()
+    }
+
+    /// Swap the picture behind a source, and re-render everything showing it.
+    ///
+    /// Hands back what was there, which is what undo needs. Every layer on
+    /// that source moves at once — that is the entire point of the linking,
+    /// and the reason this is one operation rather than a loop at the call
+    /// site that could be got wrong.
+    ///
+    /// A replacement of a different size keeps each layer's top-left where it
+    /// was and grows or shrinks from there, rather than staying centred. Both
+    /// are defensible; this one is predictable, and a logo replaced by a
+    /// slightly different logo stays where it was put rather than moving by
+    /// half the difference.
+    pub fn replace_source(
+        &mut self,
+        source: crate::smart::SourceId,
+        pixels: PixelBuffer,
+        filter: crate::resample::Resampling,
+    ) -> Option<PixelBuffer> {
+        let was = self.sources.replace(source, pixels)?;
+        for id in self.layers_using(source) {
+            self.refresh_smart(id, filter);
+        }
+        Some(was)
+    }
+
+    /// Give one layer its own copy of the picture it was sharing.
+    ///
+    /// The rendering does not change — it is the same picture — so nothing is
+    /// re-rendered and nothing on screen moves. What changes is the future:
+    /// the next edit to either copy leaves the other alone.
+    pub fn make_source_unique(&mut self, id: LayerId, name: impl Into<String>) -> Option<crate::smart::SourceId> {
+        let was = self.tree.get(id)?.smart()?.source();
+        let pixels = self.sources.pixels(was)?.clone();
+        let fresh = self.sources.add(pixels, name);
+        self.tree.get_mut(id)?.smart_mut()?.set_source(fresh);
+        Some(fresh)
+    }
+
+    /// The pictures some layer is actually placing.
+    ///
+    /// Deleting the last layer that used a picture leaves it in the store,
+    /// because undo will want it back until that delete falls off the end of
+    /// the history. So nothing is ever collected: the writer asks which
+    /// sources are reachable and leaves the rest out of the file, and the
+    /// document in memory keeps them.
+    pub fn used_sources(&self) -> Vec<crate::smart::SourceId> {
+        let mut used: Vec<crate::smart::SourceId> = self
+            .tree
+            .iter_all()
+            .into_iter()
+            .filter_map(|id| Some(self.tree.get(id)?.smart()?.source()))
+            .collect();
+        used.sort_unstable();
+        used.dedup();
+        used
     }
 
     #[inline]

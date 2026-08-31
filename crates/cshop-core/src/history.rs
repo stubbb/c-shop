@@ -791,9 +791,7 @@ impl PlaceSmart {
         let bounds = doc.bounds();
         let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
         layer.offset = to.1;
-        if let Some(smart) = layer.smart_mut() {
-            smart.place(to.0, self.filter);
-        }
+        doc.place_smart(self.id, to.0, self.filter);
         Dirty { layers: vec![self.id], rect: bounds, structure: true }
     }
 }
@@ -1502,6 +1500,165 @@ fn resize_mask(mask: &MaskBuffer, width: u32, height: u32) -> MaskBuffer {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Smart-object sources
+//
+// A smart layer names a picture in the document's store rather than owning
+// one, so three of the things a user can do to a smart object are edits to the
+// store rather than to a layer. Keeping them as separate commands means a
+// conversion is `Compound[AddSource, ReplaceLayerKind]` rather than a fourth
+// command that knows how to do both.
+// ---------------------------------------------------------------------------
+
+/// Put a picture into the document's store.
+///
+/// The identifier is decided by the caller, because the smart object that will
+/// name it has to be built before this runs. Applying an identifier that is
+/// already there replaces it, which makes a redo after an undo land exactly
+/// where the first apply did.
+#[derive(Debug)]
+pub struct AddSource {
+    id: crate::smart::SourceId,
+    source: crate::smart::Source,
+}
+
+impl AddSource {
+    pub fn new(id: crate::smart::SourceId, source: crate::smart::Source) -> Self {
+        Self { id, source }
+    }
+}
+
+impl Command for AddSource {
+    fn name(&self) -> String {
+        "Add Source".into()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.source.pixels.as_bytes().len() as u64
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        doc.sources.restore(self.id, self.source.clone());
+        Dirty::NONE
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        doc.sources.remove(self.id);
+        Dirty::NONE
+    }
+}
+
+/// Point one smart layer at a different picture.
+///
+/// Two layers are linked precisely because they name the same picture, so this
+/// is both how a layer is unlinked — pointed at a copy — and how one is made to
+/// show something else.
+#[derive(Debug)]
+pub struct PointSmartAt {
+    id: LayerId,
+    to: crate::smart::SourceId,
+    was: Option<crate::smart::SourceId>,
+    filter: crate::resample::Resampling,
+    label: String,
+}
+
+impl PointSmartAt {
+    pub fn new(
+        id: LayerId,
+        to: crate::smart::SourceId,
+        filter: crate::resample::Resampling,
+        label: impl Into<String>,
+    ) -> Self {
+        Self { id, to, was: None, filter, label: label.into() }
+    }
+
+    fn put(&self, doc: &mut Document, to: crate::smart::SourceId) -> Dirty {
+        let Some(smart) = doc.tree.get_mut(self.id).and_then(|l| l.smart_mut()) else {
+            return Dirty::NONE;
+        };
+        smart.set_source(to);
+        doc.refresh_smart(self.id, self.filter);
+        let bounds = doc.tree.get(self.id).map_or(IRect::EMPTY, |l| l.bounds());
+        Dirty::structural(bounds)
+    }
+}
+
+impl Command for PointSmartAt {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if self.was.is_none() {
+            self.was = doc.tree.get(self.id).and_then(|l| l.smart()).map(|s| s.source());
+        }
+        self.put(doc, self.to)
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some(was) = self.was else { return Dirty::NONE };
+        self.put(doc, was)
+    }
+}
+
+/// Swap the picture behind a source, so every layer placing it changes.
+///
+/// The whole point of a linked smart object: a logo placed in four corners is
+/// one picture used four times, and correcting it is one correction.
+#[derive(Debug)]
+pub struct ReplaceSource {
+    source: crate::smart::SourceId,
+    after: Option<PixelBuffer>,
+    before: Option<PixelBuffer>,
+    filter: crate::resample::Resampling,
+    label: String,
+}
+
+impl ReplaceSource {
+    pub fn new(
+        source: crate::smart::SourceId,
+        after: PixelBuffer,
+        filter: crate::resample::Resampling,
+        label: impl Into<String>,
+    ) -> Self {
+        Self { source, after: Some(after), before: None, filter, label: label.into() }
+    }
+
+    fn swap(&mut self, doc: &mut Document, forward: bool) -> Dirty {
+        let slot = if forward { &mut self.after } else { &mut self.before };
+        let Some(pixels) = slot.take() else { return Dirty::NONE };
+        let bounds = doc.bounds();
+        let Some(previous) = doc.replace_source(self.source, pixels, self.filter) else {
+            return Dirty::NONE;
+        };
+        if forward {
+            self.before = Some(previous);
+        } else {
+            self.after = Some(previous);
+        }
+        Dirty { layers: doc.layers_using(self.source), rect: bounds, structure: true }
+    }
+}
+
+impl Command for ReplaceSource {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        // Whichever way round it currently is, one picture is being held.
+        self.after.as_ref().or(self.before.as_ref()).map_or(0, |p| p.as_bytes().len() as u64)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        self.swap(doc, true)
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        self.swap(doc, false)
+    }
+}
+
 /// Swap one layer kind for another, keeping everything else about the layer.
 ///
 /// The general form of [`RasterizeLayer`], for the direction that goes the
@@ -1541,10 +1698,9 @@ impl Command for ReplaceLayerKind {
 
     fn memory_bytes(&self) -> u64 {
         let held = |k: &Option<crate::layer::LayerKind>| match k {
-            Some(crate::layer::LayerKind::Smart(s)) => {
-                let (w, h) = s.source_size();
-                w as u64 * h as u64 * 4
-            }
+            // Only the rendering: the picture behind it belongs to the
+            // document's store, which this is not holding a copy of.
+            Some(crate::layer::LayerKind::Smart(s)) => s.raster().as_bytes().len() as u64,
             Some(crate::layer::LayerKind::Raster(s)) => s.bytes(),
             _ => 0,
         };

@@ -228,6 +228,41 @@ a second on twelve megapixels since `resample::transform` and `resample::resize`
 were made to work a row at a time in parallel. Handing the commit to a worker
 would mean the tool's overlay outliving the pixels it was editing.
 
+## A smart object's picture belongs to the document
+
+The obvious arrangement is a layer that owns the picture it was made from. It
+is simpler, and it makes one thing impossible: a *linked* smart object, where
+several layers show the same picture and changing that picture changes all of
+them.
+
+So the pictures live in a `SourceStore` on the document and a smart layer holds
+a `SourceId`. Sharing is then the default rather than a feature — two layers on
+one identifier *are* linked, with nothing to switch on and nothing to keep in
+step — and the saved file holds the picture once however many places it
+appears, which on a photograph is the difference between a project of a few
+megabytes and one of a few dozen.
+
+Two consequences worth knowing:
+
+**A smart object can no longer render itself.** It needs the store to find its
+picture, and the store and the layer are two fields of the same document, so
+the operations that re-render live on `Document`, which can lend out both at
+once. That is the whole of the awkwardness and it is confined to four methods.
+
+**Nothing is ever collected.** Deleting the last layer that used a picture
+leaves it in the store, because undo will want it back until that delete falls
+off the end of the history. Instead the writer asks which sources are reachable
+and leaves the rest out of the file. A store that tidied itself would make undo
+a source of corruption rather than of safety.
+
+Duplicating a smart layer shares its picture rather than copying it, which is
+the choice with the least machinery and the most obvious model — but it is a
+choice, and an invisible link is one somebody breaks by accident. So the Layers
+panel counts the sharing beside the ◇ mark, the Layer menu says how many other
+layers a replacement will reach, and `Make Unique` breaks one out. Nothing on
+screen changes when it does, which is worth saying in the interface: an
+operation that appears to do nothing looks broken.
+
 ## Undo is one step per gesture, not per event
 
 Typing a word, dragging a slider and painting a stroke are each a single

@@ -43,7 +43,13 @@ use cshop_core::text::{TextAlign, TextContent, TextStyle};
 
 const MAGIC: &[u8; 6] = b"CSHOP\0";
 /// Bumped only when a change cannot be expressed as a new chunk.
-const VERSION: u16 = 1;
+///
+/// 2: smart objects name a picture in the document's source table rather than
+/// carrying one each, so several layers can share one. That is a new layer
+/// kind byte, which an older reader cannot skip the way it skips a chunk it
+/// does not know — hence the bump. Version 1 files still open: their inline
+/// picture becomes a source of its own.
+const VERSION: u16 = 2;
 
 const CHUNK_DOC: &[u8; 4] = b"DOCU";
 const CHUNK_LAYER: &[u8; 4] = b"LAYR";
@@ -57,6 +63,9 @@ const CHUNK_PROFILE: &[u8; 4] = b"ICCP";
 /// profile: a project written before they existed still opens.
 const CHUNK_GUIDES: &[u8; 4] = b"GIDE";
 const CHUNK_STATES: &[u8; 4] = b"LSTA";
+/// The pictures behind the smart objects, written once however many layers
+/// place them. Before the layers in the file, because a layer names one.
+const CHUNK_SOURCES: &[u8; 4] = b"SRCS";
 const CHUNK_END: &[u8; 4] = b"END ";
 
 /// Deflate level. Pixel data dominates the file and is highly compressible;
@@ -101,6 +110,23 @@ pub fn write(doc: &Document) -> Vec<u8> {
             g.f32(guide.at);
         }
         chunk(&mut w, CHUNK_GUIDES, &g.bytes);
+    }
+
+    // The pictures behind the smart objects, before the layers that name them.
+    // Only the ones something still places: deleting a layer leaves its source
+    // in the store so undo can bring it back, and there is no reason to write
+    // out a picture nothing in the file refers to.
+    let used = doc.used_sources();
+    if !used.is_empty() {
+        let mut c = Writer::new();
+        c.u32(used.len() as u32);
+        for id in used {
+            let Some(source) = doc.sources.get(id) else { continue };
+            c.u32(id.0);
+            c.string(&source.name);
+            write_pixels(&mut c, &source.pixels);
+        }
+        chunk(&mut w, CHUNK_SOURCES, &c.bytes);
     }
 
     // After the layers would be tidier, but a state is settings and the reader
@@ -251,12 +277,14 @@ fn write_layer(w: &mut Writer, doc: &Document, layer: &Layer) {
             w.u8(5);
             write_shape(w, s.content());
         }
-        // The source and the placement; the raster is re-rendered on load,
-        // because keeping it would double the file for something that can be
-        // worked out exactly.
+        // Which picture and where it is placed. The rendering is not written:
+        // it can be worked out exactly, and keeping it would double the file.
+        // The picture itself is in the source table, once, however many layers
+        // place it — which is what makes two layers linked rather than merely
+        // alike.
         LayerKind::Smart(sm) => {
-            w.u8(7);
-            write_pixels(w, sm.source());
+            w.u8(8);
+            w.u32(sm.source().0);
             for row in sm.placement().m {
                 for v in row {
                     w.f32(v);
@@ -936,6 +964,18 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
                 }
                 seen_doc = true;
             }
+            CHUNK_SOURCES => {
+                let count = r.u32()?;
+                // A count is a claim by the file, so it is bounded by what the
+                // chunk could actually hold rather than trusted.
+                let most = len.saturating_sub(4) / 8;
+                for _ in 0..count.min(most as u32) {
+                    let id = cshop_core::smart::SourceId(r.u32()?);
+                    let name = r.string()?;
+                    let pixels = read_pixels(&mut r)?;
+                    doc.sources.restore(id, cshop_core::smart::Source { pixels, name });
+                }
+            }
             CHUNK_LAYER => read_layer(&mut r, &mut doc)?,
             CHUNK_CHANNEL => {
                 let name = r.string()?;
@@ -1094,6 +1134,21 @@ fn blend_from(v: u16) -> BlendMode {
     BlendMode::all().find(|m| *m as u16 == v).unwrap_or(BlendMode::Normal)
 }
 
+/// Nine numbers, checked, because a placement that is not a number renders to
+/// nothing at all and there is no way back from it.
+fn read_placement(r: &mut Reader<'_>) -> Result<cshop_core::transform::Transform, IoError> {
+    let mut m = [[0.0f32; 3]; 3];
+    for row in m.iter_mut() {
+        for v in row.iter_mut() {
+            *v = r.f32()?;
+        }
+    }
+    if !m.iter().flatten().all(|v| v.is_finite()) {
+        return Err(IoError::Malformed("a smart object's placement is not a number".into()));
+    }
+    Ok(cshop_core::transform::Transform { m })
+}
+
 fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
     let id = LayerId(r.u64()?);
     let parent = r.u64()?;
@@ -1160,24 +1215,27 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
                 .ok_or_else(|| IoError::Malformed("a layer's size and pixels disagree".into()))?;
             LayerKind::Raster(cshop_core::layer::Surface::Sixteen(px))
         }
+        // Format 1: the picture was written into the layer. Give it an entry
+        // in the store of its own, which is exactly what it was — a source
+        // with one layer placing it.
         7 => {
-            let source = read_pixels(r)?;
-            let mut m = [[0.0f32; 3]; 3];
-            for row in m.iter_mut() {
-                for v in row.iter_mut() {
-                    *v = r.f32()?;
-                }
-            }
-            if !m.iter().flatten().all(|v| v.is_finite()) {
+            let pixels = read_pixels(r)?;
+            let placement = read_placement(r)?;
+            let source = doc.sources.add(pixels, name.clone());
+            let mut smart = cshop_core::smart::SmartObject::new(source, &doc.sources);
+            smart.place(placement, cshop_core::resample::Resampling::Bilinear, &doc.sources);
+            LayerKind::Smart(Box::new(smart))
+        }
+        8 => {
+            let source = cshop_core::smart::SourceId(r.u32()?);
+            let placement = read_placement(r)?;
+            if doc.sources.get(source).is_none() {
                 return Err(IoError::Malformed(
-                    "a smart object's placement is not a number".into(),
+                    "a smart object names a picture this file does not contain".into(),
                 ));
             }
-            let mut smart = cshop_core::smart::SmartObject::new(source);
-            smart.place(
-                cshop_core::transform::Transform { m },
-                cshop_core::resample::Resampling::Bilinear,
-            );
+            let mut smart = cshop_core::smart::SmartObject::new(source, &doc.sources);
+            smart.place(placement, cshop_core::resample::Resampling::Bilinear, &doc.sources);
             LayerKind::Smart(Box::new(smart))
         }
         other => {

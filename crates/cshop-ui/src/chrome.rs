@@ -738,6 +738,36 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ConvertToSmartObject);
                 ui.close();
             }
+            // How many layers share this one's picture, which is the only
+            // thing "linked" means here.
+            let shared = app.smart_link().map(|(_, n)| n).unwrap_or(0);
+            if item_enabled(ui, "Replace Contents…", "", is_smart)
+                .on_hover_text(if shared > 1 {
+                    format!(
+                        "Puts a different picture behind this smart object — and behind \
+                         the {} other layers sharing it, each at its own placement",
+                        shared - 1
+                    )
+                } else {
+                    "Puts a different picture behind this smart object, keeping its \
+                     placement"
+                        .to_string()
+                })
+                .clicked()
+            {
+                app.push(Action::ShowReplaceContents);
+                ui.close();
+            }
+            if item_enabled(ui, "Make Unique", "", shared > 1)
+                .on_hover_text(
+                    "Gives this layer its own copy of the picture, so replacing one \
+                     no longer changes the other",
+                )
+                .clicked()
+            {
+                app.push(Action::MakeSmartUnique);
+                ui.close();
+            }
             if item_enabled(ui, label, "", rendered).clicked() {
                 app.push(Action::RasterizeLayer);
                 ui.close();
@@ -2376,6 +2406,28 @@ pub fn status_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
                 // What undo is holding. On a large canvas this is the largest
                 // thing in the process after the layers themselves, and it is
                 // the only one the user can do anything about.
+                // The pictures behind the smart objects. On a document with a
+                // few placed photographs this is the largest thing in the
+                // process after the layers, and unlike them it is invisible —
+                // one picture can be behind four layers or none.
+                let sources = view.doc.sources.bytes();
+                if sources > 0 {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "sources {}",
+                            crate::format_bytes(sources)
+                        ))
+                        .color(p.text_dim),
+                    )
+                    .on_hover_text(format!(
+                        "{} picture{} behind the smart objects, {} of which {} placed",
+                        view.doc.sources.len(),
+                        if view.doc.sources.len() == 1 { "" } else { "s" },
+                        view.doc.used_sources().len(),
+                        if view.doc.used_sources().len() == 1 { "is" } else { "are" },
+                    ));
+                }
                 let undo = view.history.memory_bytes();
                 if undo > 0 {
                     ui.separator();

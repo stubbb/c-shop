@@ -751,6 +751,7 @@ impl Runner {
             "filter" => self.cmd_filter(cmd),
             "adjust" => self.cmd_adjust(cmd),
             "layer" => self.cmd_layer(cmd),
+            "smart" => self.cmd_smart(cmd),
             "set" => self.cmd_set(cmd),
             "move" => self.cmd_move(cmd),
             "order" => self.cmd_order(cmd),
@@ -776,7 +777,7 @@ impl Runner {
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, mode, lens, denoise, upscale, separate, \
+                 order, smart, info, profile, mode, lens, denoise, upscale, separate, \
                  inpaint, depth, relight, haze, focus, parallax, sky, retouch, \
                  guide, straighten, align, export, save"
             )),
@@ -3325,6 +3326,52 @@ impl Runner {
         };
         self.app.dispatch(action);
         Ok(format!("layer {what}"))
+    }
+
+    /// Smart objects, including the linked half.
+    ///
+    /// `replace` is the one that earns the store: it puts a different picture
+    /// behind every layer placing this one, each at its own placement, which
+    /// is what a linked smart object is for.
+    fn cmd_smart(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let what = cmd.args.first().map(|s| s.as_str()).unwrap_or("convert");
+        match what {
+            "convert" => {
+                self.app.dispatch(Action::ConvertToSmartObject);
+                Ok("converted to a smart object".into())
+            }
+            "replace" => {
+                let path = cmd
+                    .args
+                    .get(1)
+                    .ok_or("smart replace needs a file to take the picture from")?;
+                let shared = self.app.smart_link().map(|(_, n)| n).unwrap_or(0);
+                if shared == 0 {
+                    return Err("the active layer is not a smart object".into());
+                }
+                self.app
+                    .dispatch(Action::ReplaceSmartContents(std::path::PathBuf::from(path)));
+                Ok(format!("replaced the contents of {shared} layer(s)"))
+            }
+            "unique" => {
+                let shared = self.app.smart_link().map(|(_, n)| n).unwrap_or(0);
+                if shared == 0 {
+                    return Err("the active layer is not a smart object".into());
+                }
+                self.app.dispatch(Action::MakeSmartUnique);
+                Ok("this layer now has its own copy".into())
+            }
+            "info" => match self.app.smart_link() {
+                Some((_, n)) if n > 1 => Ok(format!("shared by {n} layers")),
+                Some(_) => Ok("a smart object, its picture used once".into()),
+                None => Err("the active layer is not a smart object".into()),
+            },
+            other => Err(format!(
+                "unknown smart command {other:?}. Available: convert, replace <file>, \
+                 unique, info"
+            )),
+        }
     }
 
     fn cmd_set(&mut self, cmd: &Command) -> Result<String, String> {

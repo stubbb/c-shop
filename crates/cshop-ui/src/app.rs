@@ -1382,6 +1382,9 @@ impl CShopApp {
             Action::CancelText => self.cancel_text(),
             Action::RasterizeLayer => self.rasterize_layer(),
             Action::ConvertToSmartObject => self.convert_to_smart_object(),
+            Action::ShowReplaceContents => self.show_replace_contents(),
+            Action::ReplaceSmartContents(path) => self.replace_smart_contents(path),
+            Action::MakeSmartUnique => self.make_smart_unique(),
             Action::ShowLayerStyle => {
                 let Some(view) = self.doc() else { return };
                 let Some(id) = view.doc.active else { return };
@@ -5490,17 +5493,139 @@ impl CShopApp {
             self.fail(why);
             return;
         };
-        let smart = cshop_core::smart::SmartObject::new(pixels);
+        let name = layer.name.clone();
+
+        // The picture goes into the document's store and the layer names it.
+        // Adding it here rather than inside the command is what lets the smart
+        // object be built with the identifier it will have; the `AddSource`
+        // step below puts it back after an undo, and replaces it harmlessly
+        // now.
+        let source = view.doc.sources.add(pixels.clone(), name.clone());
+        let smart = cshop_core::smart::SmartObject::new(source, &view.doc.sources);
         let dirty = view.history.apply(
             &mut view.doc,
-            Box::new(cshop_core::history::ReplaceLayerKind::new(
-                id,
-                cshop_core::layer::LayerKind::Smart(Box::new(smart)),
+            Box::new(cshop_core::history::Compound::new(
                 "Convert to Smart Object",
+                vec![
+                    Box::new(cshop_core::history::AddSource::new(
+                        source,
+                        cshop_core::smart::Source { pixels, name },
+                    )),
+                    Box::new(cshop_core::history::ReplaceLayerKind::new(
+                        id,
+                        cshop_core::layer::LayerKind::Smart(Box::new(smart)),
+                        "Convert to Smart Object",
+                    )),
+                ],
             )),
         );
         view.mark_dirty(dirty);
         view.invalidate();
+    }
+
+    /// The active smart object, and how many layers share its picture.
+    ///
+    /// Two or more is what "linked" means here: there is no linking to switch
+    /// on, only layers that happen to name the same picture.
+    pub fn smart_link(&self) -> Option<(cshop_core::smart::SourceId, usize)> {
+        let view = self.doc()?;
+        let id = view.doc.active?;
+        let source = view.doc.tree.get(id)?.smart()?.source();
+        Some((source, view.doc.layers_using(source).len()))
+    }
+
+    fn show_replace_contents(&mut self) {
+        if self.smart_link().is_none() {
+            self.fail("Replacing contents needs a smart object selected");
+            return;
+        }
+        let start = self.doc().and_then(|d| d.doc.path.clone());
+        self.dialog = Dialog::FileBrowser(FileBrowser::new(BrowserMode::ReplaceContents, start));
+    }
+
+    /// Put a different picture behind the active smart object.
+    ///
+    /// Every layer placing that picture re-renders, each at its own placement.
+    /// That is the entire point: a logo placed in four corners is one picture
+    /// used four times, and correcting it is one correction.
+    fn replace_smart_contents(&mut self, path: std::path::PathBuf) {
+        let Some((source, shared)) = self.smart_link() else {
+            self.fail("Replacing contents needs a smart object selected");
+            return;
+        };
+        let pixels = match cshop_io::load(&path) {
+            Ok(px) => px,
+            Err(e) => return self.fail(format!("Could not open {}: {e}", path.display())),
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Replaced".into());
+        let Some(view) = self.doc_mut() else { return };
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::ReplaceSource::new(
+                source,
+                pixels,
+                cshop_core::resample::Resampling::Bilinear,
+                "Replace Contents",
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        let _ = name;
+        if shared > 1 {
+            self.notify(format!("Replaced the contents of {shared} linked layers"));
+        } else {
+            self.notify("Replaced the contents");
+        }
+    }
+
+    /// Break one layer out of a link by giving it its own copy.
+    ///
+    /// Nothing on screen changes — it is the same picture — and that is worth
+    /// saying, because an operation that appears to do nothing looks broken.
+    /// What changes is the future: the next replacement leaves the other
+    /// layers alone.
+    fn make_smart_unique(&mut self) {
+        let Some((_, shared)) = self.smart_link() else {
+            self.fail("Making a copy unique needs a smart object selected");
+            return;
+        };
+        if shared < 2 {
+            self.notify("That smart object is not sharing its picture with anything");
+            return;
+        }
+        let Some(view) = self.doc_mut() else { return };
+        let Some(id) = view.doc.active else { return };
+        let name = view.doc.tree.get(id).map(|l| l.name.clone()).unwrap_or_default();
+        let Some(pixels) = view.doc.tree.get(id).and_then(|l| l.smart()).and_then(|s| {
+            view.doc.sources.pixels(s.source()).cloned()
+        }) else {
+            return;
+        };
+        let fresh = view.doc.sources.add(pixels.clone(), name.clone());
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new(
+                "Make Unique",
+                vec![
+                    Box::new(cshop_core::history::AddSource::new(
+                        fresh,
+                        cshop_core::smart::Source { pixels, name },
+                    )),
+                    Box::new(cshop_core::history::PointSmartAt::new(
+                        id,
+                        fresh,
+                        cshop_core::resample::Resampling::Bilinear,
+                        "Make Unique",
+                    )),
+                ],
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        self.notify(format!("This layer now has its own copy; {} still share the other", shared - 1));
     }
 
     /// Finish the stroke and record it as one undo step.
@@ -6935,7 +7060,7 @@ impl CShopApp {
         }
 
         // Where the source's centre is now, and where the transform sends it.
-        let (sw, sh) = smart.source_size();
+        let (sw, sh) = smart.source_size(&view.doc.sources);
         let centre = Vec2::new(sw as f32 / 2.0, sh as f32 / 2.0);
         let raster = layer.pixels()?;
         let here = Vec2::new(
@@ -6946,7 +7071,7 @@ impl CShopApp {
 
         // The new raster's size, which decides where its top-left goes.
         let mut probe = smart.clone();
-        probe.place(next, active.filter);
+        probe.place(next, active.filter, &view.doc.sources);
         let (nw, nh) = (probe.raster().width() as f32, probe.raster().height() as f32);
         let _ = centre;
         Some((

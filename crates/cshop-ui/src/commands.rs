@@ -244,6 +244,14 @@ pub enum Action {
     RasterizeLayer,
     /// Wrap the active layer's pixels so its placement stops being an edit.
     ConvertToSmartObject,
+    /// Choose a picture to put behind the active smart object.
+    ShowReplaceContents,
+    /// Put that picture behind it — and behind every other layer sharing it,
+    /// which is the whole point of a linked smart object.
+    ReplaceSmartContents(PathBuf),
+    /// Give the active smart object its own copy of the picture it was
+    /// sharing, so the next change to either leaves the other alone.
+    MakeSmartUnique,
     /// Open the Layer Style dialog for the active layer.
     ShowLayerStyle,
     /// Apply a set of effects to a layer.

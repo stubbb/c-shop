@@ -761,6 +761,16 @@ impl ModifyDialog {
 pub enum BrowserMode {
     Open,
     Save,
+    /// Choose a picture to put behind a smart object — and behind every other
+    /// layer sharing it.
+    ReplaceContents,
+}
+
+impl BrowserMode {
+    /// Picking an existing file rather than naming a new one.
+    pub fn is_opening(self) -> bool {
+        !matches!(self, BrowserMode::Save)
+    }
 }
 
 pub struct FileBrowser {
@@ -828,7 +838,7 @@ impl FileBrowser {
             let Ok(meta) = entry.metadata() else { continue };
             let is_dir = meta.is_dir();
 
-            if !is_dir && self.mode == BrowserMode::Open {
+            if !is_dir && self.mode.is_opening() {
                 let ok = path
                     .extension()
                     .map(|e| {
@@ -1019,7 +1029,11 @@ impl FileBrowser {
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            let verb = if self.mode == BrowserMode::Open { "Open" } else { "Save" };
+            let verb = match self.mode {
+                BrowserMode::Open => "Open",
+                BrowserMode::Save => "Save",
+                BrowserMode::ReplaceContents => "Replace",
+            };
             let ready = !self.filename.trim().is_empty();
             if ui.add_enabled(ready, egui::Button::new(verb)).clicked() {
                 match self.mode {
@@ -1029,6 +1043,9 @@ impl FileBrowser {
                     BrowserMode::Save => {
                         actions.push(Action::SavePath { path: self.target(), deep: self.deep })
                     }
+                    BrowserMode::ReplaceContents => actions.push(Action::ReplaceSmartContents(
+                        self.dir.join(self.filename.trim()),
+                    )),
                 }
                 close = true;
             }

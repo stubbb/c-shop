@@ -138,6 +138,13 @@ pressure drives is a choice, and a device that cannot measure it presses fully,
 so nothing changes for a mouse. A selection's shape becomes a brush tip, fitted
 to the brush size with its own proportions kept.
 
+**One picture, placed in several places.** A smart object keeps the picture it
+was made from and treats the placement as a setting, so the twentieth scaling
+is as good as the first. Those pictures live in the document rather than in the
+layer, so several layers can place the same one — a logo in four corners is one
+picture used four times, and correcting it is one correction rather than four.
+The file holds it once however many places it appears.
+
 **Nothing waits on a frozen window.** A median on twelve megapixels is nearly
 four seconds, a content-aware scale eight; held on the drawing thread each of
 those is a window that stops repainting and gets offered to you for killing.

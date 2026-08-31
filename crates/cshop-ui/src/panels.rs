@@ -953,6 +953,18 @@ fn layer_row(
             l.smart().is_some(),
         )
     };
+    // How many layers place the same picture. Two or more and this one is
+    // linked: replacing its contents replaces theirs, which is worth knowing
+    // before doing it rather than after.
+    let linked = {
+        let view = &app.docs[doc_index];
+        view.doc
+            .tree
+            .get(id)
+            .and_then(|l| l.smart())
+            .map(|s| view.doc.layers_using(s.source()).len())
+            .filter(|n| *n > 1)
+    };
     // Effects get an "fx" mark and, when the group is open, a line each — the
     // only way to see what a style is made of without opening the dialog.
     let effect_names: Vec<&'static str> = app.docs[doc_index]
@@ -1149,11 +1161,13 @@ fn layer_row(
     // unlike one — it cannot be painted on, and its transforms are free — so
     // it says which it is.
     if is_smart {
-        let g = painter.layout_no_wrap(
-            "◇".to_string(),
-            egui::FontId::proportional(12.0),
-            p.accent,
-        );
+        // A count beside the mark when the picture is shared, because a link
+        // that cannot be seen is one somebody breaks by accident.
+        let mark = match linked {
+            Some(n) => format!("◇{n}"),
+            None => "◇".to_string(),
+        };
+        let g = painter.layout_no_wrap(mark, egui::FontId::proportional(12.0), p.accent);
         badge_x -= g.size().x + 4.0;
         painter.galley(egui::pos2(badge_x, rect.center().y - g.size().y / 2.0), g, p.accent);
         badge_x -= 2.0;

@@ -93,6 +93,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `filter NAME` | `gaussian-blur box-blur motion-blur surface-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic crystallize emboss solarize diffuse twirl` |
 | `adjust NAME` | `brightness-contrast levels gradient-map photo-filter hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
 | `layer WHAT` | `new group duplicate via-copy delete merge-down flatten rasterize to-mask select <index>`. `via-copy` lifts only what is selected onto a new layer; `to-mask` turns this layer into a mask on the one below and consumes it. |
+| `smart [convert]` \| `smart replace PATH` \| `smart unique` \| `smart info` | Wrap the active layer's pixels so scaling and rotating never wear them out. `layer duplicate` on a smart object shares its picture rather than copying it, so `replace` puts a new picture behind every layer sharing it, each at its own placement — and `unique` gives one layer its own copy so the next `replace` leaves the others alone. |
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |
@@ -113,6 +114,48 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `select to-path` | Trace the selection's outline as a path layer. |
 | `mode [8\|16]` | Report the bit depth, or move every raster layer to it. Widening is lossless; narrowing is not. |
 | `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks; `depth=16` writes sixteen bits a channel, which PNG and TIFF can hold and the rest cannot. |
+
+### One picture, placed several times
+
+A logo in four corners is one picture used four times. Placing it four times as
+ordinary pixels means correcting it four times when it changes; placing it as
+one smart object shared by four layers means correcting it once.
+
+```
+open poster.png
+place logo.png x=40 y=40
+smart convert
+layer duplicate
+move 900 0
+layer duplicate
+move 0 700
+layer duplicate
+move -900 0
+smart info                # shared by 4 layers
+```
+
+Each of those four can be scaled and rotated independently — the placement
+belongs to the layer — while the picture behind them is the same one. When the
+logo changes:
+
+```
+smart replace logo-v2.png
+```
+
+All four re-render, each at its own placement, in one undo step. If one of them
+should stop following the others:
+
+```
+smart unique
+smart replace logo-old.png
+```
+
+Nothing on screen changes at `unique` — it is the same picture — and that is
+the point: what changes is what the *next* replacement touches.
+
+The saved file holds the picture once however many layers place it, which on a
+large photograph is the difference between a project of a few megabytes and one
+of a few dozen.
 
 ### Straightening a photograph
 

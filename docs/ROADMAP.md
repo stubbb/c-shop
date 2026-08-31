@@ -8,11 +8,11 @@ compositor, and a script surface that something without eyes can drive.
 
 Nothing here was a commitment. It was a menu, ordered by what it would unlock,
 and it has now been worked through end to end — every entry struck out below is
-built, tested and documented. Five things are deliberately still open, and each
+built, tested and documented. Four things are deliberately still open, and each
 says so where it sits: painting at sixteen bits, blending an aligned panorama,
-loading custom patterns, compositing a smart-filtered layer off the drawing
-thread, and colourising a photograph that has no colour. The last waits on a
-model that can be fetched; the rest wait on work.
+loading custom patterns, and compositing a smart-filtered layer off the drawing
+thread. Colourising waits on a model that can be fetched; the rest wait on
+work.
 
 ## The three worth doing first
 
@@ -70,10 +70,21 @@ source, so the twentieth is as good as the first and a placement costs the
 history nothing. Saved with the source and the placement rather than the
 rendering, which can be worked out.
 
-What is not there yet is the *linked* half: one source shared between several
-layers, so changing it updates every place it was used. That needs a
-document-level store with references rather than a layer that owns its own
-picture, which is a bigger change than the rest of this was.
+The *linked* half is there too: the pictures live in a store on the document
+and a smart layer names one, so several layers placing the same picture are
+linked by that alone — there is nothing to switch on and nothing to keep in
+step. Duplicating a smart object shares its picture rather than copying it,
+`Layer ▸ Replace Contents…` puts a new picture behind every layer using it (each
+at its own placement, in one undo step), and `Make Unique` gives one layer its
+own copy. The Layers panel counts the sharing beside the ◇, because a link
+nobody can see is one somebody breaks by accident.
+
+The file holds the picture once however many places it appears, which on a
+photograph is the difference between a project of a few megabytes and one of a
+few dozen. That needed a format bump — a layer kind an older reader cannot skip
+the way it skips a chunk it does not know — so a real format-1 file is checked
+in and a test opens it, since a version-1 file synthesised by the version-2
+writer would only prove the synthesis matched what the reader expected.
 
 **Filters as layer attachments.** ~~Adjustments can already be non-destructive
 layers; filters cannot.~~ Done. A stack of them per layer, each with its own

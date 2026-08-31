@@ -1381,3 +1381,65 @@ fn guides_survive_being_saved_and_opened() {
     assert_eq!(report.steps[1].note, "v 120, h 60");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- smart objects ---------------------------------------------------------
+
+/// The worked example in `docs/SCRIPTING.md`, in miniature: one picture placed
+/// several times, corrected once.
+#[test]
+fn a_shared_picture_is_replaced_everywhere_at_once() {
+    let dir = std::env::temp_dir().join(format!("cshop-script-smart-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let red = dir.join("red.png");
+    let blue = dir.join("blue.png");
+    let write = |path: &Path, c: cshop_core::color::Rgba8| {
+        let px = cshop_core::pixels::PixelBuffer::filled(16, 16, c);
+        cshop_io::save(path, &px, 100).unwrap();
+    };
+    write(&red, cshop_core::color::Rgba8::opaque(220, 30, 30));
+    write(&blue, cshop_core::color::Rgba8::opaque(30, 30, 220));
+
+    let source = format!(
+        "new 100 100\nplace {}\nsmart convert\nlayer duplicate\nmove 40 0\nsmart info\n\
+         smart replace {}\nsmart info",
+        red.display(),
+        blue.display()
+    );
+    let Some(report) = run(&source) else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    let said = notes(&report);
+    assert!(
+        said.iter().any(|n| n.contains("shared by 2 layers")),
+        "duplicating should have shared the picture: {said:?}"
+    );
+    assert!(
+        said.iter().any(|n| n.contains("replaced the contents of 2")),
+        "the replacement should have reached both: {said:?}"
+    );
+
+    // And `unique` takes one back out of the sharing.
+    let source = format!(
+        "new 100 100\nplace {}\nsmart convert\nlayer duplicate\nsmart unique\nsmart info",
+        red.display()
+    );
+    let Some(report) = run(&source) else { return };
+    assert!(report.ok, "{:?}", notes(&report));
+    let said = notes(&report);
+    assert!(
+        said.last().is_some_and(|n| n.contains("used once")),
+        "after unique it should be on its own: {said:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A layer that is not a smart object says so rather than doing something.
+#[test]
+fn smart_commands_refuse_a_plain_layer() {
+    let Some(report) = run("new 40 40\nsmart info") else { return };
+    assert!(!report.ok, "a plain layer is not a smart object");
+    assert!(
+        notes(&report).iter().any(|n| n.contains("not a smart object")),
+        "{:?}",
+        notes(&report)
+    );
+}

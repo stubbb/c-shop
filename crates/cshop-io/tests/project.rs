@@ -415,10 +415,11 @@ fn a_smart_object_survives_a_save_and_reopen() {
             source.set(x, y, if on { Rgba8::WHITE } else { Rgba8::BLACK });
         }
     }
-    let mut smart = SmartObject::new(source.clone());
-    smart.place(Transform::scale(0.5, 0.5), Resampling::Bilinear);
-
     let mut doc = Document::new("smart", 100, 100, Background::Transparent);
+    let stored = doc.sources.add(source.clone(), "checker");
+    let mut smart = SmartObject::new(stored, &doc.sources);
+    smart.place(Transform::scale(0.5, 0.5), Resampling::Bilinear, &doc.sources);
+
     let id = doc.tree.alloc_id();
     doc.tree.push(Layer::new(id, "Placed", LayerKind::Smart(Box::new(smart))), None);
 
@@ -432,12 +433,52 @@ fn a_smart_object_survives_a_save_and_reopen() {
         .expect("the layer should have come back");
     let reopened = layer.smart().expect("it should still be a smart object");
 
-    assert_eq!(reopened.source().pixels(), source.pixels(), "the source, sample for sample");
+    let stored_back = back
+        .sources
+        .pixels(reopened.source())
+        .expect("the picture behind it should have come back too");
+    assert_eq!(stored_back.pixels(), source.pixels(), "the source, sample for sample");
     assert_eq!(reopened.raster().width(), 24, "re-rendered at the placement it had");
     // And still reversible, which is the whole point of keeping the source.
     let mut again = reopened.clone();
-    again.place(Transform::IDENTITY, Resampling::Bilinear);
+    again.place(Transform::IDENTITY, Resampling::Bilinear, &back.sources);
     assert_eq!(again.raster().pixels(), source.pixels());
+}
+
+/// A project written before smart objects shared their pictures still opens.
+///
+/// Format 1 wrote the picture into the layer; format 2 writes it once into a
+/// table the layers name. The fixture is a real format-1 file, written by the
+/// build before the change and checked in, because a version-1 file
+/// synthesised by the version-2 writer would only prove that the synthesis
+/// matched what the reader expected.
+#[test]
+fn a_project_from_before_the_source_table_still_opens() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/assets/smart-v1.cshop"
+    ))
+    .expect("the fixture is checked in");
+    assert_eq!(&bytes[6..8], &[1, 0], "the fixture has to actually be format 1");
+
+    let doc = cshop_io::project::read(&bytes).expect("a format-1 project should still open");
+    let layer = doc
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|id| doc.tree.get(id))
+        .find(|l| l.name == "Placed")
+        .expect("its layer should have come back");
+    let smart = layer.smart().expect("still a smart object");
+
+    // The picture it carried inline is now an entry in the document's store,
+    // which is exactly what it always was: a source with one layer on it.
+    let source = doc.sources.pixels(smart.source()).expect("its picture came with it");
+    assert_eq!((source.width(), source.height()), (48, 32));
+    assert_eq!(doc.sources.len(), 1);
+    assert_eq!(doc.layers_using(smart.source()), vec![layer.id]);
+    // Re-rendered at the placement it was saved with, not at full size.
+    assert_eq!(smart.raster().width(), 24, "the half-size placement came back");
 }
 
 /// A filter stack is settings, so it has to come back as settings — a file
