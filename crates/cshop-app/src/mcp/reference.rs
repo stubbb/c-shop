@@ -92,8 +92,10 @@ COMMANDS
   set key=value                opacity= fill-opacity= name= blend= on the active layer
   move DX DY                   nudge the active layer
   order WHERE                  top bottom up down
-  info                         report size and layer count
+  info                         report size, layer count, bit depth and profile
+  mode [8|16]                  bits a channel; widening is lossless, narrowing is not
   export PATH [quality=]       write it; .cshop and .psd keep layers, the rest flatten
+                               depth=16 writes sixteen bits (PNG and TIFF only)
 ";
 
 const FILTERS: &str = "\

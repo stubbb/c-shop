@@ -98,3 +98,33 @@ fn ink_can_be_deep_too() {
     assert!(colors.separated && colors.converted);
     assert_eq!(back.width(), 16);
 }
+
+/// The same file, opened by a second run of the program.
+///
+/// An ICC profile records the moment it was written, so the sRGB this process
+/// builds is never byte-for-byte the sRGB stamped into a file an hour ago.
+/// Reading one used to mean converting sRGB to sRGB, which is arithmetic that
+/// does nothing except lose a little — so a picture exported, opened, exported
+/// again drifted a count at a time. Nothing about it should move.
+#[test]
+fn reopening_our_own_export_tomorrow_changes_nothing() {
+    let srgb = Profile::srgb();
+    let deep = fine_gradient();
+    let bytes = cshop_io::encode_deep(&deep, ImageFormat::Png, &srgb, &srgb).unwrap();
+
+    // The same profile, stamped at a different minute — what the next run of
+    // the program will be holding when it opens this file.
+    let mut later = srgb.bytes().to_vec();
+    later[33] = later[33].wrapping_add(1);
+    later[35] = later[35].wrapping_add(7);
+    let later = Profile::parse(&later).unwrap();
+
+    let (back, colors) = cshop_io::decode_deep(&bytes, None, &later).unwrap();
+    assert!(!colors.converted, "there was nothing to convert");
+    assert_eq!(back.pixels(), deep.pixels(), "every sample, unchanged");
+
+    // And out again, to the profile the second run holds.
+    let again = cshop_io::encode_deep(&back, ImageFormat::Png, &later, &later).unwrap();
+    let (twice, _) = cshop_io::decode_deep(&again, None, &srgb).unwrap();
+    assert_eq!(twice.pixels(), deep.pixels(), "still, after a second trip");
+}

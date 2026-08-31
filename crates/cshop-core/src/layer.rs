@@ -81,6 +81,100 @@ impl LayerMask {
     }
 }
 
+/// A raster layer's pixels, at whichever depth the document holds.
+///
+/// Eight bits is what everything paints, filters and blends in; sixteen is
+/// what a photograph arrives at and leaves at. A deep layer is carried at its
+/// own depth through opening, saving, compositing and export, and is converted
+/// down — once, deliberately, and with the document saying so — before
+/// anything that only knows how to work at eight bits touches it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Surface {
+    Eight(PixelBuffer),
+    Sixteen(crate::pixels::DeepBuffer),
+}
+
+impl Surface {
+    /// Eight-bit pixels as a surface. Named rather than written out at every
+    /// call site, because that is what almost every caller has.
+    pub fn from_eight(pixels: PixelBuffer) -> Surface {
+        Surface::Eight(pixels)
+    }
+
+    pub fn width(&self) -> u32 {
+        match self {
+            Surface::Eight(p) => p.width(),
+            Surface::Sixteen(p) => p.width(),
+        }
+    }
+    pub fn height(&self) -> u32 {
+        match self {
+            Surface::Eight(p) => p.height(),
+            Surface::Sixteen(p) => p.height(),
+        }
+    }
+    /// The eight-bit pixels, when that is what this is.
+    pub fn eight(&self) -> Option<&PixelBuffer> {
+        match self {
+            Surface::Eight(p) => Some(p),
+            Surface::Sixteen(_) => None,
+        }
+    }
+    /// Roughly how much memory this holds, for the history's budget.
+    pub fn bytes(&self) -> u64 {
+        let per = match self {
+            Surface::Eight(_) => 4,
+            Surface::Sixteen(_) => 8,
+        };
+        self.width() as u64 * self.height() as u64 * per
+    }
+
+    /// The same picture at eight bits, made if it is not already.
+    pub fn to_eight(&self) -> PixelBuffer {
+        match self {
+            Surface::Eight(p) => p.clone(),
+            Surface::Sixteen(p) => p.to_eight(),
+        }
+    }
+
+    pub fn eight_mut(&mut self) -> Option<&mut PixelBuffer> {
+        match self {
+            Surface::Eight(p) => Some(p),
+            Surface::Sixteen(_) => None,
+        }
+    }
+
+    /// The same picture at sixteen bits, widened if it is not already.
+    ///
+    /// Widening invents nothing: an eight-bit count becomes the sixteen-bit
+    /// count that means the same fraction, so white stays white and a round
+    /// trip back to eight is exact.
+    pub fn to_deep(&self) -> crate::pixels::DeepBuffer {
+        match self {
+            Surface::Eight(p) => p.to_deep(),
+            Surface::Sixteen(p) => p.clone(),
+        }
+    }
+
+    /// Sixteen bits a channel, or eight.
+    pub fn depth(&self) -> u8 {
+        match self {
+            Surface::Eight(_) => 8,
+            Surface::Sixteen(_) => 16,
+        }
+    }
+
+    /// This picture at the given depth, or itself when it is already there.
+    /// Narrowing loses what eight bits cannot hold; widening loses nothing.
+    pub fn at_depth(&self, bits: u8) -> Surface {
+        match (bits, self) {
+            (16, Surface::Eight(_)) => Surface::Sixteen(self.to_deep()),
+            (8, Surface::Sixteen(_)) => Surface::Eight(self.to_eight()),
+            _ => self.clone(),
+        }
+    }
+}
+
 /// What a fill layer paints. Gradient and pattern arrive with the gradient
 /// editor in a later phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +187,7 @@ pub enum FillStyle {
 /// a compile error until it is handled everywhere.
 #[derive(Debug, Clone)]
 pub enum LayerKind {
-    Raster(PixelBuffer),
+    Raster(Surface),
     /// Children are stored bottom-to-top, matching document order.
     Group { children: Vec<LayerId> },
     Fill(FillStyle),
@@ -203,6 +297,11 @@ impl TextLayer {
 }
 
 impl LayerKind {
+    /// A raster layer from eight-bit pixels, which is what most callers have.
+    pub fn raster(pixels: PixelBuffer) -> LayerKind {
+        LayerKind::Raster(Surface::Eight(pixels))
+    }
+
     pub fn is_group(&self) -> bool {
         matches!(self, LayerKind::Group { .. })
     }
@@ -275,7 +374,7 @@ impl Layer {
     }
 
     pub fn raster(id: LayerId, name: impl Into<String>, pixels: PixelBuffer) -> Self {
-        Self::new(id, name, LayerKind::Raster(pixels))
+        Self::new(id, name, LayerKind::Raster(Surface::Eight(pixels)))
     }
 
     pub fn group(id: LayerId, name: impl Into<String>) -> Self {
@@ -318,7 +417,7 @@ impl Layer {
 
     pub fn pixels(&self) -> Option<&PixelBuffer> {
         match &self.kind {
-            LayerKind::Raster(p) => Some(p),
+            LayerKind::Raster(s) => s.eight(),
             LayerKind::Text(t) => Some(&t.raster),
             LayerKind::Shape(s) => Some(&s.raster),
             _ => None,
@@ -414,7 +513,25 @@ impl Layer {
     /// next time the text was re-rendered.
     pub fn pixels_mut(&mut self) -> Option<&mut PixelBuffer> {
         match &mut self.kind {
-            LayerKind::Raster(p) => Some(p),
+            LayerKind::Raster(s) => s.eight_mut(),
+            _ => None,
+        }
+    }
+
+    /// The raster surface whatever depth it is at — the accessor to reach for
+    /// when the job is the same at eight bits and at sixteen. Type and shape
+    /// layers have a raster, but it is a rendering of something else, so it
+    /// is not one of these.
+    pub fn surface(&self) -> Option<&Surface> {
+        match &self.kind {
+            LayerKind::Raster(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn surface_mut(&mut self) -> Option<&mut Surface> {
+        match &mut self.kind {
+            LayerKind::Raster(s) => Some(s),
             _ => None,
         }
     }

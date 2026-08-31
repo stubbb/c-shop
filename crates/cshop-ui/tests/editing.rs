@@ -209,7 +209,7 @@ fn flatten_collapses_the_stack_to_the_composited_image() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(8, 8, Rgba8::opaque(0, 0, 255)));
+            LayerKind::raster(PixelBuffer::filled(8, 8, Rgba8::opaque(0, 0, 255)));
         view.invalidate();
     }
     // Top: half-opacity red.
@@ -239,7 +239,7 @@ fn merge_down_honours_the_upper_layer_opacity() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(8, 8, Rgba8::BLACK));
+            LayerKind::raster(PixelBuffer::filled(8, 8, Rgba8::BLACK));
         view.invalidate();
     }
     {
@@ -355,7 +355,7 @@ fn saving_writes_the_composited_stack_and_reopens() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(32, 32, Rgba8::opaque(0, 0, 255)));
+            LayerKind::raster(PixelBuffer::filled(32, 32, Rgba8::opaque(0, 0, 255)));
         let top = view.doc.tree.alloc_id();
         let mut l = Layer::raster(top, "Red", PixelBuffer::filled(32, 32, Rgba8::opaque(255, 0, 0)));
         l.opacity = 0.5;
@@ -424,7 +424,7 @@ fn merge_all_collapses_a_document_with_groups() {
         let view = app.doc_mut().unwrap();
         let base = view.doc.active.unwrap();
         view.doc.tree.get_mut(base).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(16, 16, Rgba8::opaque(0, 0, 255)));
+            LayerKind::raster(PixelBuffer::filled(16, 16, Rgba8::opaque(0, 0, 255)));
 
         // A group with a child, so flatten has to cope with nesting: deleting
         // the group takes the child with it.

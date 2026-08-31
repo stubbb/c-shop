@@ -61,7 +61,7 @@ fn a_dragged_layer_catches_on_a_guide() {
         if let Some(layer) = view.doc.tree.get_mut(id) {
             let mut px = cshop_core::pixels::PixelBuffer::filled(60, 40, Rgba8::WHITE);
             px.set(0, 0, Rgba8::BLACK);
-            layer.kind = cshop_core::layer::LayerKind::Raster(px);
+            layer.kind = cshop_core::layer::LayerKind::raster(px);
             layer.offset = (10, 10);
         }
     }
@@ -98,7 +98,7 @@ fn snapping_can_be_turned_off() {
     let id = h.app.doc().unwrap().doc.active.unwrap();
     if let Some(view) = h.app.doc_mut() {
         if let Some(layer) = view.doc.tree.get_mut(id) {
-            layer.kind = cshop_core::layer::LayerKind::Raster(
+            layer.kind = cshop_core::layer::LayerKind::raster(
                 cshop_core::pixels::PixelBuffer::filled(60, 40, Rgba8::WHITE),
             );
             layer.offset = (10, 10);

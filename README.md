@@ -143,8 +143,10 @@ offered as the separate things they are. **CMYK** files open as what they are �
 four inks read through the press's own profile, rather than four numbers
 mistaken for a colour — and `export profile=` sends a picture back out as ink
 with the profile embedded. `export depth=16` writes sixty-four bits to a pixel,
-keeping precision the compositor already computes and eight bits throws away: a
-gradient at thirty percent opacity keeps 256 distinct levels against 78. See
+keeping precision that eight bits throws away: a gradient at thirty percent
+opacity keeps 256 distinct levels against 78. **Layers hold sixteen bits** as
+well as eight, so a sixteen-bit file opens deep, saves deep and exports deep —
+bit for bit — and `Image ▸ Mode` moves a document between the two. See
 [docs/COLOUR.md](docs/COLOUR.md).
 
 **Files.** A native layered project format, `.cshop`, that keeps the whole
@@ -516,9 +518,15 @@ cargo clippy --workspace --all-targets
 
 Custom pattern tiles loaded from an image (the pattern overlay draws six
 generated figures), and selecting a range within a text layer — type editing
-has a caret but no selection. Raster layers store eight bits a channel, so
-`depth=16` preserves what the compositor worked out rather than what was
-painted, and a sixteen-bit file still narrows on the way in.
+has a caret but no selection.
+
+The tools paint in eight bits. A sixteen-bit layer holds its depth through
+opening, saving and export, but a brush, filter, adjustment or transform turns
+it away and says which menu item converts it, rather than doing nothing
+quietly. Compositing is capped at half-float's eleven bits of mantissa —
+`Rgba16Unorm` would fit and wgpu does not allow it as a colour attachment — so
+a document that is one deep layer skips the compositor on the way out, and one
+with a stack on top of it does not.
 
 No display transform and no soft proofing: the canvas shows the working space's
 numbers directly, which is right for the sRGB every document starts in and

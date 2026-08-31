@@ -757,6 +757,7 @@ impl Runner {
             "info" => self.cmd_info(cmd),
             "export" | "save" => self.cmd_write(cmd),
             "profile" => self.cmd_profile(cmd),
+            "mode" => self.cmd_mode(cmd),
             "lens" => self.cmd_lens(cmd),
             "denoise" => self.cmd_denoise(cmd),
             "upscale" => self.cmd_upscale(cmd),
@@ -768,8 +769,8 @@ impl Runner {
             other => Err(format!(
                 "unknown command {other:?}. Available: new, open, text, measure, shape, fill, \
                  place, select, gradient, style, effect, filter, adjust, layer, set, move, \
-                 order, info, profile, lens, denoise, upscale, separate, inpaint, \
-                 depth, relight, guide, export, save"
+                 order, info, profile, mode, lens, denoise, upscale, separate, \
+                 inpaint, depth, relight, guide, export, save"
             )),
         }
     }
@@ -2294,9 +2295,10 @@ impl Runner {
         let view = self.app.doc().ok_or("no document")?;
         let n = view.doc.tree.len();
         let fact = format!(
-            "{}x{}, {n} layers, {}",
+            "{}x{}, {n} layers, {} bits a channel, {}",
             view.doc.width,
             view.doc.height,
+            view.doc.depth(),
             view.doc.profile.name()
         );
         self.report.facts.push(("document".into(), fact.clone()));
@@ -2449,6 +2451,47 @@ impl Runner {
 
     /// `profile` on its own reports; `assign` and `convert` are the two ways
     /// to change it, and they are opposites. See [`cshop_core::profile`].
+    /// `mode` with no argument reports the depth; `mode 8` or `mode 16` moves
+    /// every raster layer to it.
+    ///
+    /// Widening is free and reversible. Narrowing is not — what eight bits
+    /// cannot hold is gone from the layer, and only the history remembers it —
+    /// so this says so rather than reporting a success that is also a loss.
+    fn cmd_mode(&mut self, cmd: &Command) -> Result<String, String> {
+        self.need_doc()?;
+        let at = self.app.doc().ok_or("no document")?.doc.depth();
+        let Some(want) = cmd.args.first() else {
+            let fact = format!("{at} bits a channel");
+            self.report.facts.push(("mode".into(), fact.clone()));
+            return Ok(fact);
+        };
+        let bits: u8 = match want.as_str() {
+            "8" => 8,
+            "16" => 16,
+            other => {
+                return Err(format!(
+                    "a channel is 8 or 16 bits deep, not {other:?}. \
+                     `mode` on its own says which it is now."
+                ))
+            }
+        };
+        if bits == at {
+            return Ok(format!("already {at} bits a channel"));
+        }
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let edit = Box::new(cshop_core::history::SetDepth::new(bits));
+        let dirty = view.history.apply(&mut view.doc, edit);
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(if bits == 16 {
+            "widened to 16 bits a channel; nothing was lost".into()
+        } else {
+            "narrowed to 8 bits a channel; what eight bits cannot hold is now \
+             only in the history"
+                .to_string()
+        })
+    }
+
     fn cmd_profile(&mut self, cmd: &Command) -> Result<String, String> {
         self.need_doc()?;
         let what = cmd.args.first().map(|s| s.as_str()).unwrap_or("");

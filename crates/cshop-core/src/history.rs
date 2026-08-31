@@ -7,7 +7,7 @@
 
 use crate::document::{Dirty, Document};
 use crate::geom::IRect;
-use crate::layer::{Layer, LayerId, LayerMask};
+use crate::layer::{Layer, LayerId, LayerMask, Surface};
 use crate::mask::MaskBuffer;
 use crate::color::Rgba8;
 use crate::pixels::PixelBuffer;
@@ -771,7 +771,7 @@ impl ReplaceLayerPixels {
         let bounds = doc.bounds();
         let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
         layer.offset = offset;
-        layer.kind = crate::layer::LayerKind::Raster(pixels.clone());
+        layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(pixels.clone()));
         // The layer changed size, so the cache has to rebuild its texture.
         Dirty { layers: vec![self.id], rect: bounds, structure: true }
     }
@@ -892,7 +892,7 @@ impl Command for ResizeCanvas {
 /// is expensive in memory, but Image Size is a deliberate, occasional
 /// operation and an exact undo is worth more than the bytes.
 /// One layer's pixels, position and mask, as they were before a resize.
-type LayerSnapshot = (LayerId, PixelBuffer, (i32, i32), Option<LayerMask>);
+type LayerSnapshot = (LayerId, crate::layer::Surface, (i32, i32), Option<LayerMask>);
 
 #[derive(Debug)]
 pub struct ResizeImage {
@@ -913,8 +913,8 @@ impl Command for ResizeImage {
         self.before.as_ref().map_or(0, |(_, _, snaps)| {
             snaps
                 .iter()
-                .map(|(_, px, _, mask)| {
-                    pixel_bytes(px) + mask.as_ref().map_or(0, mask_bytes)
+                .map(|(_, surface, _, mask)| {
+                    surface.bytes() + mask.as_ref().map_or(0, mask_bytes)
                 })
                 .sum()
         })
@@ -932,7 +932,13 @@ impl Command for ResizeImage {
                 .into_iter()
                 .filter_map(|id| {
                     let layer = doc.tree.get(id)?;
-                    Some((id, layer.pixels()?.clone(), layer.offset, layer.mask.clone()))
+                    let surface = match &layer.kind {
+                        crate::layer::LayerKind::Raster(s) => s.clone(),
+                        // A vector layer's raster is a rendering of it; the
+                        // resize redraws those from their own description.
+                        _ => crate::layer::Surface::Eight(layer.pixels()?.clone()),
+                    };
+                    Some((id, surface, layer.offset, layer.mask.clone()))
                 })
                 .collect();
             self.before = Some((doc.width, doc.height, snapshot));
@@ -954,7 +960,7 @@ impl Command for ResizeImage {
                 let w = ((px.width() as f64 * sx).round() as u32).max(1);
                 let h = ((px.height() as f64 * sy).round() as u32).max(1);
                 let resized = crate::resample::resize(px, w, h, self.filter);
-                layer.kind = crate::layer::LayerKind::Raster(resized);
+                layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(resized));
             }
             layer.offset = new_offset;
 
@@ -979,9 +985,9 @@ impl Command for ResizeImage {
         let Some((w, h, snapshot)) = self.before.clone() else { return Dirty::NONE };
         doc.width = w;
         doc.height = h;
-        for (id, pixels, offset, mask) in snapshot {
+        for (id, surface, offset, mask) in snapshot {
             if let Some(layer) = doc.tree.get_mut(id) {
-                layer.kind = crate::layer::LayerKind::Raster(pixels);
+                layer.kind = crate::layer::LayerKind::Raster(surface);
                 layer.offset = offset;
                 layer.mask = mask;
             }
@@ -1074,10 +1080,72 @@ impl Command for UpscaleLayer {
 /// type into a picture of itself.
 #[derive(Debug, Clone)]
 enum Unconverted {
-    Raster(PixelBuffer),
+    Raster(Surface),
     Fill(crate::color::Rgba8),
     Text(Box<crate::text::TextContent>),
     Shape(Box<crate::shape::ShapeContent>),
+}
+
+/// Move every raster layer in the document to eight or sixteen bits a channel.
+///
+/// Widening invents nothing and can always be undone by narrowing again.
+/// Narrowing throws away what eight bits cannot hold, so this keeps the whole
+/// of every layer it touched: undo is exact, at the cost of the memory, which
+/// is what the history's budget is for.
+#[derive(Debug)]
+pub struct SetDepth {
+    to: u8,
+    before: Vec<(LayerId, Surface)>,
+    taken: bool,
+}
+
+impl SetDepth {
+    /// `bits` is 8 or 16; anything else is treated as 8.
+    pub fn new(bits: u8) -> Self {
+        Self { to: if bits == 16 { 16 } else { 8 }, before: Vec::new(), taken: false }
+    }
+}
+
+impl Command for SetDepth {
+    fn name(&self) -> String {
+        format!("{} Bits a Channel", self.to)
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.before.iter().map(|(_, s)| s.bytes()).sum()
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        if !self.taken {
+            self.before = doc
+                .tree
+                .iter_all()
+                .into_iter()
+                .filter_map(|id| {
+                    let s = doc.tree.get(id)?.surface()?;
+                    (s.depth() != self.to).then(|| (id, s.clone()))
+                })
+                .collect();
+            self.taken = true;
+        }
+        for (id, _) in &self.before {
+            let Some(layer) = doc.tree.get_mut(*id) else { continue };
+            if let Some(s) = layer.surface_mut() {
+                *s = s.at_depth(self.to);
+            }
+        }
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        for (id, was) in &self.before {
+            let Some(layer) = doc.tree.get_mut(*id) else { continue };
+            if let Some(s) = layer.surface_mut() {
+                *s = was.clone();
+            }
+        }
+        Dirty::structural(doc.bounds())
+    }
 }
 
 #[derive(Debug)]
@@ -1109,7 +1177,7 @@ impl Command for SetProfile {
             snaps
                 .iter()
                 .map(|(_, held)| match held {
-                    Unconverted::Raster(px) => pixel_bytes(px),
+                    Unconverted::Raster(s) => s.bytes(),
                     _ => 0,
                 })
                 .sum()
@@ -1149,7 +1217,7 @@ impl Command for SetProfile {
             self.before = Some((doc.profile.clone(), snapshot));
         }
 
-        if self.convert && doc.profile != self.to {
+        if self.convert && !doc.profile.same_transform(&self.to) {
             let from = doc.profile.clone();
             let intent = crate::profile::RenderingIntent::RelativeColorimetric;
             let recolour = |c: &mut crate::color::Rgba8| {
@@ -1160,11 +1228,21 @@ impl Command for SetProfile {
             };
             for id in doc.tree.iter_all() {
                 let Some(layer) = doc.tree.get_mut(id) else { continue };
-                if let Some(px) = layer.pixels_mut() {
-                    if let Err(e) = from.convert_rgba8(&self.to, px.pixels_mut(), intent) {
-                        // Leave the pixels alone rather than half-converted.
-                        log::warn!("colour conversion failed on one layer: {e}");
+                // A deep layer is converted at its own depth. Narrowing it to
+                // eight for the transform and widening it back would throw
+                // away exactly the bits it was kept deep for.
+                let converted = match layer.surface_mut() {
+                    Some(crate::layer::Surface::Eight(px)) => {
+                        from.convert_rgba8(&self.to, px.pixels_mut(), intent)
                     }
+                    Some(crate::layer::Surface::Sixteen(px)) => {
+                        from.convert_rgba16(&self.to, px.pixels_mut(), intent)
+                    }
+                    None => Ok(()),
+                };
+                if let Err(e) = converted {
+                    // Leave the pixels alone rather than half-converted.
+                    log::warn!("colour conversion failed on one layer: {e}");
                 }
                 // A vector layer keeps the colour it was drawn from, and the
                 // next re-render would put the old one back. So those are
@@ -1205,7 +1283,7 @@ impl Command for SetProfile {
         for (id, held) in snapshot {
             let Some(layer) = doc.tree.get_mut(id) else { continue };
             match held {
-                Unconverted::Raster(px) => layer.kind = crate::layer::LayerKind::Raster(px),
+                Unconverted::Raster(s) => layer.kind = crate::layer::LayerKind::Raster(s),
                 Unconverted::Fill(c) => {
                     layer.kind =
                         crate::layer::LayerKind::Fill(crate::layer::FillStyle::Solid(c))
@@ -1281,7 +1359,7 @@ impl Command for RasterizeLayer {
     fn apply(&mut self, doc: &mut Document) -> Dirty {
         let Some(pixels) = self.pixels.take() else { return Dirty::NONE };
         let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
-        self.was = Some(std::mem::replace(&mut layer.kind, crate::layer::LayerKind::Raster(pixels)));
+        self.was = Some(std::mem::replace(&mut layer.kind, crate::layer::LayerKind::Raster(Surface::Eight(pixels))));
         // Nothing moves and nothing changes colour; only the layer's kind.
         Dirty::structural(layer.bounds())
     }
@@ -1289,8 +1367,10 @@ impl Command for RasterizeLayer {
     fn revert(&mut self, doc: &mut Document) -> Dirty {
         let Some(was) = self.was.take() else { return Dirty::NONE };
         let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
-        if let crate::layer::LayerKind::Raster(p) = std::mem::replace(&mut layer.kind, was) {
-            self.pixels = Some(p);
+        if let crate::layer::LayerKind::Raster(s) = std::mem::replace(&mut layer.kind, was) {
+            // Rasterising made this from a vector layer, so it is eight-bit by
+            // construction; taking it back keeps it that way.
+            self.pixels = s.eight().cloned();
         }
         Dirty::structural(layer.bounds())
     }

@@ -251,7 +251,18 @@ impl DocView {
     /// The compositor works in `Rgba16Float`, so this is not a widened
     /// eight-bit picture — it is the precision that was there all along and
     /// was being thrown away on the last step out.
+    ///
+    /// Half-float carries about eleven bits of mantissa, though, which is
+    /// fewer than the sixteen a deep layer holds. A document that is one
+    /// deep layer and nothing else therefore skips the compositor entirely
+    /// and hands back the layer: there is nothing to composite, and passing
+    /// through the GPU would cost bits it cannot carry. That is the shape a
+    /// photograph has from opening to export, so it is the common case, not
+    /// a corner of one.
     pub fn read_composite_deep(&self, gpu: &GpuContext) -> cshop_core::pixels::DeepBuffer {
+        if let Some(deep) = self.doc.single_deep_layer() {
+            return deep.clone();
+        }
         cshop_gpu::readback::read_as_deep(gpu, &self.composite, self.doc.bounds())
     }
 

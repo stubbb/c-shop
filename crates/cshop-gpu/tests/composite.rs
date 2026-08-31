@@ -77,7 +77,7 @@ fn assert_close(got: Rgba, want: Rgba, ctx: &str) {
 fn two_layer_doc(bottom: Rgba8, top: Rgba8, mode: BlendMode, opacity: f32) -> Document {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let base = doc.active.unwrap();
-    doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(PixelBuffer::filled(1, 1, bottom));
+    doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(PixelBuffer::filled(1, 1, bottom));
 
     let id = doc.tree.alloc_id();
     let mut layer = Layer::raster(id, "top", PixelBuffer::filled(1, 1, top));
@@ -155,7 +155,7 @@ fn a_lone_layer_survives_compositing_unchanged() {
     for c in colors {
         let mut doc = Document::new("t", 1, 1, Background::Transparent);
         let base = doc.active.unwrap();
-        doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(PixelBuffer::filled(1, 1, c));
+        doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(PixelBuffer::filled(1, 1, c));
         assert_close(h.run(&doc)[0], c.to_f32(), &format!("passthrough of {c:?}"));
     }
 }
@@ -200,7 +200,7 @@ fn masks_scale_coverage() {
     let mut doc = Document::new("t", 4, 1, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(4, 1, Rgba8::BLACK));
+        LayerKind::raster(PixelBuffer::filled(4, 1, Rgba8::BLACK));
 
     let id = doc.tree.alloc_id();
     let mut layer = Layer::raster(id, "top", PixelBuffer::filled(4, 1, Rgba8::WHITE));
@@ -256,7 +256,7 @@ fn clipping_masks_limit_a_layer_to_the_base_alpha() {
     let mut px = PixelBuffer::new(4, 1);
     px.set(0, 0, Rgba8::opaque(0, 0, 255));
     px.set(1, 0, Rgba8::opaque(0, 0, 255));
-    doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(px);
+    doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(px);
 
     // Clipped layer covers everything but may only show over the base.
     let id = doc.tree.alloc_id();
@@ -282,7 +282,7 @@ fn two_clipped_layers_share_one_base() {
     let base = doc.active.unwrap();
     let mut px = PixelBuffer::new(2, 1);
     px.set(0, 0, Rgba8::opaque(0, 0, 255));
-    doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(px);
+    doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(px);
 
     for (name, color) in [("c1", Rgba8::opaque(255, 0, 0)), ("c2", Rgba8::opaque(0, 255, 0))] {
         let id = doc.tree.alloc_id();
@@ -325,7 +325,7 @@ fn hidden_layers_and_groups_are_skipped() {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(1, 1, Rgba8::opaque(0, 0, 255)));
+        LayerKind::raster(PixelBuffer::filled(1, 1, Rgba8::opaque(0, 0, 255)));
 
     let g = doc.tree.alloc_id();
     doc.tree.push(Layer::group(g, "G"), None);
@@ -347,7 +347,7 @@ fn group_opacity_applies_to_the_composited_result() {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(1, 1, Rgba8::BLACK));
+        LayerKind::raster(PixelBuffer::filled(1, 1, Rgba8::BLACK));
 
     let g = doc.tree.alloc_id();
     let mut group = Layer::group(g, "G");
@@ -377,7 +377,7 @@ fn pass_through_groups_do_not_isolate_blending() {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(1, 1, Rgba8::opaque(128, 128, 128)));
+        LayerKind::raster(PixelBuffer::filled(1, 1, Rgba8::opaque(128, 128, 128)));
 
     let g = doc.tree.alloc_id();
     let mut group = Layer::group(g, "G");
@@ -439,7 +439,7 @@ fn compositing_a_sub_region_leaves_the_rest_untouched() {
     let mut doc = Document::new("t", 8, 8, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(8, 8, Rgba8::opaque(255, 0, 0)));
+        LayerKind::raster(PixelBuffer::filled(8, 8, Rgba8::opaque(255, 0, 0)));
 
     let dest = GpuTexture::render_target(&h.ctx, "dest", 8, 8, h.ctx.work_format());
     h.cache.sync(&h.ctx, &doc, &cshop_core::document::Dirty::NONE);
@@ -447,7 +447,7 @@ fn compositing_a_sub_region_leaves_the_rest_untouched() {
     // Full composite first, then recomposite one corner after a colour change.
     h.compositor.composite(&h.ctx, &doc, &h.cache, &dest, doc.bounds());
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(8, 8, Rgba8::opaque(0, 0, 255)));
+        LayerKind::raster(PixelBuffer::filled(8, 8, Rgba8::opaque(0, 0, 255)));
     // Report the edit: the cache re-uploads only what it is told about.
     h.cache.sync(&h.ctx, &doc, &cshop_core::document::Dirty::pixels(base, doc.bounds()));
 
@@ -484,7 +484,7 @@ fn presenting_an_opaque_colour_is_lossless() {
     for c in samples {
         let mut doc = Document::new("t", 2, 2, Background::Transparent);
         let base = doc.active.unwrap();
-        doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(PixelBuffer::filled(2, 2, c));
+        doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(PixelBuffer::filled(2, 2, c));
 
         let work = GpuTexture::render_target(&h.ctx, "work", 2, 2, h.ctx.work_format());
         let display = GpuTexture::render_target(
@@ -522,7 +522,7 @@ fn presenting_a_translucent_colour_premultiplies_in_gamma() {
 
     let mut doc = Document::new("t", 2, 2, Background::Transparent);
     let base = doc.active.unwrap();
-    doc.tree.get_mut(base).unwrap().kind = LayerKind::Raster(PixelBuffer::filled(2, 2, c));
+    doc.tree.get_mut(base).unwrap().kind = LayerKind::raster(PixelBuffer::filled(2, 2, c));
 
     let work = GpuTexture::render_target(&h.ctx, "work", 2, 2, h.ctx.work_format());
     let display =
@@ -555,7 +555,7 @@ use cshop_core::curve::Curve;
 fn adjusted_doc(base: Rgba8, adjustment: Adjustment) -> Document {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let id = doc.active.unwrap();
-    doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(PixelBuffer::filled(1, 1, base));
+    doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(PixelBuffer::filled(1, 1, base));
 
     let adj_id = doc.tree.alloc_id();
     doc.tree.push(Layer::adjustment(adj_id, adjustment), None);
@@ -705,7 +705,7 @@ fn an_adjustment_layer_leaves_transparent_areas_alone() {
     let mut px = PixelBuffer::new(4, 1);
     px.set(0, 0, Rgba8::opaque(0, 0, 0));
     px.set(1, 0, Rgba8::opaque(0, 0, 0));
-    doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+    doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
 
     let adj = doc.tree.alloc_id();
     doc.tree.push(Layer::adjustment(adj, Adjustment::Invert), None);
@@ -733,7 +733,7 @@ fn an_adjustment_mask_limits_where_it_applies() {
     let mut doc = Document::new("t", 4, 1, Background::Transparent);
     let id = doc.active.unwrap();
     doc.tree.get_mut(id).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(4, 1, Rgba8::opaque(0, 0, 0)));
+        LayerKind::raster(PixelBuffer::filled(4, 1, Rgba8::opaque(0, 0, 0)));
 
     let adj = doc.tree.alloc_id();
     let mut layer = Layer::adjustment(adj, Adjustment::Invert);
@@ -756,7 +756,7 @@ fn an_adjustment_clips_to_the_layer_below() {
     // Bottom fills the row; the middle layer covers only half.
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(4, 1, Rgba8::opaque(0, 0, 0)));
+        LayerKind::raster(PixelBuffer::filled(4, 1, Rgba8::opaque(0, 0, 0)));
 
     let mid = doc.tree.alloc_id();
     let mut px = PixelBuffer::new(4, 1);
@@ -806,7 +806,7 @@ fn an_adjustment_inside_a_group_stays_inside_it() {
     let mut doc = Document::new("t", 1, 1, Background::Transparent);
     let base = doc.active.unwrap();
     doc.tree.get_mut(base).unwrap().kind =
-        LayerKind::Raster(PixelBuffer::filled(1, 1, Rgba8::opaque(0, 0, 0)));
+        LayerKind::raster(PixelBuffer::filled(1, 1, Rgba8::opaque(0, 0, 0)));
 
     let g = doc.tree.alloc_id();
     let mut group = Layer::group(g, "G");

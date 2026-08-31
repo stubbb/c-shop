@@ -319,3 +319,50 @@ fn deep_ink_goes_to_deep_colour_and_back() {
         assert!(d <= 12, "{a:?} came back as {b:?}");
     }
 }
+
+/// A profile carries the moment it was written. Two copies of sRGB stamped a
+/// minute apart are not the same bytes, but converting between them is still
+/// nothing, and doing it anyway costs precision — which is how a picture used
+/// to lose a little every time it was exported and opened again.
+#[test]
+fn a_different_timestamp_is_not_a_different_colour() {
+    let srgb = Profile::srgb();
+    let mut later = srgb.bytes().to_vec();
+    later[33] = later[33].wrapping_add(1); // the minute in the header's date
+    later[35] = later[35].wrapping_add(7); // and the second
+    let later = Profile::parse(&later).expect("still a profile");
+
+    assert_ne!(later, srgb, "the bytes really do differ");
+    assert!(later.same_transform(&srgb), "but nothing about colour does");
+    assert!(srgb.same_transform(&later), "and it reads the same both ways");
+
+    // So a conversion between them leaves every sample where it was.
+    let original: Vec<Rgba8> =
+        (0..=255u8).map(|v| Rgba8::new(v, 255 - v, v.wrapping_mul(5), 255)).collect();
+    let mut through = original.clone();
+    later.convert_rgba8(&srgb, &mut through, RenderingIntent::RelativeColorimetric).unwrap();
+    assert_eq!(through, original, "a stamp is not a transform");
+}
+
+/// The other half: everything that does describe colour still has to match.
+#[test]
+fn a_different_colour_is_a_different_profile() {
+    let srgb = Profile::srgb();
+    // Byte 128 is the first byte past the header, where the tag table starts,
+    // and byte 400 is in the middle of the tag data. Neither is a timestamp.
+    for at in [128, 400] {
+        let mut edited = srgb.bytes().to_vec();
+        edited[at] = edited[at].wrapping_add(1);
+        let Ok(edited) = Profile::parse(&edited) else { continue };
+        assert!(
+            !edited.same_transform(&srgb),
+            "a change at byte {at} is not one of the two fields worth excusing"
+        );
+    }
+    // And a profile of a different length is never the same one.
+    if let Some(other) = maybe(&format!("{COLORD}/AdobeRGB1998.icc"))
+        .or_else(|| maybe(&format!("{GS}/a98.icc")))
+    {
+        assert!(!other.same_transform(&srgb));
+    }
+}

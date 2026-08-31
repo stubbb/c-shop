@@ -170,18 +170,45 @@ it — PNG and TIFF — and a scripted request to write sixteen bits into any ot
 is refused rather than quietly narrowed. Ink can be deep
 too: `depth=16 profile=<a CMYK profile>` writes a sixteen-bit CMYK TIFF.
 
+### Layers hold sixteen bits too
+
+A raster layer stores either eight bits a channel or sixteen. A sixteen-bit
+file opens deep, stays deep through a `.cshop` save and load, and exports deep
+— bit for bit, every count, with nothing rounded on the way through:
+
+```
+open scan.png              # a sixteen-bit scan
+info                       # → 4096x4096, 1 layers, 16 bits a channel, sRGB
+export out.png depth=16    # identical to scan.png, sample for sample
+```
+
+`Image ▸ Mode` moves a document between the two, and `mode 8` / `mode 16` does
+it from a script. Widening invents nothing — an eight-bit count becomes the
+sixteen-bit count meaning the same fraction — so widening and narrowing again
+gives back exactly the picture that went in. Narrowing on its own does lose
+what eight bits cannot hold, and only undo has it on record.
+
 ### What is still eight bits
 
-Layer *storage*. A raster layer holds eight bits a channel, so opening a
-sixteen-bit file still narrows it on the way in, and painting is eight-bit
-work. What `depth=16` preserves is everything the compositor computes on top of
-that — which is where the banding in the example above came from, and is most
-of what a stack of edits amounts to.
+**The tools.** Painting, filters, adjustments, transforms, the paint bucket and
+the gradient all work in eight bits. A sixteen-bit layer turns them away and
+says so — naming the depth and the menu item that converts it — rather than
+doing nothing and leaving you to wonder. Deep layers are for what arrives deep
+and leaves deep: scans, raw conversions, renders, anything headed for a press.
 
-A document that stores its layers deep is the next step, and the machinery is
-in place for it: the pixel buffer is generic over its sample type, `Rgba16`
-exists alongside `Rgba8`, and files, profiles and ink all read and write at
-either depth.
+**The compositor, past about eleven bits.** Layers are composited in
+`Rgba16Float`, which is deeper than eight but shallower than sixteen: its
+eleven bits of mantissa cannot tell adjacent sixteen-bit counts apart. The
+better fit would be `Rgba16Unorm`, and wgpu does not permit it as a colour
+attachment — only as a storage texture — so this is a floor, not a choice.
+
+A document that is one full-canvas deep layer and nothing else therefore skips
+the compositor entirely on the way out: there is nothing to composite, and
+going through the GPU would cost bits it cannot carry. That is the shape a
+photograph has from opening to export, so it is the common case rather than a
+corner of one. Put a second layer over it and the export is composited, at
+half-float, and the adjacent counts collapse — which is the honest trade and
+is measured in the tests rather than assumed.
 
 ## From a script
 

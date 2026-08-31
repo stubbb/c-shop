@@ -366,6 +366,29 @@ impl CShopApp {
         self.toast = Some((msg.into(), false));
     }
 
+    /// True when the active layer holds sixteen bits a channel.
+    fn active_is_deep(&self) -> bool {
+        self.doc()
+            .and_then(|v| Some(v.doc.tree.get(v.doc.active?)?.surface()?.depth() == 16))
+            .unwrap_or(false)
+    }
+
+    /// The complaint that fits.
+    ///
+    /// Every tool works in eight bits, so a sixteen-bit layer turns them all
+    /// away — but it is a raster layer, and telling someone it is not one
+    /// sends them looking for a problem they do not have. This substitutes
+    /// the real objection, and the one menu item that answers it.
+    fn why_not(&self, otherwise: &str) -> String {
+        if self.active_is_deep() {
+            "That layer holds sixteen bits a channel, and the tools work in eight. \
+             Image ▸ Mode ▸ 8 Bits/Channel converts it."
+                .into()
+        } else {
+            otherwise.into()
+        }
+    }
+
     fn fail(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         log::error!("{msg}");
@@ -1687,6 +1710,23 @@ impl CShopApp {
                     }
                 }
             }
+            Action::SetDepth(bits) => {
+                let Some(view) = self.doc_mut() else { return };
+                if view.doc.depth() == bits {
+                    let already = format!("Already at {bits} bits a channel");
+                    self.notify(already);
+                    return;
+                }
+                let edit = Box::new(cshop_core::history::SetDepth::new(bits));
+                let dirty = view.history.apply(&mut view.doc, edit);
+                view.mark_dirty(dirty);
+                view.invalidate();
+                self.notify(if bits == 16 {
+                    "Now 16 bits a channel; nothing was lost widening".into()
+                } else {
+                    "Now 8 bits a channel".to_string()
+                });
+            }
             Action::ResizeImage { width, height, filter } => {
                 let gpu = self.gpu.clone();
                 let Some(view) = self.doc_mut() else { return };
@@ -1810,6 +1850,11 @@ impl CShopApp {
         gpu: &cshop_gpu::context::GpuContext,
         index: usize,
     ) -> cshop_core::pixels::DeepBuffer {
+        // Skip the sync as well as the composite when there is nothing to
+        // composite; `read_composite_deep` explains why.
+        if self.docs[index].doc.single_deep_layer().is_some() {
+            return self.docs[index].read_composite_deep(gpu);
+        }
         let view = &mut self.docs[index];
         view.sync_composite_only(gpu, &mut self.compositor);
         view.read_composite_deep(gpu)
@@ -1940,7 +1985,8 @@ impl CShopApp {
             return;
         }
         let Some(pixels) = layer.pixels() else {
-            self.notify("Only raster layers can be copied from");
+            let why = self.why_not("Only raster layers can be copied from");
+            self.notify(why);
             return;
         };
         let offset = layer.offset;
@@ -2367,7 +2413,8 @@ impl CShopApp {
             // --- painting the layer's pixels -------------------------------
             EditTarget::Pixels => {
                 let Some(px) = layer.pixels() else {
-                    self.fail("Only raster layers can be painted on");
+                    let why = self.why_not("Only raster layers can be painted on");
+            self.fail(why);
                     return;
                 };
                 // Deliberately not `px.clone()`. On a large canvas that copied
@@ -4891,7 +4938,8 @@ impl CShopApp {
             return;
         }
         let Some((id, rect, offset)) = self.filter_region() else {
-            self.fail("Adjustments apply to raster layers; use an adjustment layer instead");
+            let why = self.why_not("Adjustments apply to raster layers; use an adjustment layer instead");
+            self.fail(why);
             return;
         };
         let Some(view) = self.doc() else { return };
@@ -4916,7 +4964,8 @@ impl CShopApp {
         }
         let offset = layer.offset;
         let Some(px) = layer.pixels() else {
-            self.fail("Adjustments apply to raster layers; use an adjustment layer instead");
+            let why = self.why_not("Adjustments apply to raster layers; use an adjustment layer instead");
+            self.fail(why);
             return;
         };
 
@@ -4995,7 +5044,8 @@ impl CShopApp {
             return;
         }
         let Some(px) = layer.pixels() else {
-            self.fail("Free Transform works on raster layers");
+            let why = self.why_not("Free Transform works on raster layers");
+            self.fail(why);
             return;
         };
         // Transforming resamples pixels, so a vector layer stops being one.
@@ -5220,7 +5270,8 @@ impl CShopApp {
             return;
         }
         let Some((id, rect, offset)) = self.filter_region() else {
-            self.fail("Filters apply to raster layers");
+            let why = self.why_not("Filters apply to raster layers");
+            self.fail(why);
             return;
         };
         let Some(view) = self.doc() else { return };
@@ -5243,7 +5294,8 @@ impl CShopApp {
             background: self.background,
         };
         let Some((id, rect, offset)) = self.filter_region() else {
-            self.fail("Filters apply to raster layers");
+            let why = self.why_not("Filters apply to raster layers");
+            self.fail(why);
             return;
         };
         if self.doc().is_some_and(|v| {
@@ -5305,7 +5357,8 @@ impl CShopApp {
         let options = self.bucket;
         let colour = self.foreground;
         let Some(source) = self.sample_source(options.sample_all_layers) else {
-            self.fail("The Paint Bucket works on raster layers");
+            let why = self.why_not("The Paint Bucket works on raster layers");
+            self.fail(why);
             return;
         };
 
@@ -5415,7 +5468,8 @@ impl CShopApp {
         let offset = layer.offset;
         let preserve = layer.locks.transparency;
         let Some(px) = layer.pixels() else {
-            self.fail("The Gradient tool works on raster layers");
+            let why = self.why_not("The Gradient tool works on raster layers");
+            self.fail(why);
             return;
         };
 

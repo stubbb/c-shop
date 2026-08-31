@@ -118,6 +118,33 @@ impl PartialEq for Profile {
 }
 
 impl Profile {
+    /// Whether converting from one of these to the other would change nothing.
+    ///
+    /// A different question from equality, and the one worth asking before
+    /// building a transform. An ICC profile carries the wall-clock moment it
+    /// was written, and may carry a checksum of itself; neither says anything
+    /// about colour. Our own exports stamp the current time, so a file this
+    /// program wrote and then opened again would otherwise be converted from
+    /// sRGB to sRGB on the way in — and no conversion is quite free, so the
+    /// picture would shed a little precision on every round trip.
+    ///
+    /// Every byte outside those two fields still has to match exactly, so
+    /// this cannot call two profiles that behave differently the same.
+    pub fn same_transform(&self, other: &Profile) -> bool {
+        // In the 128-byte ICC header, 24..36 is the creation date and time
+        // and 84..100 the optional MD5 of the profile itself.
+        const SKIP: [std::ops::Range<usize>; 2] = [24..36, 84..100];
+        let (a, b) = (self.bytes.as_slice(), other.bytes.as_slice());
+        if a.len() != b.len() {
+            return false;
+        }
+        if a.len() < 128 {
+            // Too short to hold a header, so there is nothing to excuse.
+            return a == b;
+        }
+        a.iter().zip(b).enumerate().all(|(i, (x, y))| x == y || SKIP.iter().any(|r| r.contains(&i)))
+    }
+
     /// The profile assumed for anything that does not say otherwise, and the
     /// one a new document starts in.
     pub fn srgb() -> Profile {
@@ -235,7 +262,7 @@ impl Profile {
                 self.space()
             }));
         }
-        if self == dst {
+        if self.same_transform(dst) {
             return Ok(());
         }
         let t = self
@@ -372,7 +399,7 @@ impl Profile {
                 self.space()
             }));
         }
-        if self == dst {
+        if self.same_transform(dst) {
             return Ok(());
         }
         let t = self

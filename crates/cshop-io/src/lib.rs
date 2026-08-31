@@ -90,10 +90,20 @@ pub fn decode_document_reporting(
         return psd::read(bytes).map(|d| (d, Colors::default()));
     }
     // Not layered: one image becomes one background layer, in the working
-    // space every new document starts in.
+    // space every new document starts in — and at the depth the file holds,
+    // rather than narrowed on the way in and called sixteen bits on the way
+    // out.
     let working = cshop_core::profile::Profile::srgb();
-    let (pixels, colors) = decode_managed(bytes, hint, &working)?;
-    let (w, h) = (pixels.width(), pixels.height());
+    let deep_file = is_deep(bytes, hint);
+    let (surface, colors, w, h) = if deep_file {
+        let (deep, colors) = decode_deep(bytes, hint, &working)?;
+        let (w, h) = (deep.width(), deep.height());
+        (cshop_core::layer::Surface::Sixteen(deep), colors, w, h)
+    } else {
+        let (pixels, colors) = decode_managed(bytes, hint, &working)?;
+        let (w, h) = (pixels.width(), pixels.height());
+        (cshop_core::layer::Surface::Eight(pixels), colors, w, h)
+    };
     let mut doc = cshop_core::document::Document::new(
         "Untitled",
         w,
@@ -102,7 +112,11 @@ pub fn decode_document_reporting(
     );
     doc.tree = Default::default();
     let id = doc.tree.alloc_id();
-    let mut layer = cshop_core::layer::Layer::raster(id, "Background", pixels);
+    let mut layer = cshop_core::layer::Layer::new(
+        id,
+        "Background",
+        cshop_core::layer::LayerKind::Raster(surface),
+    );
     layer.is_background = true;
     doc.tree.push(layer, None);
     doc.active = doc.tree.root().last().copied();
@@ -243,7 +257,7 @@ pub fn decode_managed(
         .ok_or_else(|| IoError::Decode("decoder returned a malformed buffer".into()))?;
 
     if let Some(from) = colors.embedded.as_ref() {
-        if from.space() == Space::Rgb && from != working {
+        if from.space() == Space::Rgb && !from.same_transform(working) {
             from.convert_rgba8(
                 working,
                 pixels.pixels_mut(),
@@ -332,7 +346,7 @@ pub fn decode_deep(
         .ok_or_else(|| IoError::Decode("decoder returned a malformed buffer".into()))?;
 
     if let Some(from) = colors.embedded.as_ref() {
-        if from.space() == Space::Rgb && from != working {
+        if from.space() == Space::Rgb && !from.same_transform(working) {
             from.convert_rgba16(
                 working,
                 pixels.pixels_mut(),
@@ -375,7 +389,7 @@ pub fn encode_deep(
     }
 
     let converted;
-    let source = if working == out {
+    let source = if working.same_transform(out) {
         pixels
     } else {
         let mut copy = pixels.clone();
@@ -526,7 +540,7 @@ pub fn encode_managed(
     // Convert first, then flatten: compositing onto white has to happen in the
     // space the white belongs to, and that is the one being written.
     let converted;
-    let source = if working == out {
+    let source = if working.same_transform(out) {
         pixels
     } else {
         let mut copy = pixels.clone();

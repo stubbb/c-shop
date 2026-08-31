@@ -377,6 +377,8 @@ pub enum Action {
     /// `convert` chooses between rewriting the pixels and relabelling them —
     /// see [`cshop_core::profile`].
     SetColorProfile { path: Option<std::path::PathBuf>, convert: bool },
+    /// Move every raster layer to eight or sixteen bits a channel.
+    SetDepth(u8),
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
     ResizeCanvas { width: u32, height: u32, anchor: Anchor },

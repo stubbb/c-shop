@@ -30,7 +30,7 @@ fn split(app: &mut CShopApp, w: u32, h: u32) {
     let id = view.doc.active.unwrap();
     let mut px = PixelBuffer::filled(w, h, Rgba8::BLACK);
     px.fill_rect(IRect::new(w as i32 / 2, 0, w as i32, h as i32), Rgba8::WHITE);
-    view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+    view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
     view.invalidate();
 }
 
@@ -67,7 +67,7 @@ fn a_filter_respects_the_selection() {
                 px.set(x, y, Rgba8::WHITE);
             }
         }
-        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
         view.invalidate();
     }
 
@@ -86,7 +86,7 @@ fn a_feathered_selection_fades_the_filter_in() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(128, 64, Rgba8::WHITE));
+            LayerKind::raster(PixelBuffer::filled(128, 64, Rgba8::WHITE));
         view.invalidate();
     }
 
@@ -150,7 +150,7 @@ fn a_pixel_locked_layer_refuses_filters() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         let l = view.doc.tree.get_mut(id).unwrap();
-        l.kind = LayerKind::Raster(PixelBuffer::filled(32, 32, Rgba8::WHITE));
+        l.kind = LayerKind::raster(PixelBuffer::filled(32, 32, Rgba8::WHITE));
         l.locks.pixels = true;
         view.invalidate();
     }
@@ -200,7 +200,7 @@ fn filtering_only_touches_the_selection_bounds() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(200, 200, Rgba8::WHITE));
+            LayerKind::raster(PixelBuffer::filled(200, 200, Rgba8::WHITE));
         view.invalidate();
     }
     let s = Selection::from_rect(200, 200, Rectf { x0: 10.0, y0: 10.0, x1: 30.0, y1: 30.0 }, false);

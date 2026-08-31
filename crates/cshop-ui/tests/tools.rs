@@ -30,7 +30,7 @@ fn app_with(w: u32, h: u32) -> Option<CShopApp> {
 fn set_pixels(app: &mut CShopApp, px: PixelBuffer) {
     let view = app.doc_mut().unwrap();
     let id = view.doc.active.unwrap();
-    view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+    view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
     view.invalidate();
 }
 

@@ -23,7 +23,7 @@ fn stacked(h: &mut Harness) -> (cshop_core::layer::LayerId, cshop_core::layer::L
     }
     let view = h.app.doc_mut().unwrap();
     let id = view.doc.tree.alloc_id();
-    view.doc.tree.push(Layer::new(id, "Ramp", LayerKind::Raster(ramp)), None);
+    view.doc.tree.push(Layer::new(id, "Ramp", LayerKind::raster(ramp)), None);
     view.doc.active = Some(id);
     view.doc.selected_layers = vec![id];
     h.settle(2);

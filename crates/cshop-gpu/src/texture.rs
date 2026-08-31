@@ -25,6 +25,14 @@ pub const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// encoded values, not hardware-linearised ones.
 pub const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// Format for a layer that holds sixteen bits a channel.
+///
+/// Half-float rather than sixteen-bit unorm, because unorm at that width needs
+/// a device feature that is not everywhere and this is core: it is also the
+/// format the compositor already works in, so a deep layer arrives in the
+/// space the blending happens in rather than being converted on the way.
+pub const DEEP_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// Mask coverage format.
 pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 

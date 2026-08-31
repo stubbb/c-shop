@@ -142,6 +142,68 @@ impl LayerTextures {
         self.entries.retain(|id, _| live.contains(id));
     }
 
+    /// Put a whole eight-bit picture into a layer's texture, making it if the
+    /// size has changed.
+    fn upload_whole(ctx: &GpuContext, entry: &mut Entry, id: u64, px: &cshop_core::pixels::PixelBuffer) {
+        let fresh = entry
+            .pixels
+            .as_ref()
+            .is_none_or(|t| t.width != px.width() || t.height != px.height());
+        if fresh {
+            entry.pixels = Some(GpuTexture::sampled(
+                ctx,
+                &format!("layer {id} pixels"),
+                px.width(),
+                px.height(),
+                LAYER_FORMAT,
+            ));
+        }
+        if let Some(tex) = &entry.pixels {
+            tex.write(ctx, px.as_bytes(), 4);
+        }
+    }
+
+    /// The same for a layer that holds sixteen bits a channel.
+    ///
+    /// The samples are unsigned integers filling 0..65535 and the texture is
+    /// half-float, so they are scaled on the way. Half-float carries about
+    /// eleven bits of mantissa — less than sixteen, and a great deal more than
+    /// eight — and it is what the compositor blends in, so nothing is lost a
+    /// second time on the way through.
+    fn upload_deep(
+        ctx: &GpuContext,
+        entry: &mut Entry,
+        id: u64,
+        deep: &cshop_core::pixels::DeepBuffer,
+    ) {
+        use crate::texture::DEEP_LAYER_FORMAT;
+        let (w, h) = (deep.width(), deep.height());
+        let fresh = entry
+            .pixels
+            .as_ref()
+            .is_none_or(|t| t.width != w || t.height != h || t.format != DEEP_LAYER_FORMAT);
+        if fresh {
+            entry.pixels = Some(GpuTexture::sampled(
+                ctx,
+                &format!("layer {id} deep pixels"),
+                w,
+                h,
+                DEEP_LAYER_FORMAT,
+            ));
+        }
+        let mut bytes = Vec::with_capacity(deep.pixels().len() * 8);
+        for p in deep.pixels() {
+            for c in [p.r, p.g, p.b, p.a] {
+                bytes.extend_from_slice(
+                    &half::f16::from_f32(c as f32 / 65535.0).to_le_bytes(),
+                );
+            }
+        }
+        if let Some(tex) = &entry.pixels {
+            tex.write(ctx, &bytes, 8);
+        }
+    }
+
     fn sync_layer(&mut self, ctx: &GpuContext, layer: &Layer, dirty: &Dirty) {
         let entry = self.entries.entry(layer.id).or_insert(Entry { pixels: None, mask: None });
 
@@ -155,9 +217,36 @@ impl LayerTextures {
                 // from here on treats that as the layer's texture, so the
                 // compositor needs no knowledge of effects.
                 let composed = layer.render_with_effects().map(|(px, _)| px);
+
+                // A deep layer with nothing composited over it goes up at its
+                // own depth, into the format the compositor already blends in.
+                // With effects it does not: those are worked out at eight bits,
+                // and a layer that has been through them has already been
+                // narrowed.
+                if composed.is_none() {
+                    if let LayerKind::Raster(cshop_core::layer::Surface::Sixteen(deep)) =
+                        &layer.kind
+                    {
+                        Self::upload_deep(ctx, entry, layer.id.0, deep);
+                        return;
+                    }
+                }
+
                 let px = match &composed {
                     Some(p) => p,
-                    None => layer.pixels().expect("these kinds all have pixels"),
+                    None => match layer.pixels() {
+                        Some(p) => p,
+                        // A deep layer with effects: narrowed for them, which
+                        // is what the effects themselves did.
+                        None => {
+                            let narrowed = match &layer.kind {
+                                LayerKind::Raster(s) => s.to_eight(),
+                                _ => return,
+                            };
+                            Self::upload_whole(ctx, entry, layer.id.0, &narrowed);
+                            return;
+                        }
+                    },
                 };
                 let needs_full = match &entry.pixels {
                     Some(t) => t.width != px.width() || t.height != px.height(),

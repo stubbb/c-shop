@@ -43,7 +43,7 @@ fn a_transform_scales_the_layer_and_undoes() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(100, 100, Rgba8::opaque(255, 0, 0)));
+            LayerKind::raster(PixelBuffer::filled(100, 100, Rgba8::opaque(255, 0, 0)));
         view.invalidate();
     }
 
@@ -116,7 +116,7 @@ fn a_linked_mask_follows_the_transform() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         let l = view.doc.tree.get_mut(id).unwrap();
-        l.kind = LayerKind::Raster(PixelBuffer::filled(100, 100, Rgba8::WHITE));
+        l.kind = LayerKind::raster(PixelBuffer::filled(100, 100, Rgba8::WHITE));
         l.mask = Some(LayerMask::reveal_all(100, 100));
         view.invalidate();
     }
@@ -144,7 +144,7 @@ fn rotate_ninety_swaps_the_dimensions_losslessly() {
         let id = view.doc.active.unwrap();
         let mut px = PixelBuffer::filled(60, 20, Rgba8::opaque(10, 200, 30));
         px.set(0, 0, Rgba8::opaque(255, 0, 0));
-        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
         view.invalidate();
     }
 
@@ -170,7 +170,7 @@ fn flipping_twice_returns_the_original() {
         let id = view.doc.active.unwrap();
         let mut px = PixelBuffer::filled(40, 40, Rgba8::BLACK);
         px.set(0, 20, Rgba8::WHITE);
-        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
         view.invalidate();
     }
 
@@ -421,7 +421,7 @@ fn the_adjustments_menu_opens_a_dialog_rather_than_applying_a_no_op() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(32, 32, Rgba8::opaque(128, 128, 128)));
+            LayerKind::raster(PixelBuffer::filled(32, 32, Rgba8::opaque(128, 128, 128)));
         view.invalidate();
     }
 
@@ -451,7 +451,7 @@ fn an_adjustment_with_no_settings_applies_straight_away() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(32, 32, Rgba8::WHITE));
+            LayerKind::raster(PixelBuffer::filled(32, 32, Rgba8::WHITE));
         view.invalidate();
     }
     app.dispatch(Action::ShowAdjustmentDialog(Box::new(Adjustment::Invert)));
@@ -466,7 +466,7 @@ fn curves_actually_change_the_image_once_configured() {
         let view = app.doc_mut().unwrap();
         let id = view.doc.active.unwrap();
         view.doc.tree.get_mut(id).unwrap().kind =
-            LayerKind::Raster(PixelBuffer::filled(32, 32, Rgba8::opaque(128, 128, 128)));
+            LayerKind::raster(PixelBuffer::filled(32, 32, Rgba8::opaque(128, 128, 128)));
         view.invalidate();
     }
 

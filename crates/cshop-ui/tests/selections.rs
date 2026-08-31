@@ -165,7 +165,7 @@ fn the_magic_wand_selects_a_matching_region() {
         let id = view.doc.active.unwrap();
         let mut px = PixelBuffer::filled(32, 32, Rgba8::opaque(200, 30, 30));
         px.fill_rect(cshop_core::geom::IRect::new(16, 0, 32, 32), Rgba8::opaque(30, 30, 200));
-        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::Raster(px);
+        view.doc.tree.get_mut(id).unwrap().kind = LayerKind::raster(px);
         view.invalidate();
     }
 

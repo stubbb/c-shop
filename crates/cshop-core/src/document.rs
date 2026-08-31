@@ -225,6 +225,56 @@ impl Document {
         }
     }
 
+    /// The one deep layer this document *is*, when that is all it is.
+    ///
+    /// Compositing happens on the GPU in half-float, which carries about
+    /// eleven bits — better than eight and short of sixteen, and short of it
+    /// because wgpu will not allow a sixteen-bit unorm texture as a colour
+    /// attachment. So a document that needs no compositing should not be
+    /// composited: a photograph opened, adjusted destructively and exported is
+    /// one layer from beginning to end, and this is the path that keeps every
+    /// one of its bits.
+    ///
+    /// Every condition here is one that would make the answer differ from the
+    /// layer's own pixels. Anything else — a second layer, a mask, an effect,
+    /// a blend mode, an opacity — has to go through the compositor, and gives
+    /// up those bits knowingly.
+    /// How many bits a channel this document's rasters hold.
+    ///
+    /// Sixteen if any one of them does: a document is as deep as its deepest
+    /// layer, because that is the depth an export has to be written at for
+    /// nothing to be lost.
+    pub fn depth(&self) -> u8 {
+        let deep = self
+            .tree
+            .iter_all()
+            .into_iter()
+            .filter_map(|id| self.tree.get(id)?.surface())
+            .any(|s| s.depth() == 16);
+        if deep { 16 } else { 8 }
+    }
+
+    pub fn single_deep_layer(&self) -> Option<&crate::pixels::DeepBuffer> {
+        let ids = self.tree.iter_all();
+        let [only] = ids[..] else { return None };
+        let layer = self.tree.get(only)?;
+        if !layer.visible
+            || layer.mask.is_some()
+            || layer.effects.any()
+            || layer.opacity < 1.0
+            || layer.fill_opacity < 1.0
+            || layer.blend_mode != crate::blend::BlendMode::Normal
+            || layer.offset != (0, 0)
+        {
+            return None;
+        }
+        let crate::layer::LayerKind::Raster(crate::layer::Surface::Sixteen(px)) = &layer.kind
+        else {
+            return None;
+        };
+        (px.width() == self.width && px.height() == self.height).then_some(px)
+    }
+
     /// Wrap a decoded image as a single-layer document.
     pub fn from_image(name: impl Into<String>, pixels: PixelBuffer) -> Self {
         let (width, height) = (pixels.width().max(1), pixels.height().max(1));

@@ -100,6 +100,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `info` | Report the document's size, layer count and working colour space. |
 | `lens [distortion= rotation= perspective-v= perspective-h= scale= vignette= midpoint=] [autocrop]` | Correct the geometry of a photograph in one pass: distortion, keystone, angle and vignette. `autocrop` cuts the empty edges off the canvas. |
 | `profile [assign\|convert] [PATH\|srgb]` | Report the working space, or change it. See [colour](COLOUR.md). |
+| `mode [8\|16]` | Report the bit depth, or move every raster layer to it. Widening is lossless; narrowing is not. |
 | `export PATH [profile=]` | Write it. The extension decides: `.cshop` and `.psd` keep layers, everything else is flattened. `profile=` converts on the way out, and a CMYK profile makes four inks; `depth=16` writes sixteen bits a channel, which PNG and TIFF can hold and the rest cannot. |
 
 ### Straightening a photograph
@@ -341,15 +342,19 @@ export plate.tif profile=/usr/share/color/icc/ISOcoated_v2.icc
                          # → wrote plate.tif as four inks for ISO Coated v2
 ```
 
-**`depth=16` keeps precision the compositor already has.** Layers are
-composited in `Rgba16Float`, so blends, opacity, adjustment layers and effects
-are all evaluated deeper than eight bits; narrowing is the last step out, and
-this asks it not to. It is worth reaching for whenever the result will be
-edited again, or wherever tones are compressed — a gradient at thirty percent
-opacity keeps 256 distinct levels at `depth=16` against 78 at eight. Layer
-storage is still eight bits, so this preserves what was computed rather than
-what was painted. PNG and TIFF only; anything else refuses rather than
+**`depth=16` keeps precision that would otherwise be thrown away on the last
+step.** Layers are composited in `Rgba16Float`, so blends, opacity, adjustment
+layers and effects are all evaluated deeper than eight bits; narrowing is the
+last thing that happens, and this asks it not to. It is worth reaching for
+whenever the result will be edited again, or wherever tones are compressed — a
+gradient at thirty percent opacity keeps 256 distinct levels at `depth=16`
+against 78 at eight. PNG and TIFF only; anything else refuses rather than
 narrowing in silence.
+
+Layers store sixteen bits as well, so a sixteen-bit file opens deep and leaves
+deep, sample for sample. `mode` reports the depth and `mode 8` / `mode 16`
+changes it. The tools still paint in eight, and a deep layer says so rather
+than ignoring the stroke — see [colour](COLOUR.md).
 
 ### Finding and cutting out an object
 

@@ -191,9 +191,18 @@ fn write_layer(w: &mut Writer, doc: &Document, layer: &Layer) {
     w.i32(layer.offset.1);
 
     match &layer.kind {
-        LayerKind::Raster(px) => {
+        LayerKind::Raster(cshop_core::layer::Surface::Eight(px)) => {
             w.u8(0);
             write_pixels(w, px);
+        }
+        // Its own kind rather than a depth flag inside kind 0, so a build that
+        // has never heard of deep layers refuses the layer rather than reading
+        // sixteen-bit samples as eight-bit ones and producing noise.
+        LayerKind::Raster(cshop_core::layer::Surface::Sixteen(px)) => {
+            w.u8(6);
+            w.u32(px.width());
+            w.u32(px.height());
+            deflate(w, px.as_bytes());
         }
         LayerKind::Group { .. } => w.u8(1),
         LayerKind::Fill(FillStyle::Solid(c)) => {
@@ -694,7 +703,7 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
     let offset = (r.i32()?, r.i32()?);
 
     let kind = match r.u8()? {
-        0 => LayerKind::Raster(read_pixels(r)?),
+        0 => LayerKind::Raster(cshop_core::layer::Surface::Eight(read_pixels(r)?)),
         1 => LayerKind::Group { children: Vec::new() },
         2 => LayerKind::Fill(FillStyle::Solid(read_color(r)?)),
         3 => LayerKind::Adjustment(read_adjustment(r)?),
@@ -712,7 +721,7 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
                 }
                 None => {
                     log::warn!("no font for type layer {name:?}; keeping it as pixels");
-                    LayerKind::Raster(PixelBuffer::new(1, 1))
+                    LayerKind::Raster(cshop_core::layer::Surface::Eight(PixelBuffer::new(1, 1)))
                 }
             }
         }
@@ -720,8 +729,33 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
             let content = read_shape(r)?;
             match cshop_core::layer::ShapeLayer::new(content) {
                 Some(s) => LayerKind::Shape(Box::new(s)),
-                None => LayerKind::Raster(PixelBuffer::new(1, 1)),
+                None => {
+                    LayerKind::Raster(cshop_core::layer::Surface::Eight(PixelBuffer::new(1, 1)))
+                }
             }
+        }
+        6 => {
+            let width = r.u32()?;
+            let height = r.u32()?;
+            check_size(width, height)?;
+            let bytes = inflate(r)?;
+            let want = width as usize * height as usize * 8;
+            if bytes.len() != want {
+                return Err(IoError::Malformed(format!(
+                    "a sixteen-bit layer says {width}x{height} and carries {} bytes, not {want}",
+                    bytes.len()
+                )));
+            }
+            let data: Vec<cshop_core::color::Rgba16> = bytes
+                .chunks_exact(8)
+                .map(|c| {
+                    let at = |i: usize| u16::from_le_bytes([c[i], c[i + 1]]);
+                    cshop_core::color::Rgba16::new(at(0), at(2), at(4), at(6))
+                })
+                .collect();
+            let px = cshop_core::pixels::DeepBuffer::from_pixels(width, height, data)
+                .ok_or_else(|| IoError::Malformed("a layer's size and pixels disagree".into()))?;
+            LayerKind::Raster(cshop_core::layer::Surface::Sixteen(px))
         }
         other => {
             return Err(IoError::Malformed(format!("unknown layer kind {other}")));

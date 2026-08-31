@@ -470,8 +470,27 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 app.push(Action::ShowColorProfile);
                 ui.close();
             }
-            ui.separator();
-
+            let depth = app.doc().map_or(8, |d| d.doc.depth());
+            ui.menu_button("Mode", |ui| {
+                for bits in [8u8, 16] {
+                    let label = format!("{bits} Bits/Channel");
+                    let at = depth == bits;
+                    if ui.selectable_label(at, label).clicked() {
+                        app.push(Action::SetDepth(bits));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(
+                        "Sixteen bits holds what eight rounds off.\n\
+                         Widening loses nothing; narrowing cannot be\n\
+                         undone except from the history.",
+                    )
+                    .color(Palette::DARK.text_dim)
+                    .small(),
+                );
+            });
             ui.separator();
             ui.menu_button("Adjustments", |ui| {
                 ui.label(
