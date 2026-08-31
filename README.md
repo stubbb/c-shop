@@ -116,6 +116,21 @@ them around whatever is selected. **Perspective crop** puts four corners on
 something rectangular in a photograph and undoes the projection that made it a
 quadrilateral.
 
+**Animation.** An animated GIF or APNG opens as a layer per frame with a
+timeline over them — and a frame *is* a layer, so painting, masks, adjustments
+and effects work on one without any of them being taught what a frame is.
+Frames are composed on the way in, so each is what that moment looked like
+rather than the small rectangle that changed. Both formats write back out
+whole; before this, opening one gave back its first frame and dropped the rest
+in silence.
+
+**Vector.** An SVG opens as shape layers and saves back as paths, so a round
+trip gives back editable geometry rather than a picture of it. Paths, rects,
+circles, ellipses, lines and polygons, transforms composing through nesting,
+arcs converted to cubics, and a small XML reader written for the purpose. What
+it cannot draw — text, gradients, filters — it names rather than dropping. PDF
+goes out as a page at the size the document would print at.
+
 **Aligning frames.** Two photographs of the same scene differ by a movement;
 find enough corners that appear in both and the movement falls out. Harris
 corners, oriented binary descriptions, matching by how many bits differ, and

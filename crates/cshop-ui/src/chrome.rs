@@ -732,6 +732,23 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                 ui.close();
             }
             let several = app.doc().is_some_and(|d| d.doc.tree.len() >= 2);
+            let animated = app.doc().is_some_and(|d| d.doc.timeline.is_some());
+            if item_enabled(
+                ui,
+                if animated { "Stop Animating" } else { "Make Frames from Layers" },
+                "",
+                several,
+            )
+            .on_hover_text(
+                "A frame is a layer shown on its own, so everything that works on a \
+                 layer works on a frame",
+            )
+            .clicked()
+            {
+                app.push(Action::ToggleTimeline);
+                ui.close();
+            }
+            ui.separator();
             ui.menu_button("Align Layers", |ui| {
                 ui.label(
                     egui::RichText::new("Every layer moved onto the bottom one")

@@ -385,6 +385,17 @@ pub enum Action {
     SetDepth(u8),
     ShowCanvasSize,
     ResizeImage { width: u32, height: u32, filter: cshop_core::resample::Resampling },
+    /// Show one frame of the animation.
+    ShowFrame(usize),
+    /// Start or stop playing it.
+    TogglePlayback,
+    /// Make a timeline out of the layers that are there, or take it away.
+    ToggleTimeline,
+    /// Set every frame's duration.
+    SetFrameDelay(u16),
+    /// Set one frame's duration.
+    SetOneFrameDelay(usize, u16),
+
     /// Move every layer onto the bottom one, by finding what they have in
     /// common. See [`cshop_core::align`].
     AlignLayers { motion: cshop_core::align::Motion },

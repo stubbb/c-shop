@@ -1064,7 +1064,7 @@ fn read_optional_color(r: &mut Reader<'_>) -> Result<Option<Rgba8>, IoError> {
 }
 
 /// Guard both dimensions before allocating anything sized by them.
-fn check_size(w: u32, h: u32) -> Result<(), IoError> {
+pub(crate) fn check_size(w: u32, h: u32) -> Result<(), IoError> {
     if w > crate::MAX_DIMENSION || h > crate::MAX_DIMENSION {
         return Err(IoError::TooLarge(w, h, crate::MAX_DIMENSION));
     }

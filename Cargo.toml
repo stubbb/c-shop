@@ -31,6 +31,12 @@ image       = { version = "0.25", default-features = false, features = ["png", "
 # nothing new to build; taking it directly is what lets profiles be read,
 # applied and written rather than silently ignored.
 moxcms      = "0.8"
+# Frames. `image` reads one frame of a GIF and hands back a picture; an
+# animation needs every frame and its delay, which means the format crates
+# directly. Both are already in the tree underneath `image`, so this costs
+# nothing new to build.
+gif         = "0.14"
+png         = "0.18"
 # The four inks of a CMYK JPEG. `image` converts them to RGB on the way past
 # without consulting a profile, which is the one thing a print file cannot
 # afford, so those are decoded here instead.

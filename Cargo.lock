@@ -532,10 +532,12 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "cshop-core",
+ "gif",
  "image",
  "log",
  "miniz_oxide",
  "moxcms",
+ "png",
  "thiserror 2.0.20",
  "tiff",
  "zune-core",

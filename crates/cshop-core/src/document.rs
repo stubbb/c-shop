@@ -150,6 +150,9 @@ pub struct Document {
     /// Named sets of layer settings, so two versions of a design can live in
     /// one document. See [`crate::states`].
     pub states: Vec<crate::states::LayerState>,
+    /// An order over the layers, when this document is an animation. See
+    /// [`crate::timeline`].
+    pub timeline: Option<crate::timeline::Timeline>,
 }
 
 impl Clone for Document {
@@ -175,6 +178,7 @@ impl Clone for Document {
             last_selection: self.last_selection.clone(),
             guides: self.guides.clone(),
             states: self.states.clone(),
+            timeline: self.timeline.clone(),
         }
     }
 }
@@ -227,6 +231,7 @@ impl Document {
             last_selection: None,
             guides: Vec::new(),
             states: Vec::new(),
+            timeline: None,
         }
     }
 
@@ -308,6 +313,7 @@ impl Document {
             last_selection: None,
             guides: Vec::new(),
             states: Vec::new(),
+            timeline: None,
         }
     }
 

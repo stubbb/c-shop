@@ -7,6 +7,9 @@
 //! hand-written reader and writer in a later phase; this module covers the
 //! flat formats.
 
+pub mod frames;
+pub mod pdf;
+pub mod svg;
 pub mod bytes;
 pub mod format;
 pub mod cmyk;
@@ -89,6 +92,21 @@ pub fn decode_document_reporting(
     if bytes.starts_with(b"8BPS") {
         return psd::read(bytes).map(|d| (d, Colors::default()));
     }
+    // Vector in, vector out: an SVG becomes shape layers, so what comes back
+    // from a round trip is editable geometry rather than a picture of it.
+    if svg::is_svg(bytes) {
+        let drawing = svg::read(bytes)?;
+        return Ok((document_from_svg(drawing), Colors::default()));
+    }
+
+    // An animation becomes a layer per frame with a timeline over them, since
+    // opening one and getting its first frame is the worst kind of not
+    // supporting something: the file opens, looks right, and is not what was
+    // in it.
+    if frames::is_animation(bytes) {
+        return frames::read(bytes).map(|a| (document_from_animation(a), Colors::default()));
+    }
+
     // Not layered: one image becomes one background layer, in the working
     // space every new document starts in — and at the depth the file holds,
     // rather than narrowed on the way in and called sixteen bits on the way
@@ -125,6 +143,91 @@ pub fn decode_document_reporting(
     Ok((doc, colors))
 }
 
+/// A drawing as a document: one shape layer per element.
+fn document_from_svg(drawing: svg::Drawing) -> cshop_core::document::Document {
+    let mut doc = cshop_core::document::Document::new(
+        "Untitled",
+        drawing.width.max(1),
+        drawing.height.max(1),
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+    for (i, shape) in drawing.shapes.into_iter().enumerate() {
+        let Some(rendered) = cshop_core::layer::ShapeLayer::new(shape.content) else {
+            continue;
+        };
+        let id = doc.tree.alloc_id();
+        let mut layer = cshop_core::layer::Layer::new(
+            id,
+            shape.name.unwrap_or_else(|| format!("Shape {}", i + 1)),
+            cshop_core::layer::LayerKind::Shape(Box::new(rendered)),
+        );
+        layer.offset = shape.offset;
+        doc.tree.push(layer, None);
+    }
+    if doc.tree.is_empty() {
+        // Nothing drawable in it. An empty document with the right size is
+        // more use than an error, since the file may be all text or all
+        // gradients — which the caller is told about separately.
+        let id = doc.tree.alloc_id();
+        doc.tree.push(
+            cshop_core::layer::Layer::new(
+                id,
+                "Empty",
+                cshop_core::layer::LayerKind::raster(cshop_core::pixels::PixelBuffer::new(
+                    drawing.width.max(1),
+                    drawing.height.max(1),
+                )),
+            ),
+            None,
+        );
+    }
+    doc.active = doc.tree.root().last().copied();
+    doc.selected_layers = doc.active.into_iter().collect();
+    doc.modified = false;
+    doc
+}
+
+/// An animation as a document: one layer per frame, and a timeline saying
+/// which is which.
+///
+/// Only the first frame is left visible, so opening one shows the animation's
+/// first moment rather than every frame stacked on top of each other.
+fn document_from_animation(animation: frames::Animation) -> cshop_core::document::Document {
+    let (w, h) = animation.size();
+    let mut doc = cshop_core::document::Document::new(
+        "Untitled",
+        w.max(1),
+        h.max(1),
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+
+    let mut timeline = cshop_core::timeline::Timeline {
+        frames: Vec::with_capacity(animation.frames.len()),
+        loops: animation.loops,
+        current: 0,
+    };
+    for (i, frame) in animation.frames.into_iter().enumerate() {
+        let id = doc.tree.alloc_id();
+        let mut layer = cshop_core::layer::Layer::new(
+            id,
+            format!("Frame {}", i + 1),
+            cshop_core::layer::LayerKind::raster(frame.pixels),
+        );
+        layer.visible = i == 0;
+        doc.tree.push(layer, None);
+        timeline
+            .frames
+            .push(cshop_core::timeline::Frame { layer: id, delay_ms: frame.delay_ms });
+    }
+    doc.active = doc.tree.root().first().copied();
+    doc.selected_layers = doc.active.into_iter().collect();
+    doc.timeline = Some(timeline);
+    doc.modified = false;
+    doc
+}
+
 /// Write a layered document. `composite` is the flattened image, which PSD
 /// carries so other programs can show something without reading layers.
 pub fn save_document(
@@ -137,6 +240,8 @@ pub fn save_document(
     let bytes = match format {
         ImageFormat::Cshop => project::write(doc),
         ImageFormat::Psd => psd::write(doc, composite)?,
+        ImageFormat::Svg => svg::write(doc, composite)?,
+        ImageFormat::Pdf => pdf::write(composite, doc.dpi)?,
         // Everything else is flat, so only the composite goes out.
         other => {
             let _ = other;

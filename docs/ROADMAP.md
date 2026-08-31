@@ -134,18 +134,43 @@ layers, so a seam between two exposures is still a seam.
 
 ## Files it cannot open
 
-**Raw camera files.** The most serious omission for a program that has just
-gained colour management, sixteen-bit output and CMYK separation — that is a
-photographic pipeline whose front door is missing. Also the largest single
-piece of work on this page, since it means demosaicing and a camera database.
+**Raw camera files.** Still the most serious omission: a photographic pipeline
+whose front door is missing. A camera database is the part that cannot be
+written, but it is also the part DNG does not need — a DNG carries its own
+colour matrix, black and white levels, white balance and CFA pattern, so a
+reader for *self-describing* raw is a real feature without a database behind
+it. That is the shape this should take when it is taken, and it is still the
+largest piece of work on this page.
 
-**SVG and PDF.** Vector in, vector out, on a program that already has paths and
-Bézier geometry.
+**SVG and PDF.** ~~Vector in, vector out.~~ Done, in the directions each is
+worth doing. An SVG opens as shape layers and saves back as paths, so a round
+trip returns editable geometry rather than a picture of it — paths, rects,
+circles, ellipses, lines, polylines and polygons, with transforms composing
+through nesting and arcs converted to cubics. What it cannot draw — text,
+gradients, patterns, filters, clipping — it names, rather than dropping
+silently and leaving a picture that is wrong in a way nobody can see.
 
-**HEIC and AVIF**, which is what a phone now produces.
+PDF goes out only. Writing a page around an image is a few hundred bytes of
+structure; reading one is object streams, a dozen filters, embedded fonts and a
+general page-description language, which is a project rather than a feature —
+and reading the easy tenth of it would open some files and quietly mangle
+others.
 
-**Frames and a timeline**, for animated GIF and APNG — the format is already
-read.
+**HEIC and AVIF.** Still not here, and this is why: both wrap a *video* codec —
+HEVC and AV1 — and a decoder for either is tens of thousands of lines that
+nobody should write twice. The libraries exist; this build has no network and
+no vendored copy of them, so the honest position is that these two wait on a
+dependency rather than on effort.
+
+**Frames and a timeline.** ~~For animated GIF and APNG.~~ Done. Opening an
+animation used to give back its first frame and discard the rest silently,
+which is the worst way to not support something: the file opens, looks right,
+and is not what was in it. Now every frame becomes a layer with a timeline over
+them, so painting, masks, adjustments and effects all work on a frame without
+being taught anything — a frame *is* a layer, and showing one is a matter of
+visibility. Frames are composed on the way in, so what you get is what each
+moment looked like rather than the rectangle that changed. Both formats write
+back out, whole.
 
 ## Building on the models that are there
 

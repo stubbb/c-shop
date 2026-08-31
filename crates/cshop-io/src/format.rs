@@ -16,6 +16,11 @@ pub enum ImageFormat {
     Cshop,
     /// Layered PSD document.
     Psd,
+    /// Vector: shape layers keep their geometry, and everything else goes out
+    /// as a picture embedded in it.
+    Svg,
+    /// A page. Written, not read — see [`crate::pdf`].
+    Pdf,
 }
 
 impl ImageFormat {
@@ -41,17 +46,21 @@ impl ImageFormat {
         ImageFormat::Bmp,
         ImageFormat::Tiff,
         ImageFormat::Tga,
+        ImageFormat::Gif,
+        ImageFormat::Svg,
+        ImageFormat::Pdf,
     ];
 
     /// Extensions the Open dialog offers, lowercase and without the dot.
     pub const OPENABLE_EXTENSIONS: &'static [&'static str] = &[
         "cshop", "csd", "psd", "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp",
-        "tga", "ico",
+        "tga", "ico", "svg", "apng",
     ];
 
     pub fn from_extension(ext: &str) -> Option<ImageFormat> {
         Some(match ext.to_ascii_lowercase().as_str() {
-            "png" => ImageFormat::Png,
+            // An .apng is a PNG whose animation chunks a still reader ignores.
+            "png" | "apng" => ImageFormat::Png,
             "jpg" | "jpeg" | "jpe" => ImageFormat::Jpeg,
             "bmp" => ImageFormat::Bmp,
             "gif" => ImageFormat::Gif,
@@ -61,6 +70,8 @@ impl ImageFormat {
             "ico" => ImageFormat::Ico,
             "cshop" | "csd" => ImageFormat::Cshop,
             "psd" => ImageFormat::Psd,
+            "svg" => ImageFormat::Svg,
+            "pdf" => ImageFormat::Pdf,
             _ => return None,
         })
     }
@@ -76,7 +87,12 @@ impl ImageFormat {
 
     /// Whether the format keeps a layer stack rather than a flat image.
     pub fn is_layered(self) -> bool {
-        matches!(self, ImageFormat::Cshop | ImageFormat::Psd)
+        matches!(self, ImageFormat::Cshop | ImageFormat::Psd | ImageFormat::Svg)
+    }
+
+    /// Whether the format keeps geometry rather than pixels.
+    pub fn is_vector(self) -> bool {
+        matches!(self, ImageFormat::Svg)
     }
 
     pub fn display_name(self) -> &'static str {
@@ -91,6 +107,8 @@ impl ImageFormat {
             ImageFormat::Ico => "Icon",
             ImageFormat::Cshop => "C-Shop Document",
             ImageFormat::Psd => "PSD Document",
+            ImageFormat::Svg => "SVG Drawing",
+            ImageFormat::Pdf => "PDF Page",
         }
     }
 
@@ -106,6 +124,8 @@ impl ImageFormat {
             ImageFormat::Ico => "ico",
             ImageFormat::Cshop => "cshop",
             ImageFormat::Psd => "psd",
+            ImageFormat::Svg => "svg",
+            ImageFormat::Pdf => "pdf",
         }
     }
 
@@ -119,7 +139,9 @@ impl ImageFormat {
             ImageFormat::WebP => image::ImageFormat::WebP,
             ImageFormat::Tga => image::ImageFormat::Tga,
             ImageFormat::Ico => image::ImageFormat::Ico,
-            ImageFormat::Cshop | ImageFormat::Psd => return None,
+            ImageFormat::Cshop | ImageFormat::Psd | ImageFormat::Svg | ImageFormat::Pdf => {
+                return None
+            }
         })
     }
 }

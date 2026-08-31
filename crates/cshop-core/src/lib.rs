@@ -30,6 +30,7 @@ pub mod shape;
 pub mod smart;
 pub mod smart_filters;
 pub mod text;
+pub mod timeline;
 pub mod geom;
 pub mod guides;
 pub mod heal;

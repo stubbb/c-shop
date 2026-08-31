@@ -48,6 +48,9 @@ pub fn dock(app: &mut CShopApp, ui: &mut egui::Ui) {
             {
                 section(ui, "Smart Filters", true, |ui| smart_filters_panel(app, ui));
             }
+            if app.doc().is_some_and(|d| d.doc.timeline.is_some()) {
+                section(ui, "Timeline", true, |ui| timeline_panel(app, ui));
+            }
             section(ui, "Layer States", false, |ui| layer_states_panel(app, ui));
             section(ui, "Color", true, |ui| color_panel(app, ui));
             section(ui, "History", true, |ui| history_panel(app, ui));
@@ -55,6 +58,91 @@ pub fn dock(app: &mut CShopApp, ui: &mut egui::Ui) {
         });
 
     section_fill(ui, "Layers", |ui| layers_panel(app, ui));
+}
+
+// ---------------------------------------------------------------------------
+// Timeline
+// ---------------------------------------------------------------------------
+
+/// The frames, in order, with their durations and a play button.
+fn timeline_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
+    let p = Palette::DARK;
+    let Some(view) = app.doc() else { return };
+    let Some(timeline) = &view.doc.timeline else { return };
+    let (current, count) = (timeline.current, timeline.len());
+    let duration = timeline.duration_ms();
+    let delays: Vec<u16> = timeline.frames.iter().map(|f| f.delay_ms).collect();
+    let playing = app.playing;
+
+    let mut queued: Vec<Action> = Vec::new();
+    ui.horizontal(|ui| {
+        if ui
+            .button(if playing { "⏸" } else { "▶" })
+            .on_hover_text(if playing { "Stop" } else { "Play" })
+            .clicked()
+        {
+            queued.push(Action::TogglePlayback);
+        }
+        if ui.small_button("⏮").on_hover_text("First frame").clicked() {
+            queued.push(Action::ShowFrame(0));
+        }
+        if ui.small_button("◀").on_hover_text("Previous").clicked() {
+            queued.push(Action::ShowFrame(current.saturating_sub(1)));
+        }
+        if ui.small_button("▶|").on_hover_text("Next").clicked() {
+            queued.push(Action::ShowFrame((current + 1).min(count.saturating_sub(1))));
+        }
+        ui.label(
+            egui::RichText::new(format!(
+                "{}/{count} · {:.2}s",
+                current + 1,
+                duration as f32 / 1000.0
+            ))
+            .color(p.text_dim)
+            .small(),
+        );
+    });
+
+    ui.add_space(4.0);
+    // The frames themselves, as a strip of numbered chips: at this size a
+    // thumbnail per frame would be unreadable, and the number is what someone
+    // stepping through them is actually looking for.
+    egui::ScrollArea::horizontal()
+        .id_salt("timeline-strip")
+        .max_height(48.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, ms) in delays.iter().enumerate().take(count) {
+                    let label = egui::RichText::new(format!("{}", i + 1)).monospace();
+                    if ui
+                        .selectable_label(i == current, label)
+                        .on_hover_text(format!("{ms} ms"))
+                        .clicked()
+                    {
+                        queued.push(Action::ShowFrame(i));
+                    }
+                }
+            });
+        });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("This frame:");
+        let mut ms = delays.get(current).copied().unwrap_or(100) as f32;
+        if ui
+            .add(egui::DragValue::new(&mut ms).range(10.0..=10_000.0).speed(5.0).suffix(" ms"))
+            .changed()
+        {
+            queued.push(Action::SetOneFrameDelay(current, ms as u16));
+        }
+        if ui.small_button("All").on_hover_text("Give every frame this duration").clicked() {
+            queued.push(Action::SetFrameDelay(ms as u16));
+        }
+    });
+
+    for action in queued {
+        app.push(action);
+    }
 }
 
 // ---------------------------------------------------------------------------

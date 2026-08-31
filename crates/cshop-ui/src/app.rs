@@ -244,6 +244,9 @@ pub struct CShopApp {
     pub crop: Option<ActiveCrop>,
     /// A warp in progress. See [`ActiveWarp`].
     pub warp: Option<ActiveWarp>,
+    /// Whether the animation is playing, and when the next frame is due.
+    pub playing: bool,
+    next_frame_at: Option<std::time::Instant>,
     /// The last filter applied, for Repeat Last Filter.
     pub last_filter: Option<cshop_core::filters::Filter>,
 
@@ -334,6 +337,8 @@ impl CShopApp {
             transform: None,
             crop: None,
             warp: None,
+            playing: false,
+            next_frame_at: None,
             last_filter: None,
             window_commands: Vec::new(),
             is_maximized: false,
@@ -459,6 +464,7 @@ impl CShopApp {
         self.poll_segment(&ctx);
         self.poll_lens(&ctx);
         self.poll_carve(&ctx);
+        self.poll_playback(&ctx);
         self.poll_denoise(&ctx);
         self.poll_upscale(&ctx);
         self.poll_separate(&ctx);
@@ -1818,6 +1824,40 @@ impl CShopApp {
                     "Now 8 bits a channel".to_string()
                 });
             }
+            Action::ShowFrame(n) => {
+                self.playing = false;
+                let Some(view) = self.doc_mut() else { return };
+                let Some(timeline) = &mut view.doc.timeline else { return };
+                timeline.show(n, &mut view.doc.tree);
+                view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+                view.invalidate();
+            }
+            Action::TogglePlayback => {
+                let has = self.doc().is_some_and(|v| {
+                    v.doc.timeline.as_ref().is_some_and(|t| t.len() > 1)
+                });
+                if !has {
+                    self.notify("There is no animation to play");
+                    return;
+                }
+                self.playing = !self.playing;
+                self.next_frame_at = self.playing.then(std::time::Instant::now);
+            }
+            Action::ToggleTimeline => self.toggle_timeline(),
+            Action::SetFrameDelay(ms) => {
+                let Some(view) = self.doc_mut() else { return };
+                if let Some(t) = &mut view.doc.timeline {
+                    t.set_all_delays(ms);
+                    view.doc.modified = true;
+                }
+            }
+            Action::SetOneFrameDelay(i, ms) => {
+                let Some(view) = self.doc_mut() else { return };
+                if let Some(f) = view.doc.timeline.as_mut().and_then(|t| t.frames.get_mut(i)) {
+                    f.delay_ms = ms.max(1);
+                    view.doc.modified = true;
+                }
+            }
             Action::AlignLayers { motion } => self.align_layers(motion, false),
             Action::StackLayers => self.align_layers(Default::default(), true),
             Action::BeginWarp { puppet } => self.begin_warp(puppet),
@@ -2063,6 +2103,43 @@ impl CShopApp {
             view.sync_composite_only(&gpu, &mut self.compositor);
             view.read_composite(&gpu)
         };
+
+        // An animation written to a format that holds one goes out whole. The
+        // alternative is writing the frame that happened to be showing, which
+        // is a silent and complete loss of the thing being saved.
+        let animated = matches!(
+            path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            Some("gif") | Some("png") | Some("apng")
+        ) && self.doc().is_some_and(|v| {
+            v.doc.timeline.as_ref().is_some_and(|t| t.len() > 1)
+        });
+        if animated {
+            let out = self.render_animation(&gpu, i).and_then(|a| {
+                let apng = !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+                if apng {
+                    cshop_io::frames::write_apng(&a).ok()
+                } else {
+                    cshop_io::frames::write_gif(&a, 10).ok()
+                }
+            });
+            match out.map(|bytes| std::fs::write(&path, bytes)) {
+                Some(Ok(())) => {
+                    let n = self
+                        .doc()
+                        .and_then(|v| v.doc.timeline.as_ref().map(|t| t.len()))
+                        .unwrap_or(0);
+                    self.notify(format!("Wrote {n} frames to {}", path.display()));
+                    if let Some(view) = self.doc_mut() {
+                        view.doc.modified = false;
+                        view.doc.path = Some(path.clone());
+                    }
+                    self.settings.remember(&path);
+                }
+                Some(Err(e)) => self.fail(format!("Could not write {}: {e}", path.display())),
+                None => self.fail("The animation could not be written"),
+            }
+            return;
+        }
 
         // A layered format saves the document itself; a flat one gets the
         // composite. `save_document` decides from the extension.
@@ -5637,6 +5714,109 @@ impl CShopApp {
         );
         view.mark_dirty(dirty);
         view.invalidate();
+    }
+
+    /// Every frame of the animation, composited — which is what writing one
+    /// out needs, and what a still export cannot give.
+    ///
+    /// Each frame is shown in turn and the whole document composited, so a
+    /// background under the animation and an adjustment over it are in every
+    /// frame, exactly as the canvas shows them.
+    pub fn render_animation(
+        &mut self,
+        gpu: &cshop_gpu::context::GpuContext,
+        index: usize,
+    ) -> Option<cshop_io::frames::Animation> {
+        let timeline = self.docs.get(index)?.doc.timeline.clone()?;
+        if timeline.is_empty() {
+            return None;
+        }
+        let was = timeline.current;
+        let mut frames = Vec::with_capacity(timeline.len());
+        for (i, frame) in timeline.frames.iter().enumerate() {
+            {
+                let view = self.docs.get_mut(index)?;
+                if let Some(t) = &mut view.doc.timeline {
+                    t.show(i, &mut view.doc.tree);
+                }
+                view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+            }
+            let pixels = self.render_composite(gpu, index);
+            frames.push(cshop_io::frames::Frame { pixels, delay_ms: frame.delay_ms });
+        }
+        // Put the timeline back where it was: exporting is not a way of
+        // moving through the animation.
+        let view = self.docs.get_mut(index)?;
+        if let Some(t) = &mut view.doc.timeline {
+            t.show(was, &mut view.doc.tree);
+        }
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+        Some(cshop_io::frames::Animation { frames, loops: timeline.loops })
+    }
+
+    /// Turn the layers into an animation, or stop treating them as one.
+    fn toggle_timeline(&mut self) {
+        let Some(view) = self.doc_mut() else { return };
+        if view.doc.timeline.is_some() {
+            view.doc.timeline = None;
+            // Everything visible again: hiding all but one frame was the
+            // timeline's doing, and it has gone.
+            for id in view.doc.tree.iter_all() {
+                if let Some(l) = view.doc.tree.get_mut(id) {
+                    l.visible = true;
+                }
+            }
+            view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+            view.invalidate();
+            self.playing = false;
+            self.notify("The layers are a stack again");
+            return;
+        }
+        let mut timeline = cshop_core::timeline::Timeline::from_layers(&view.doc.tree, 100);
+        if timeline.len() < 2 {
+            self.notify("An animation needs at least two layers with pixels in them");
+            return;
+        }
+        timeline.show(0, &mut view.doc.tree);
+        view.doc.timeline = Some(timeline);
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+        self.notify("Each layer is now a frame, a tenth of a second each");
+    }
+
+    /// Advance the animation if one is playing and its frame is up.
+    pub fn poll_playback(&mut self, ctx: &egui::Context) {
+        if !self.playing {
+            return;
+        }
+        let due = self.next_frame_at.is_none_or(|at| std::time::Instant::now() >= at);
+        if !due {
+            if let Some(at) = self.next_frame_at {
+                ctx.request_repaint_after(at.saturating_duration_since(std::time::Instant::now()));
+            }
+            return;
+        }
+        let Some(view) = self.doc_mut() else {
+            self.playing = false;
+            return;
+        };
+        let Some(timeline) = &mut view.doc.timeline else {
+            self.playing = false;
+            return;
+        };
+        // Playing is a view of the document, not an edit of it, so whatever
+        // the document's unsaved state was before the frame changed is what it
+        // still is. Clearing the flag outright would throw away a real edit's
+        // claim on it.
+        let was_modified = view.doc.modified;
+        let wait = timeline.advance(&mut view.doc.tree);
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+        view.doc.modified = was_modified;
+        let wait = std::time::Duration::from_millis(wait as u64);
+        self.next_frame_at = Some(std::time::Instant::now() + wait);
+        ctx.request_repaint_after(wait);
     }
 
     /// Move every layer onto the bottom one, and optionally average them.
