@@ -283,13 +283,14 @@ a measurement.
 `lighten-only` guarantees that no pixel comes out darker than it went in. That
 matters because the contrast in a relight comes from dropping `ambient`, and
 dropping `ambient` is also how a photograph quietly loses the shadow detail it
-was carrying — on a picture of foliage, half a million pixels crushed to black.
-Under the flag `ambient` stops being a darkener and becomes a *threshold*: the
-lamp has to beat `1 - ambient` before it shows at all, so the light lands only
-on what most faces it and everything else is left exactly as it was.
+was carrying — on a photograph of a dog on a bench, at ambient 0.30, 97% of the
+frame came out darker and the bench went with it. Under the flag `ambient`
+stops being a darkener and becomes a *threshold*: the lamp has to beat
+`1 - ambient` before it shows at all, so the light lands only on what most
+faces it and everything else is left exactly as it was.
 
 ```
-relight azimuth=20 elevation=25 intensity=1.0 ambient=0.45 relief=1.2 lighten-only
+relight azimuth=0 elevation=25 intensity=1.2 ambient=0.30 relief=1.4 lighten-only
 ```
 
 The depth is worked out once per layer and kept, so a script that tries three

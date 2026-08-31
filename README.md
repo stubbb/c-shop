@@ -52,56 +52,97 @@ reasoning left in, and a picture where there is one to show.
 
 **Layers and what hangs off them**
 
-- [**Layers**](docs/FEATURES.md#layers) — raster, group, fill, type, shape and adjustment layers, with 27 blend modes evaluated on the GPU.
-- [**Masks and channels**](docs/FEATURES.md#masks-and-channels) — layer and clipping masks, Quick Mask, saved channels; masks, layers and selections all convert into each other.
-- [**Layer effects**](docs/FEATURES.md#layer-effects) — eleven of them, every one a function of how far a pixel sits from the layer's edge.
-- [**Layer states**](docs/FEATURES.md#layer-states) — two versions of a design in one document, remembering settings rather than pixels.
-- [**Smart objects**](docs/FEATURES.md#smart-objects-and-linked-copies-of-one) — the placement is a setting, and several layers can place one picture so correcting it is one correction.
-- [**Smart filters**](docs/FEATURES.md#smart-filters) — a stack of filters attached to a layer instead of run into it.
-- [**Vector masks**](docs/FEATURES.md#vector-masks) — a mask that keeps the path it was drawn from, so resizing redraws it rather than resampling it.
+- [**Layers**](docs/FEATURES.md#layers) — raster, group, fill, type, shape and
+  adjustment layers, with 27 blend modes evaluated on the GPU.
+- [**Masks and channels**](docs/FEATURES.md#masks-and-channels) — layer and
+  clipping masks, Quick Mask, saved channels; masks, layers and selections all
+  convert into each other.
+- [**Layer effects**](docs/FEATURES.md#layer-effects) — eleven of them, every
+  one a function of how far a pixel sits from the layer's edge.
+- [**Layer states**](docs/FEATURES.md#layer-states) — two versions of a design
+  in one document, remembering settings rather than pixels.
+- [**Smart objects**](docs/FEATURES.md#smart-objects-and-linked-copies-of-one)
+  — the placement is a setting, and several layers can place one picture so
+  correcting it is one correction.
+- [**Smart filters**](docs/FEATURES.md#smart-filters) — a stack of filters
+  attached to a layer instead of run into it.
+- [**Vector masks**](docs/FEATURES.md#vector-masks) — a mask that keeps the
+  path it was drawn from, so resizing redraws it rather than resampling it.
 
 **Choosing what to work on**
 
-- [**Selecting**](docs/FEATURES.md#selecting) — marquees, lassos and a wand, plus colour range, refine edge against the photograph's own boundary, and paths both ways.
-- [**Guides, rulers and snapping**](docs/FEATURES.md#guides-rulers-and-snapping) — saved with the document, catching by whichever edge is closest.
+- [**Selecting**](docs/FEATURES.md#selecting) — marquees, lassos and a wand,
+  plus colour range, refine edge against the photograph's own boundary, and
+  paths both ways.
+- [**Guides, rulers and
+  snapping**](docs/FEATURES.md#guides-rulers-and-snapping) — saved with the
+  document, catching by whichever edge is closest.
 
 **Putting paint down**
 
-- [**Painting**](docs/FEATURES.md#painting) — brush, pencil, eraser, clone stamp, dodge, burn, sponge, blur, sharpen and smudge on one stroke engine, with tablet pressure and brushes made from a selection.
-- [**Repairing**](docs/FEATURES.md#repairing) — a healing brush and its spot form, taking texture from elsewhere and tone from where they land; a history brush.
+- [**Painting**](docs/FEATURES.md#painting) — brush, pencil, eraser, clone
+  stamp, dodge, burn, sponge, blur, sharpen and smudge on one stroke engine,
+  with tablet pressure and brushes made from a selection.
+- [**Repairing**](docs/FEATURES.md#repairing) — a healing brush and its spot
+  form, taking texture from elsewhere and tone from where they land; a history
+  brush.
 
 **Drawing rather than painting**
 
-- [**Type**](docs/FEATURES.md#type) — re-editable text from your installed fonts, edited live on canvas, a typing session per undo step.
-- [**Shapes**](docs/FEATURES.md#shapes) — six kinds drawn from distance fields, with Bézier paths, a Pen tool and boolean operations.
-- [**Vector files**](docs/FEATURES.md#vector-files) — SVG in and out as editable geometry; PDF out as a page.
+- [**Type**](docs/FEATURES.md#type) — re-editable text from your installed
+  fonts, edited live on canvas, a typing session per undo step.
+- [**Shapes**](docs/FEATURES.md#shapes) — six kinds drawn from distance
+  fields, with Bézier paths, a Pen tool and boolean operations.
+- [**Vector files**](docs/FEATURES.md#vector-files) — SVG in and out as
+  editable geometry; PDF out as a page.
 
 **Changing the picture**
 
-- [**Adjustments**](docs/FEATURES.md#adjustments) — fourteen, each available destructively and as a non-destructive layer, with a curve editor and a live histogram.
-- [**Filters**](docs/FEATURES.md#filters) — thirty, each previewing live at 1:1 rather than on a proxy.
-- [**Transforms**](docs/FEATURES.md#transforms) — Free Transform through to perspective distort, crop, image size, canvas size.
-- [**Warping, carving and straightening**](docs/FEATURES.md#geometry-warping-carving-and-straightening) — warp and puppet warp, content-aware scale, perspective crop.
-- [**Lens correction**](docs/FEATURES.md#lens-correction) — distortion, keystone, angle and vignette composed into one resampling pass.
+- [**Adjustments**](docs/FEATURES.md#adjustments) — fourteen, each available
+  destructively and as a non-destructive layer, with a curve editor and a live
+  histogram.
+- [**Filters**](docs/FEATURES.md#filters) — thirty, each previewing live at
+  1:1 rather than on a proxy.
+- [**Transforms**](docs/FEATURES.md#transforms) — Free Transform through to
+  perspective distort, crop, image size, canvas size.
+- [**Warping, carving and
+  straightening**](docs/FEATURES.md#geometry-warping-carving-and-straightening)
+  — warp and puppet warp, content-aware scale, perspective crop.
+- [**Lens correction**](docs/FEATURES.md#lens-correction) — distortion,
+  keystone, angle and vignette composed into one resampling pass.
 
 **What the models make possible** ([optional pack](docs/VISION.md))
 
-- [**Depth**](docs/FEATURES.md#depth) — haze, a shallow depth of field and a shift of viewpoint, from one depth map; and relighting, which now has a lighten-only mode that never takes light away.
-- [**A different sky, and retouched skin**](docs/FEATURES.md#replacing-a-sky-and-retouching-skin) — both mostly judgement rather than machinery, and the judgement is written down.
-- [**Aligning frames**](docs/FEATURES.md#aligning-frames) — corners that appear in both, matched and fitted; stack the result and the noise averages away.
+- [**Depth**](docs/FEATURES.md#depth) — haze, a shallow depth of field and a
+  shift of viewpoint, from one depth map; and relighting, which now has a
+  lighten-only mode that never takes light away.
+- [**A different sky, and retouched
+  skin**](docs/FEATURES.md#replacing-a-sky-and-retouching-skin) — both mostly
+  judgement rather than machinery, and the judgement is written down.
+- [**Aligning frames**](docs/FEATURES.md#aligning-frames) — corners that
+  appear in both, matched and fitted; stack the result and the noise averages
+  away.
 
 **Files and colour**
 
-- [**Colour**](docs/FEATURES.md#colour) — ICC profiles, CMYK as four inks, sixteen bits a channel, and a colour-managed canvas with soft proofing.
-- [**Raw files**](docs/FEATURES.md#raw-files) — DNG and the formats DNG-shaped enough to carry the same tags, developed to sixteen bits.
-- [**Animation**](docs/FEATURES.md#animation) — a GIF or APNG as a layer per frame with a timeline, written back out whole.
-- [**Files**](docs/FEATURES.md#files) — a layered `.cshop` project, PSD both ways, and eight flat formats.
-- [**Clipboard**](docs/FEATURES.md#clipboard) — copy, cut, copy merged and paste in place, to and from other programs.
+- [**Colour**](docs/FEATURES.md#colour) — ICC profiles, CMYK as four inks,
+  sixteen bits a channel, and a colour-managed canvas with soft proofing.
+- [**Raw files**](docs/FEATURES.md#raw-files) — DNG and the formats DNG-shaped
+  enough to carry the same tags, developed to sixteen bits.
+- [**Animation**](docs/FEATURES.md#animation) — a GIF or APNG as a layer per
+  frame with a timeline, written back out whole.
+- [**Files**](docs/FEATURES.md#files) — a layered `.cshop` project, PSD both
+  ways, and eight flat formats.
+- [**Clipboard**](docs/FEATURES.md#clipboard) — copy, cut, copy merged and
+  paste in place, to and from other programs.
 
 **The program itself**
 
-- [**It remembers**](docs/FEATURES.md#it-remembers) — window, tool, brush, colours, panels, view and the last dozen files.
-- [**Nothing waits on a frozen window**](docs/FEATURES.md#nothing-waits-on-a-frozen-window) — anything slow runs on a worker with a progress bar and a way to stop it.
+- [**It remembers**](docs/FEATURES.md#it-remembers) — window, tool, brush,
+  colours, panels, view and the last dozen files.
+- [**Nothing waits on a frozen
+  window**](docs/FEATURES.md#nothing-waits-on-a-frozen-window) — anything slow
+  runs on a worker with a progress bar and a way to stop it.
 
 ## Build and run
 
@@ -250,11 +291,12 @@ does nothing where it does not.
 
 ![The same lamp, with and without lighten only](docs/example-relight-lighten.jpg)
 
-Same lamp both times, at ambient 0.45. In the middle 542,570 pixels ended
-darker than they started and the foliage went with them; on the right, none
-did. Under the flag ambient stops being a darkener and becomes a *threshold* —
-the lamp has to beat `1 - ambient` before it shows — so the light lands only on
-what most faces it.
+Same lamp both times, at ambient 0.30. In the middle 97% of the frame ended
+darker than it started, and the bench went with it — the slats behind the dog
+and the grain in front of him are gone. On the right not one pixel is darker,
+and the dog is lit identically. Under the flag, ambient stops being a darkener
+and becomes a *threshold*: the lamp has to beat `1 - ambient` before it shows,
+so the light lands only on what most faces it.
 
 It is not physical relighting: no cast shadows, no idea how shiny anything is,
 and the new lamp is added to whatever already lit the picture. On a subject it
@@ -434,7 +476,7 @@ Every commit is a version, starting at 0.001 and incrementing by one.
 There are no dates in it: dates say when someone was at a keyboard, and
 versions say what the program is.
 
-**Where it is now.** 0.072 — 1140 tests, and the roadmap worked through end to
+**Where it is now.** 0.073 — 1140 tests, and the roadmap worked through end to
 end. The last four additions were a colour-managed canvas with soft proofing,
 long operations moved onto workers with progress and cancellation, smart
 objects that several layers can share, and a relight that never takes light
@@ -442,11 +484,23 @@ away.
 
 **What is being worked on.** In rough order:
 
-- **Painting at sixteen bits.** A layer holds sixteen and a file keeps them, but a brush, filter, adjustment or transform turns a deep layer away and says which menu item converts it. The stroke's coverage mask is already independent of depth, so what is left is the compositing at the end of a stroke and the sampled sources. Half of it done is worse than none.
-- **Compositing a smart-filtered layer off the drawing thread.** 144 ms for one modest blur on twelve megapixels, 308 ms for two, every time the layer is dirty. Moving it means deciding what the canvas shows meanwhile, which is a decision about what the program is rather than a refactor.
-- **Blending an aligned panorama.** The frames align and stack as layers, so a seam between two exposures is still a seam.
-- **Custom pattern tiles loaded from an image.** The pattern overlay draws six generated figures; a tile taken from a selection needs somewhere to keep it and a way to pick it, which is a library rather than a brush.
-- **Colourising a photograph that has none.** Blocked rather than deferred: there is no usable exported model, and this build has no network to fetch one with.
+- **Painting at sixteen bits.** A layer holds sixteen and a file keeps them,
+  but a brush, filter, adjustment or transform turns a deep layer away and
+  says which menu item converts it. The stroke's coverage mask is already
+  independent of depth, so what is left is the compositing at the end of a
+  stroke and the sampled sources. Half of it done is worse than none.
+- **Compositing a smart-filtered layer off the drawing thread.** 144 ms for
+  one modest blur on twelve megapixels, 308 ms for two, every time the layer
+  is dirty. Moving it means deciding what the canvas shows meanwhile, which is
+  a decision about what the program is rather than a refactor.
+- **Blending an aligned panorama.** The frames align and stack as layers, so a
+  seam between two exposures is still a seam.
+- **Custom pattern tiles loaded from an image.** The pattern overlay draws six
+  generated figures; a tile taken from a selection needs somewhere to keep it
+  and a way to pick it, which is a library rather than a brush.
+- **Colourising a photograph that has none.** Blocked rather than deferred:
+  there is no usable exported model, and this build has no network to fetch
+  one with.
 
 **Known limits, which are not on their way out.**
 

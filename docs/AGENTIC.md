@@ -25,10 +25,10 @@ export out.png'
 Every run answers with a report of where each layer landed and what failed,
 and `measure` sizes text before anything is drawn — so a caller that cannot
 see the canvas can still place things by number rather than by guessing.
-Named **styles** — parameterised script fragments — package a look so it can be
-applied to anything: `style watercolour`, `style noir shadows=0.7`. Seventeen
-ship, each with its reasoning written down beside it, and they scale themselves
-to whatever size of image they are handed.
+Named **styles** — parameterised script fragments — package a look so it can
+be applied to anything: `style watercolour`, `style noir shadows=0.7`.
+Seventeen ship, each with its reasoning written down beside it, and they scale
+themselves to whatever size of image they are handed.
 
 ![The style library](style-showcase.jpg)
 
@@ -49,8 +49,8 @@ styles exist, what the commands are, and which files it may open.
 
 Because a script can read and write files, a served editor is confined: every
 path resolves inside one workspace and cannot leave it, the socket is loopback
-unless a token is set — it refuses to start otherwise — and browser origins are
-checked. [SERVING.md](SERVING.md) has the details, the worked session
+unless a token is set — it refuses to start otherwise — and browser origins
+are checked. [SERVING.md](SERVING.md) has the details, the worked session
 and the reasoning. No HTTP or JSON dependency was added for any of it; both are
 in the tree, like the project format and the PSD codec.
 
