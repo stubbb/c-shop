@@ -253,8 +253,9 @@ softened before it is lit so an object's edge shades rather than being
 outlined, and a **lighten only** mode where no pixel comes out darker than it
 went in. That last one matters because the contrast in a relight comes from
 dropping ambient, and dropping ambient is also how a photograph loses the
-shadow detail it was carrying — on a photograph of a dog on a bench, 89% of the
-frame came out darker and the bench went with it. Under it, ambient becomes a
+shadow detail it was carrying — on a photograph of a dog on a bench, under a
+low warm lamp from the right, 79% of the frame came out darker and the trees
+behind him went with it. Under it, ambient becomes a
 threshold instead: the lamp has to beat `1 - ambient` before it shows at all.
 
 ## Replacing a sky, and retouching skin

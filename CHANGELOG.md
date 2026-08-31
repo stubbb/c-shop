@@ -7,6 +7,12 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.075** — *Make the relight in the example look like a relight.* At relief
+  1.4 on a photograph with a blurred background the lamp was adding four
+  levels and ambient was doing all the work, so the picture read as darker
+  rather than as lit. A low warm lamp at relief 4.0 from the side the
+  photograph was already lit from reads as late afternoon, which is what the
+  feature is for.
 - **0.074** — *Show the lighten-only example whole, and light it harder.* The
   crop was answering a problem the framing had; the full frame with a stronger
   lamp from the right answers it better, since what the flag saves is the
