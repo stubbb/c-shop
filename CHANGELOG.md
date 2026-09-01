@@ -7,6 +7,12 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.078** — *Take the undo stack apart and see what it drops.* A
+  fingerprint of the whole document before and after every edit, over three
+  hundred mixed edits, every filter, every model-driven tool and the worker
+  threads. It holds up — six defects found, none of them in the stack itself,
+  all in gestures that record their steps rather than themselves. Each is one
+  ignored test in `undo_defects.rs`.
 - **0.077** — *Point at the website.* There is one now, at
   [c-shop.org](https://c-shop.org) — the feature list with the pictures
   larger, for someone deciding whether to use this rather than reading how it

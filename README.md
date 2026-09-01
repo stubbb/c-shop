@@ -444,7 +444,7 @@ avoid special-casing everything downstream.
 
 ## Testing
 
-1143 tests, and the interesting ones are not unit tests:
+1160 tests, and the interesting ones are not unit tests:
 
 - **GPU against CPU.** Every blend mode and adjustment is implemented twice,
   once on each, and the two are compared pixel by pixel. Worst divergence:
@@ -492,7 +492,7 @@ Every commit is a version, starting at 0.001 and incrementing by one.
 There are no dates in it: dates say when someone was at a keyboard, and
 versions say what the program is.
 
-**Where it is now.** 0.077 — 1143 tests, and the roadmap worked through end to
+**Where it is now.** 0.078 — 1160 tests, and the roadmap worked through end to
 end. The last four additions were a colour-managed canvas with soft proofing,
 long operations moved onto workers with progress and cancellation, smart
 objects that several layers can share, and a relight that never takes light
