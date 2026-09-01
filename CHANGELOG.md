@@ -7,6 +7,11 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.077** — *Point at the website.* There is one now, at
+  [c-shop.org](https://c-shop.org) — the feature list with the pictures
+  larger, for someone deciding whether to use this rather than reading how it
+  works. It is built and deployed outside this repository, which stays the
+  program.
 - **0.076** — *Stop the relighting glowing off the edges of things.* Softening
   the depth turned the step at an object's outline into a ramp that straddled
   it, so the background beside the dog lit as though it were part of him. The

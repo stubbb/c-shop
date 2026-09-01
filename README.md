@@ -1,5 +1,7 @@
 # C-Shop
 
+**[c-shop.org](https://c-shop.org)**
+
 A native, GPU-accelerated, layer-based image editor. No browser, no Electron,
 no web view — a real desktop binary that composites on the GPU and is on screen
 in about 400 ms.
@@ -49,6 +51,8 @@ It needs no system packages beyond a working GPU driver. X11 is opened through
 
 One line each; [docs/FEATURES.md](docs/FEATURES.md) has the same list with the
 reasoning left in, and a picture where there is one to show.
+[c-shop.org](https://c-shop.org) is the shorter version again, with the
+pictures larger.
 
 **Layers and what hangs off them**
 
@@ -488,7 +492,7 @@ Every commit is a version, starting at 0.001 and incrementing by one.
 There are no dates in it: dates say when someone was at a keyboard, and
 versions say what the program is.
 
-**Where it is now.** 0.076 — 1143 tests, and the roadmap worked through end to
+**Where it is now.** 0.077 — 1143 tests, and the roadmap worked through end to
 end. The last four additions were a colour-managed canvas with soft proofing,
 long operations moved onto workers with progress and cancellation, smart
 objects that several layers can share, and a relight that never takes light
