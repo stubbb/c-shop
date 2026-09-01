@@ -382,11 +382,31 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
             let redo_label =
                 redo.clone().map(|n| format!("Redo {n}")).unwrap_or_else(|| "Redo".into());
 
-            if item_enabled(ui, &undo_label, &k::UNDO.label(), undo.is_some()).clicked() {
+            // Greyed out while a window is open. The ones that preview on the
+            // canvas put their own copy of the layer back when they close,
+            // which would undo the undo without moving the cursor. The
+            // keyboard has always been blocked here; these rows were not,
+            // because the windows are not modal.
+            let steady = !app.a_window_is_open();
+            if item_enabled(ui, &undo_label, &k::UNDO.label(), steady && undo.is_some())
+                .on_disabled_hover_text(if steady {
+                    "Nothing to undo"
+                } else {
+                    "Close or cancel the open window first"
+                })
+                .clicked()
+            {
                 app.push(Action::Undo);
                 ui.close();
             }
-            if item_enabled(ui, &redo_label, &k::REDO.label(), redo.is_some()).clicked() {
+            if item_enabled(ui, &redo_label, &k::REDO.label(), steady && redo.is_some())
+                .on_disabled_hover_text(if steady {
+                    "Nothing to redo"
+                } else {
+                    "Close or cancel the open window first"
+                })
+                .clicked()
+            {
                 app.push(Action::Redo);
                 ui.close();
             }

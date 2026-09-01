@@ -2,6 +2,10 @@
 
 use crate::canvas;
 use crate::chrome;
+/// Said when undo is asked for with a window open. See
+/// [`CShopApp::a_window_is_open`].
+const WINDOW_IS_OPEN: &str = "Close or cancel the open window first";
+
 use crate::commands::{Action, ModifySelection, TransformPreset, WindowCommand};
 use crate::transform_tool::{ActiveCrop, ActiveTransform};
 use crate::dialogs::{BrowserMode, Dialog, FileBrowser, NewDocument};
@@ -501,6 +505,26 @@ impl CShopApp {
         } else {
             otherwise.into()
         }
+    }
+
+    /// True while any window is open, which is when undo is refused.
+    ///
+    /// The ones that matter are the windows that preview on the canvas. They
+    /// write to the layer directly and put it back when they close — that is
+    /// what makes the canvas the preview rather than a thumbnail — so while
+    /// one is open the canvas is not the document. Undoing then moves the
+    /// history under a picture the window is about to overwrite, and closing
+    /// the window undoes the undo without moving the history back: the
+    /// cursor says the edit is gone, the canvas shows it, and there is no way
+    /// back to either.
+    ///
+    /// The test is "any window" rather than "a previewing window" because the
+    /// keyboard has always drawn the line there — `handle_shortcuts` returns
+    /// early on exactly this — and a list of which windows preview is a list
+    /// that drifts. The cost is refusing an undo behind a window that would
+    /// not have minded, which costs a click.
+    pub fn a_window_is_open(&self) -> bool {
+        self.dialog.is_open()
     }
 
     fn fail(&mut self, msg: impl Into<String>) {
@@ -1131,6 +1155,10 @@ impl CShopApp {
             }
 
             Action::Undo => {
+                if self.a_window_is_open() {
+                    self.notify(WINDOW_IS_OPEN);
+                    return;
+                }
                 let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     if let Some(dirty) = view.history.undo(&mut view.doc) {
@@ -1147,6 +1175,10 @@ impl CShopApp {
                 }
             }
             Action::Redo => {
+                if self.a_window_is_open() {
+                    self.notify(WINDOW_IS_OPEN);
+                    return;
+                }
                 let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     if let Some(dirty) = view.history.redo(&mut view.doc) {
@@ -1157,6 +1189,10 @@ impl CShopApp {
                 }
             }
             Action::HistoryJump(target) => {
+                if self.a_window_is_open() {
+                    self.notify(WINDOW_IS_OPEN);
+                    return;
+                }
                 let gpu = self.gpu.clone();
                 if let Some(view) = self.doc_mut() {
                     let dirty = view.history.jump_to(&mut view.doc, target);
@@ -1567,8 +1603,11 @@ impl CShopApp {
                     return;
                 };
                 let data = selection.to_mask();
-                let i = view.doc.add_channel(data);
-                let name = view.doc.channels[i].name.clone();
+                let dirty = view
+                    .history
+                    .apply(&mut view.doc, Box::new(cshop_core::history::AddChannel::new(data)));
+                view.mark_dirty(dirty);
+                let name = view.doc.channels.last().map(|c| c.name.clone()).unwrap_or_default();
                 self.notify(format!("Saved selection as {name}"));
             }
 
@@ -2536,15 +2575,19 @@ impl CShopApp {
         let view = &mut self.docs[i];
         let rect = IRect::from_size(view.doc.width, view.doc.height);
 
-        // Replace the lower layer's pixels, then delete the upper one. Two
-        // history entries would be wrong, so the delete is applied first and
-        // both share a single label via the pixel command.
+        // Replace the lower layer's pixels and delete the upper one, as one
+        // entry: two would mean the first Ctrl+Z leaves the merged pixels
+        // with the merged-away layer back on top of them.
         let dirty = view.history.apply(
             &mut view.doc,
-            Box::new(ReplacePixels::new(below, rect, merged, "Merge Down")),
+            Box::new(cshop_core::history::Compound::new(
+                "Merge Down",
+                vec![
+                    Box::new(ReplacePixels::new(below, rect, merged, "Merge Down")),
+                    Box::new(DeleteLayer::new(active)),
+                ],
+            )),
         );
-        view.mark_dirty(dirty);
-        let dirty = view.history.apply(&mut view.doc, Box::new(DeleteLayer::new(active)));
         view.mark_dirty(dirty);
         view.doc.select(Some(below));
         view.invalidate();
@@ -2562,27 +2605,32 @@ impl CShopApp {
         let view = &mut self.docs[i];
         let ids = view.doc.tree.iter_all();
         // Everything except the bottom layer goes, then the bottom layer takes
-        // the composited pixels.
+        // the composited pixels — as one step, because that is what it is. A
+        // deletion per layer would mean a Ctrl+Z that gives the picture back
+        // and leaves the layers gone, which is a state nobody was ever in.
         let Some(&bottom) = view.doc.tree.root().first() else { return };
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
         for id in ids.into_iter().rev() {
-            if id == bottom {
+            if id == bottom || view.doc.tree.get(id).is_none() {
                 continue;
             }
-            if view.doc.tree.get(id).is_none() {
-                continue;
-            }
-            let dirty = view.history.apply(&mut view.doc, Box::new(DeleteLayer::new(id)));
-            view.mark_dirty(dirty);
+            steps.push(Box::new(DeleteLayer::new(id)));
         }
-        let rect = IRect::from_size(view.doc.width, view.doc.height);
-        let dirty = view
-            .history
-            .apply(&mut view.doc, Box::new(ReplacePixels::new(bottom, rect, flat, "Flatten Image")));
+        // Name, offset and pixels together: the composite is in document
+        // coordinates, so the layer that takes it belongs at the origin, and
+        // all three have to come back on undo.
+        steps.push(Box::new(cshop_core::history::ReplaceLayerContents::new(
+            bottom,
+            flat,
+            (0, 0),
+            "Background",
+            "Flatten Image",
+        )));
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new("Flatten Image", steps)),
+        );
         view.mark_dirty(dirty);
-        if let Some(l) = view.doc.tree.get_mut(bottom) {
-            l.name = "Background".into();
-            l.offset = (0, 0);
-        }
         view.doc.select(Some(bottom));
         view.invalidate();
     }
@@ -4463,7 +4511,11 @@ impl CShopApp {
             return;
         };
 
-        let mut made = 0usize;
+        // One entry for the whole separation. Splitting a photograph into six
+        // layers is one thing the user asked for, and six Ctrl+Z to take it
+        // back — each removing a layer and leaving the rest — is not what
+        // they meant by it.
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
         for region in &picked {
             let Some(pixels) = crate::separate_ui::separated_layer(&source, &map, region.id, feather) else {
                 continue;
@@ -4482,13 +4534,17 @@ impl CShopApp {
                     parent: None,
                     index: view.doc.tree.root().len(),
                 });
-            let dirty = view
-                .history
-                .apply(&mut view.doc, Box::new(AddLayer::new(fresh, pos, "Separate")));
-            view.mark_dirty(dirty);
-            made += 1;
+            steps.push(Box::new(AddLayer::new(fresh, pos, "Separate")));
         }
+        let made = steps.len();
         if let Some(view) = self.doc_mut() {
+            if made > 0 {
+                let dirty = view.history.apply(
+                    &mut view.doc,
+                    Box::new(cshop_core::history::Compound::new("Separate", steps)),
+                );
+                view.mark_dirty(dirty);
+            }
             view.invalidate();
         }
         self.separate_map = None;
@@ -7183,11 +7239,25 @@ impl CShopApp {
         let Some(view) = self.doc_mut() else { return };
 
         // Cropping is a canvas resize that also moves the origin, so it reuses
-        // the same command and stays a single undo step.
+        // the same command — but under its own name, since "Canvas Size" in
+        // the History panel is not what the user did. Clearing the selection
+        // goes in the same step, so undoing a crop gives back the selection
+        // that defined it rather than leaving the picture uncroppable again
+        // without re-selecting.
         let shift = (-rect.x0, -rect.y0);
         let dirty = view.history.apply(
             &mut view.doc,
-            Box::new(ResizeCanvas::new(rect.width(), rect.height(), shift)),
+            Box::new(cshop_core::history::Compound::new(
+                "Crop",
+                vec![
+                    // The deselection goes first so that it captures the
+                    // selection while it is still there — the resize clears
+                    // it on the way past, and a command that records what it
+                    // found afterwards would record nothing.
+                    Box::new(SetSelection::new(None, "Crop")),
+                    Box::new(ResizeCanvas::new(rect.width(), rect.height(), shift)),
+                ],
+            )),
         );
         view.mark_dirty(dirty);
         view.resize_targets(&gpu);

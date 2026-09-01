@@ -1,20 +1,19 @@
-//! Undo defects found by QA, one test each.
+//! Six undo defects found by QA, and the guard on each.
 //!
-//! Every test here **fails on purpose**. Each is a defect found while testing
-//! the undo stack, reduced to the smallest thing that shows it, and written to
-//! assert what *should* happen. They are `#[ignore]`d so the suite stays green,
-//! and the list is run with:
+//! These were written first as failing tests — the smallest thing that showed
+//! each defect, asserting what should happen rather than what did — and are
+//! kept as they were once the behaviour was corrected. Every one of them fails
+//! against the code as it stood before.
 //!
-//! ```sh
-//! cargo test -p cshop-ui --test undo_defects -- --ignored
-//! ```
+//! Five were the same mistake in different places: a gesture that recorded its
+//! steps rather than itself, so one Ctrl+Z left a state nobody had been in.
+//! The sixth is the one that mattered — Flatten wrote a layer's name and
+//! offset outside the history, so undo could not put them back and the picture
+//! came back wrong.
 //!
-//! Fixing one means deleting its `#[ignore]`. If a test here starts passing,
-//! that is the signal.
-//!
-//! What *works* is in `undo_fidelity.rs`, which is green and covers filters,
-//! three hundred mixed edits, the model-driven tools, the worker threads and
-//! the stack's own arithmetic.
+//! What was already right is in `undo_fidelity.rs`: filters, three hundred
+//! mixed edits, the model-driven tools, the worker threads and the stack's own
+//! arithmetic.
 
 use cshop_core::color::Rgba8;
 use cshop_core::document::{Background, Document};
@@ -74,7 +73,6 @@ fn a_second_layer(app: &mut CShopApp) {
 /// Reproduce by hand: grow the canvas with a centred anchor — which moves
 /// every layer off the origin — then Image ▸ Flatten, then undo.
 #[test]
-#[ignore = "known defect: flatten writes name and offset outside the history"]
 fn flatten_restores_the_layer_it_kept() {
     let Some(mut app) = app(80, 60) else { return };
     a_second_layer(&mut app);
@@ -94,7 +92,6 @@ fn flatten_restores_the_layer_it_kept() {
 /// The same defect seen through the layer's name alone, which is the half a
 /// user notices first.
 #[test]
-#[ignore = "known defect: flatten renames the bottom layer outside the history"]
 fn flatten_does_not_rename_the_layer_permanently() {
     let Some(mut app) = app(80, 60) else { return };
     {
@@ -119,7 +116,6 @@ fn flatten_does_not_rename_the_layer_permanently() {
 /// undoes whatever came *before* it while the channel stays — the confusing
 /// case, because something the user did not point at disappears instead.
 #[test]
-#[ignore = "known defect: saving a selection as a channel records no history"]
 fn saving_a_selection_as_a_channel_can_be_undone() {
     let Some(mut app) = app(100, 80) else { return };
     let sel = Selection::from_rect(
@@ -149,7 +145,6 @@ fn saving_a_selection_as_a_channel_can_be_undone() {
 ///
 /// `Compound` already exists for exactly this and is what Layer via Copy uses.
 #[test]
-#[ignore = "known defect: flatten and merge down record several entries each"]
 fn a_single_gesture_records_a_single_entry() {
     let Some(mut app) = app(80, 60) else { return };
 
@@ -166,10 +161,64 @@ fn a_single_gesture_records_a_single_entry() {
     assert_eq!(cursor(&app) - at, 1, "Flatten Image recorded one entry per layer");
 }
 
+/// Separate by Content made a layer per kind of thing it found, and recorded
+/// an entry per layer. Splitting a photograph into six layers is one thing the
+/// user asked for; six Ctrl+Z to take it back, each removing one layer and
+/// leaving the rest, is not what they meant by it.
+#[test]
+fn separating_by_content_is_one_entry() {
+    if !cshop_ui::vision::is_available() {
+        eprintln!("no vision pack; skipping");
+        return;
+    }
+    let Some(mut app) = app(180, 140) else { return };
+    {
+        // A sky over ground, so the labeller has more than one thing to find.
+        let view = app.doc_mut().unwrap();
+        let id = view.doc.active.unwrap();
+        let mut px = cshop_core::pixels::PixelBuffer::new(180, 140);
+        for y in 0..140 {
+            for x in 0..180 {
+                px.set(
+                    x,
+                    y,
+                    if y < 70 {
+                        Rgba8::opaque(120, 160, 220)
+                    } else {
+                        Rgba8::opaque(80, 120, 60)
+                    },
+                );
+            }
+        }
+        view.doc.tree.get_mut(id).unwrap().kind = cshop_core::layer::LayerKind::raster(px);
+        view.invalidate();
+    }
+    let before = layers(&app);
+    let at = cursor(&app);
+
+    app.dispatch(Action::ShowSeparate);
+    app.dispatch(Action::RunSeparate);
+    // The window stays open after it runs, and undo is refused while one is,
+    // so close it as a user would before reaching for Ctrl+Z.
+    app.dispatch(Action::CloseDialog);
+    if cursor(&app) == at {
+        eprintln!("the labeller found nothing to separate; skipping");
+        return;
+    }
+    assert_eq!(
+        cursor(&app) - at,
+        1,
+        "separating recorded {} entries, one per layer it made",
+        cursor(&app) - at
+    );
+
+    app.dispatch(Action::Undo);
+    assert_eq!(layers(&app), before, "and one undo should take the whole separation back");
+}
+
 /// **Crop to Selection is called "Canvas Size" in the History panel**, and its
 /// undo does not bring back the selection that defined the crop.
 #[test]
-#[ignore = "known defect: crop is labelled as a canvas resize and drops the selection"]
 fn cropping_is_named_after_itself_and_keeps_the_selection() {
     let Some(mut app) = app(160, 120) else { return };
     let sel = Selection::from_rect(
@@ -199,16 +248,15 @@ fn cropping_is_named_after_itself_and_keeps_the_selection() {
 ///
 /// The preview windows write to the layer directly and put it back on Cancel,
 /// which is what makes the canvas the preview. They are not modal, so Edit ▸
-/// Undo is still clickable behind them — confirmed with real clicks through
-/// the input harness. Undo then moves the cursor and the pixels, and Cancel
-/// afterwards restores the pixels as they were when the window opened, undoing
-/// the undo without moving the cursor back.
+/// Undo was still clickable behind them — confirmed with real clicks through
+/// the input harness. Undo moved the cursor and the pixels, and Cancel then
+/// restored the pixels as they were when the window opened, undoing the undo
+/// without moving the cursor back: the cursor said the edit was undone, the
+/// canvas showed it applied, and there was no way back.
 ///
-/// What is left: the cursor says the edit is undone, the canvas shows it
-/// applied, `undo_name` is `None` so the user cannot get back, and Redo
-/// advances the cursor without changing anything.
+/// Undo is now refused while a window is previewing, which is what the
+/// keyboard has always done. The test is that the two never disagree.
 #[test]
-#[ignore = "known defect: a preview window's Cancel can overwrite an undo"]
 fn undo_behind_a_preview_window_agrees_with_the_document() {
     if !cshop_ui::vision::is_available() {
         eprintln!("no vision pack; skipping");
@@ -219,15 +267,20 @@ fn undo_behind_a_preview_window_agrees_with_the_document() {
 
     app.foreground = Rgba8::opaque(255, 0, 0);
     app.dispatch(Action::FillSwatch { background: false, preserve_transparency: false });
+    let filled = layers(&app);
+    assert_eq!(cursor(&app), 1);
 
     app.dispatch(Action::ShowRelight);
     app.dispatch(Action::Undo);
     app.dispatch(Action::RelightCancel);
 
-    assert_eq!(cursor(&app), 0, "the fill should be undone");
-    assert_eq!(
-        layers(&app),
-        untouched,
-        "the document should show the fill undone, not the window's copy of it"
-    );
+    // Whatever the answer is, the history and the picture have to give the
+    // same one. Refusing the undo is that answer.
+    assert_eq!(cursor(&app), 1, "the undo should have been refused, not half-done");
+    assert_eq!(layers(&app), filled, "and the picture should still show the fill");
+
+    // And with the window closed it works as it always did.
+    app.dispatch(Action::Undo);
+    assert_eq!(cursor(&app), 0);
+    assert_eq!(layers(&app), untouched);
 }

@@ -1002,6 +1002,9 @@ fn model_driven_edits_undo_exactly() {
             "{name} recorded {} entries; one gesture should be one undo",
             cursor(&fresh) - at
         );
+        // Close the window first: undo is refused while one is open, and a
+        // loop that waits for `can_undo` to go false would never end.
+        fresh.dispatch(Action::CloseDialog);
         while fresh.doc().unwrap().history.can_undo() {
             fresh.dispatch(Action::Undo);
         }

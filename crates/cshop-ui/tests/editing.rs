@@ -463,13 +463,20 @@ fn merge_all_undoes_back_to_the_full_stack() {
     app.dispatch(Action::NewLayer);
     assert_eq!(app.doc().unwrap().doc.tree.len(), 3);
 
+    let before = app.doc().unwrap().history.cursor();
     app.dispatch(Action::FlattenImage);
     assert_eq!(app.doc().unwrap().doc.tree.len(), 1);
 
-    // Flatten is several commands; undo has to walk all of them back.
-    let steps = app.doc().unwrap().history.cursor();
-    app.dispatch(Action::HistoryJump(steps - 3));
-    assert_eq!(app.doc().unwrap().doc.tree.len(), 3, "the stack comes back");
+    // Flatten is one gesture and so one entry, however many layers it took in.
+    // It used to record a deletion apiece, which meant the first Ctrl+Z gave
+    // the picture back and left the layers gone — a state nobody had been in.
+    assert_eq!(
+        app.doc().unwrap().history.cursor() - before,
+        1,
+        "flatten should be a single history entry"
+    );
+    app.dispatch(Action::Undo);
+    assert_eq!(app.doc().unwrap().doc.tree.len(), 3, "the stack comes back in one step");
 }
 
 #[test]

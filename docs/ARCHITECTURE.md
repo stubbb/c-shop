@@ -277,6 +277,36 @@ A stroke that changed nothing never becomes a history entry, which is what
 tells you the clone stamp's source has wandered off the canvas instead of
 leaving an "undo" that undoes nothing.
 
+The rule that is easy to break is the other half of it: a gesture made of
+several commands has to be *one* `Compound`, not several entries in a row.
+Flatten, Merge Down and Separate by Content each recorded a step apiece for a
+while, and the failure is not that the document cannot be recovered — it can,
+with enough presses — but that the first Ctrl+Z lands on a state nobody was
+ever in. Flattening four layers and undoing once gave the picture back with
+the layers still deleted.
+
+And whatever a command changes has to be *in* the command. Flatten set the
+kept layer's name and offset directly afterwards, outside the history, so undo
+could not put them back: a layer that was not at the origin came back at
+`(0, 0)`, renamed, and holding the wrong pixels, because the flattened picture
+is in document coordinates and was written at a rect that ignored where the
+layer sat.
+
+### Undo is refused while a window is open
+
+The windows that preview on the canvas write to the layer directly and put it
+back when they close — that is what makes the canvas the preview rather than a
+thumbnail. While one is open the canvas is not the document, so undoing then
+moves the history under a picture the window is about to overwrite: the window
+closes, restores its own copy, and the cursor is left saying an edit is undone
+that the canvas still shows.
+
+The keyboard always drew this line, in `handle_shortcuts`. The windows are not
+modal, though, so the Edit menu behind them did not — and neither did the
+History panel. All three now refuse together, on `CShopApp::a_window_is_open`.
+Anything that walks the stack in a loop has to close the window first, or wait
+for a `can_undo` that will never go false.
+
 ## The project format is written by hand
 
 A derive-based encoding ties the file layout to the *order* of fields and enum

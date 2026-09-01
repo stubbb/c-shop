@@ -1500,6 +1500,160 @@ fn resize_mask(mask: &MaskBuffer, width: u32, height: u32) -> MaskBuffer {
     out
 }
 
+/// Save a selection into the Channels panel.
+///
+/// A channel is a document-level thing rather than a layer's, which is why it
+/// used to be pushed straight onto the document and left there: it changed
+/// nothing a layer command knows about, so nothing recorded it. That made
+/// Ctrl+Z afterwards undo whatever came *before* the save while the channel
+/// stayed — the worst shape a missing undo can take, because what disappears
+/// is not the thing the user just did.
+#[derive(Debug)]
+pub struct AddChannel {
+    /// Where it went in, so an undo takes out the one that was added rather
+    /// than whichever is on the end.
+    at: Option<usize>,
+    channel: Option<crate::document::AlphaChannel>,
+}
+
+impl AddChannel {
+    pub fn new(data: MaskBuffer) -> Self {
+        Self {
+            at: None,
+            // The name is filled in on the first apply, from the document,
+            // since it counts the channels already there.
+            channel: Some(crate::document::AlphaChannel {
+                name: String::new(),
+                data,
+                visible: false,
+            }),
+        }
+    }
+}
+
+impl Command for AddChannel {
+    fn name(&self) -> String {
+        "Save Selection".into()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        self.channel
+            .as_ref()
+            .map_or(0, |c| c.data.width() as u64 * c.data.height() as u64)
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        let Some(mut channel) = self.channel.take() else { return Dirty::NONE };
+        if channel.name.is_empty() {
+            // `add_channel` picks the next free "Alpha n"; borrow its answer
+            // by adding and taking the name back, so a redo puts the same one
+            // back rather than counting again against a different document.
+            let at = doc.add_channel(channel.data.clone());
+            channel.name = doc.channels[at].name.clone();
+            doc.channels[at] = channel.clone();
+            self.at = Some(at);
+        } else {
+            let at = self.at.unwrap_or(doc.channels.len()).min(doc.channels.len());
+            doc.channels.insert(at, channel.clone());
+            self.at = Some(at);
+        }
+        self.channel = Some(channel);
+        Dirty::NONE
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        if let Some(at) = self.at {
+            if at < doc.channels.len() {
+                doc.channels.remove(at);
+            }
+        }
+        Dirty::NONE
+    }
+}
+
+/// Set a layer's name, offset and pixels at once, as flattening does.
+///
+/// Flatten used to write the name and the offset straight onto the layer,
+/// outside any command, so undo had nothing to put back: a layer that was not
+/// at the origin came back at `(0, 0)` and renamed. The pixels came back wrong
+/// too, because the flattened picture is in document coordinates and was
+/// written at a rect that ignored where the layer actually sat.
+/// A layer as it was before its contents were replaced.
+type LayerWas = (Surface, (i32, i32), String, Option<LayerMask>);
+
+#[derive(Debug)]
+pub struct ReplaceLayerContents {
+    id: LayerId,
+    after: Option<(PixelBuffer, (i32, i32), String)>,
+    before: Option<LayerWas>,
+    label: String,
+}
+
+impl ReplaceLayerContents {
+    pub fn new(
+        id: LayerId,
+        pixels: PixelBuffer,
+        offset: (i32, i32),
+        name: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            after: Some((pixels, offset, name.into())),
+            before: None,
+            label: label.into(),
+        }
+    }
+}
+
+impl Command for ReplaceLayerContents {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn memory_bytes(&self) -> u64 {
+        let after = self.after.as_ref().map_or(0, |(px, _, _)| pixel_bytes(px));
+        let before = self
+            .before
+            .as_ref()
+            .map_or(0, |(s, _, _, m)| s.bytes() + m.as_ref().map_or(0, mask_bytes));
+        after + before
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Dirty {
+        let Some((pixels, offset, name)) = self.after.clone() else { return Dirty::NONE };
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        if self.before.is_none() {
+            let surface = match &layer.kind {
+                crate::layer::LayerKind::Raster(s) => s.clone(),
+                // A layer that renders itself keeps a raster of what it looks
+                // like; that is what has to come back.
+                _ => Surface::Eight(
+                    layer.pixels().cloned().unwrap_or_else(|| PixelBuffer::new(1, 1)),
+                ),
+            };
+            self.before = Some((surface, layer.offset, layer.name.clone(), layer.mask.clone()));
+        }
+        layer.kind = crate::layer::LayerKind::Raster(Surface::Eight(pixels));
+        layer.offset = offset;
+        layer.name = name;
+        // The mask is in the flattened pixels now; keeping it would apply it
+        // twice.
+        layer.mask = None;
+        Dirty::structural(doc.bounds())
+    }
+
+    fn revert(&mut self, doc: &mut Document) -> Dirty {
+        let Some((surface, offset, name, mask)) = self.before.clone() else { return Dirty::NONE };
+        let Some(layer) = doc.tree.get_mut(self.id) else { return Dirty::NONE };
+        layer.kind = crate::layer::LayerKind::Raster(surface);
+        layer.offset = offset;
+        layer.name = name;
+        layer.mask = mask;
+        Dirty::structural(doc.bounds())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Smart-object sources
 //

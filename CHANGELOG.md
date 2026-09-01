@@ -7,6 +7,12 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.079** — *Correct all six undo defects.* Flatten now puts back the name,
+  the offset and the pixels it took; Flatten, Merge Down and Separate by
+  Content are each one entry; saving a selection as a channel records itself;
+  a crop is called a crop and gives back the selection; and undo is refused
+  while a window is previewing, which the keyboard already did and the menu
+  did not.
 - **0.078** — *Take the undo stack apart and see what it drops.* A
   fingerprint of the whole document before and after every edit, over three
   hundred mixed edits, every filter, every model-driven tool and the worker
