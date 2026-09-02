@@ -122,11 +122,49 @@ fn brush_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
     });
 
     ui.separator();
-    brush_shape_menu(app, ui);
+    brush_dynamics(app, ui);
 
     ui.separator();
-    brush_scatter_menu(app, ui);
+    if ui.button("Reset brush").clicked() {
+        app.brush = cshop_core::paint::Brush::default();
+        app.dispatch(Action::ClearBrushTip);
+        ui.close();
+    }
+}
 
+/// A slider over a `0..=1` setting, shown and read in whole percent.
+///
+/// The shared [`slider`] allows a decimal, which egui then shows on some
+/// ranges and not others — a column of percentages where one of them reads
+/// `0.0%` and the rest read `0%`.
+fn percent_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> bool {
+    let mut shown = *value * 100.0;
+    let changed = ui
+        .horizontal(|ui| {
+            ui.label(label);
+            ui.add(egui::Slider::new(&mut shown, range).suffix("%").max_decimals(0)).changed()
+        })
+        .inner;
+    if changed {
+        *value = shown / 100.0;
+    }
+    changed
+}
+
+/// What the brush stamps and how the stamps are scattered.
+///
+/// Shown in two places — the options bar, where the rest of the brush settings
+/// live, and this menu, which is where the pointer already is. One definition,
+/// so the two cannot come to offer different things.
+pub(crate) fn brush_dynamics(app: &mut CShopApp, ui: &mut egui::Ui) {
+    brush_shape_menu(app, ui);
+    ui.separator();
+    brush_scatter_menu(app, ui);
     ui.separator();
     ui.label(egui::RichText::new("Pen pressure drives").small());
     ui.horizontal(|ui| {
@@ -134,12 +172,19 @@ fn brush_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
         ui.checkbox(&mut app.brush.pressure.flow, "Flow");
         ui.checkbox(&mut app.brush.pressure.opacity, "Opacity");
     });
+}
 
-    ui.separator();
-    if ui.button("Reset brush").clicked() {
-        app.brush = cshop_core::paint::Brush::default();
-        app.dispatch(Action::ClearBrushTip);
-        ui.close();
+/// A short account of what the brush is stamping, for the button that opens
+/// the settings: the name of the stamp, and whether it is being scattered.
+pub(crate) fn brush_dynamics_summary(app: &CShopApp) -> String {
+    let stamp = match &app.brush_tip {
+        Some((name, _)) => name.as_str(),
+        None => "Round",
+    };
+    if app.brush.scatter.active() {
+        format!("{stamp} + scatter")
+    } else {
+        stamp.to_string()
     }
 }
 
@@ -171,27 +216,18 @@ fn brush_scatter_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
     use cshop_core::paint::Scatter;
     ui.label(egui::RichText::new("Scatter").small());
 
-    let mut spacing = app.brush.spacing * 100.0;
-    if slider(ui, "Spacing", &mut spacing, 1.0..=400.0, "%") {
-        app.brush.spacing = spacing / 100.0;
-    }
-    let mut spread = app.brush.scatter.spread * 100.0;
-    if slider(ui, "Scatter", &mut spread, 0.0..=Scatter::MAX_SPREAD * 100.0, "%") {
-        app.brush.scatter.spread = spread / 100.0;
-    }
-    let mut count = app.brush.scatter.count as f32;
-    if slider(ui, "Count", &mut count, 1.0..=Scatter::MAX_COUNT as f32, "") {
-        app.brush.scatter.count = count.round() as u32;
-    }
-
-    let mut scale = app.brush.scatter.scale * 100.0;
-    if slider(ui, "Size", &mut scale, 5.0..=Scatter::MAX_SCALE * 100.0, "%") {
-        app.brush.scatter.scale = scale / 100.0;
-    }
-    let mut jitter = app.brush.scatter.size_jitter * 100.0;
-    if slider(ui, "Size jitter", &mut jitter, 0.0..=100.0, "%") {
-        app.brush.scatter.size_jitter = jitter / 100.0;
-    }
+    // Spacing of zero would stamp the same pixel for ever; the brush clamps it
+    // anyway, and a slider that can be dragged somewhere the setting will not
+    // go is a slider that lies.
+    percent_row(ui, "Spacing", &mut app.brush.spacing, 1.0..=400.0);
+    percent_row(ui, "Scatter", &mut app.brush.scatter.spread, 0.0..=Scatter::MAX_SPREAD * 100.0);
+    // A whole number of stamps, shown as one: "1.0 stamps" is not a thing.
+    ui.horizontal(|ui| {
+        ui.label("Count");
+        ui.add(egui::Slider::new(&mut app.brush.scatter.count, 1..=Scatter::MAX_COUNT));
+    });
+    percent_row(ui, "Size", &mut app.brush.scatter.scale, 5.0..=Scatter::MAX_SCALE * 100.0);
+    percent_row(ui, "Size jitter", &mut app.brush.scatter.size_jitter, 0.0..=100.0);
 
     // A round dab looks the same at every angle, so the controls that turn one
     // are shown only when there is something whose turning can be seen.

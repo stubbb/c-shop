@@ -1509,6 +1509,17 @@ pub fn options_bar(app: &mut CShopApp, ui: &mut egui::Ui) {
                         .speed(0.005)
                         .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                 );
+                ui.add_space(6.0);
+
+                // The shape being stamped and what scatters it. Too many
+                // controls to sit on the bar itself, and the wrong thing to
+                // hide in a right-click menu when every other brush setting is
+                // here — so the bar carries what it is set to and opens the
+                // rest.
+                ui.label("Stamp:");
+                ui.menu_button(crate::context_menus::brush_dynamics_summary(app), |ui| {
+                    crate::context_menus::brush_dynamics(app, ui);
+                });
             }
 
             Tool::Dodge | Tool::Burn | Tool::Sponge => {

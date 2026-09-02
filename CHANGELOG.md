@@ -7,6 +7,13 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.082** — *Put the scatter brush where the brush settings are.* The stamp
+  and its scatter controls arrived in the right-click menu only, which is a
+  poor place for them when size, hardness, opacity, flow and spacing are all on
+  the options bar: the bar now carries what the brush is stamping and opens the
+  rest. One definition of the controls, shown in both places, so they cannot
+  drift apart. Count reads as a whole number of stamps rather than `1.0`, and
+  the percentages in that panel all read in whole percent.
 - **0.081** — *Scatter and pattern brushes.* The stroke engine already stamped
   a shape along a line; what it could not do was throw the stamps off the line,
   size each one differently, or turn them to face the way the stroke was going

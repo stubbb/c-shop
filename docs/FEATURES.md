@@ -152,7 +152,10 @@ density of the texture. **Size** sets how big the stamp is within its step and
 the size slider goes on describing the largest mark the brush can make.
 **Angle** turns the stamp, and **angle follows the stroke** measures that turn
 from the direction of travel, which is what makes hatching lie along a curve
-and grass stand up from it.
+and grass stand up from it. All of it sits behind the **Stamp** button on the
+brush's options bar, which says what is loaded, and in the canvas's right-click
+menu. The angle controls appear only for a shape that has a direction: a dot is
+a dot whichever way up it is.
 
 The scatter is random and reproducible at once: it is seeded from where the
 stroke begins, so two strokes never land the same spatter twice while one
