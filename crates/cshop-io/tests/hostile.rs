@@ -134,3 +134,65 @@ fn hostile_containers_yield_nothing_rather_than_panicking() {
         let _ = cshop_io::cmyk::is_separated(&case);
     }
 }
+
+/// A project file carrying a radius no dialog could have produced.
+///
+/// The reader already refuses a transform matrix that is not finite. A filter's
+/// radius needed the same treatment for the same reason: it becomes a loop
+/// bound and an allocation size the moment the layer is composited, so a file
+/// holding infinity there is a crash on open rather than a picture — and the
+/// file need not be hostile to hold one, only written by something careless.
+#[test]
+fn a_filter_radius_from_a_file_arrives_finite() {
+    use cshop_core::color::Rgba8;
+    use cshop_core::document::{Background, Document};
+    use cshop_core::filters::Filter;
+    use cshop_core::layer::{Layer, LayerKind};
+    use cshop_core::pixels::PixelBuffer;
+    use cshop_core::smart_filters::{FilterSlot, SmartFilters};
+
+    let wild = [
+        Filter::GaussianBlur { radius: f32::INFINITY },
+        Filter::GaussianBlur { radius: 1e30 },
+        Filter::BoxBlur { radius: f32::NAN },
+        Filter::MotionBlur { angle: f32::NAN, distance: f32::INFINITY },
+        Filter::Median { radius: u32::MAX },
+        Filter::UnsharpMask { amount: f32::INFINITY, radius: f32::INFINITY, threshold: f32::NAN },
+    ];
+
+    let mut doc = Document::new("hostile", 32, 24, Background::Transparent);
+    let id = doc.tree.alloc_id();
+    let mut layer = Layer::new(
+        id,
+        "Filtered",
+        LayerKind::raster(PixelBuffer::filled(32, 24, Rgba8::opaque(120, 60, 30))),
+    );
+    layer.filters = SmartFilters {
+        enabled: true,
+        slots: wild.iter().cloned().map(FilterSlot::new).collect(),
+        mask: None,
+    };
+    doc.tree.push(layer, None);
+
+    let bytes = cshop_io::project::write(&doc);
+    let back = cshop_io::project::read(&bytes).expect("the file is well-formed, only absurd");
+    let l = back
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|i| back.tree.get(i))
+        .find(|l| l.name == "Filtered")
+        .expect("the layer came back");
+
+    for slot in &l.filters.slots {
+        let shown = format!("{:?}", slot.filter);
+        assert!(
+            !shown.contains("inf") && !shown.contains("NaN"),
+            "the reader handed back {shown}"
+        );
+    }
+
+    // And the document it produced can actually be composited.
+    let ctx = cshop_core::filters::FilterContext::default();
+    assert!(l.filtered_pixels(&ctx).is_some(), "the layer should still render");
+}

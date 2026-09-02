@@ -7,6 +7,16 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.080** — *Bound every filter setting, whichever door it came through.* A
+  radius is a loop bound and an allocation size, and the only thing bounding one
+  was the slider in its dialog — which a script, a project file and a program
+  talking over MCP all miss. `filter gaussian-blur radius=1e30` ended the
+  process, and with `panic = abort` that is the session and the unsaved document
+  with it; `motion-blur distance=1e9` ran until something killed it, holding the
+  editor thread against every other client. Filters now clamp their own
+  settings, the project reader brings a file's numbers into range as it already
+  did for transforms, and `resize` refuses a canvas past the limit `new` has
+  always had.
 - **0.079** — *Correct all six undo defects.* Flatten now puts back the name,
   the offset and the pixels it took; Flatten, Merge Down and Separate by
   Content are each one entry; saving a selection as a channel records itself;

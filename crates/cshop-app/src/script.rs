@@ -521,6 +521,14 @@ use cshop_gpu::context::GpuContext;
 use cshop_ui::app::CShopApp;
 use cshop_ui::commands::Action;
 
+/// The largest canvas the editor will make, in either direction.
+///
+/// `new` has refused anything beyond this from the start. `resize` was never
+/// told, and a size mistyped there asks the allocator for tens of gigabytes,
+/// which ends the process and the unsaved document with it. One number, so the
+/// two cannot drift apart again.
+const MAX_CANVAS_SIDE: u32 = 30_000;
+
 pub struct Runner {
     app: CShopApp,
     gpu: GpuContext,
@@ -787,7 +795,7 @@ impl Runner {
     fn cmd_new(&mut self, cmd: &Command) -> Result<String, String> {
         let w = cmd.arg_f32(0, "width")? as u32;
         let h = cmd.arg_f32(1, "height")? as u32;
-        if w == 0 || h == 0 || w > 30_000 || h > 30_000 {
+        if w == 0 || h == 0 || w > MAX_CANVAS_SIDE || h > MAX_CANVAS_SIDE {
             return Err(format!("{w}x{h} is not a usable canvas size"));
         }
         let background = match cmd.opt("background").unwrap_or("white") {
@@ -1281,6 +1289,13 @@ impl Runner {
             };
             (width.max(1), height.max(1))
         };
+
+        if width > MAX_CANVAS_SIDE || height > MAX_CANVAS_SIDE {
+            return Err(format!(
+                "{width}x{height} is past the largest canvas c-shop will make \
+                 ({MAX_CANVAS_SIDE}x{MAX_CANVAS_SIDE})"
+            ));
+        }
 
         let filter = match cmd.opt("filter").unwrap_or("lanczos") {
             "nearest" => Resampling::Nearest,
@@ -3200,6 +3215,9 @@ impl Runner {
                 ))
             }
         };
+        // A script is one of the doors that does not pass through a dialog, so
+        // the sliders' bounds are not applied for us.
+        let filter = filter.clamped();
         self.app.dispatch(Action::ApplyFilter(Box::new(filter)));
         Ok(format!("applied {name}"))
     }

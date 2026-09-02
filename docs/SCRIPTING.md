@@ -993,6 +993,19 @@ Because a script can read and write files, a served editor is confined to one
 workspace, bound to loopback unless a token is set, and checked for browser
 origins. [SERVING.md](SERVING.md) covers the tools, sessions and the guards.
 
+## Numbers it will not take literally
+
+The sliders in the filter dialogs bound what those filters can be asked for,
+and a script does not pass through the dialogs. A radius is a loop bound and an
+allocation size once it reaches the compositor, so the bounds are applied here
+too: a setting past the range is brought back to the edge of it, and one that
+is not a number at all — `inf`, `NaN` — leaves the filter doing nothing rather
+than guessing what was meant. Both are reported as success, because the script
+asked for something the editor could do something sensible with.
+
+`resize` will not make a canvas larger than thirty thousand pixels a side,
+which is the same limit `new` has always had, and says so rather than trying.
+
 ## What it does not do
 
 No loops, variables or arithmetic — a caller that needs those has a real

@@ -21,6 +21,29 @@ use crate::progress::Progress;
 use blur::RadialKind;
 use plane::Plane;
 
+/// How far a blur may be asked to reach, in pixels.
+///
+/// A filter takes its numbers from a dialog whose sliders bound them, but also
+/// from scripts, project files and other programs, which do not. A radius is a
+/// loop bound and an allocation size both, so one arriving as infinity — or
+/// merely as a very large number — is a crash or an endless wait rather than a
+/// picture. This is several times the widest slider, so no request anyone
+/// means arrives altered, and small enough that the work stays finite.
+pub const MAX_RADIUS: f32 = 1000.0;
+
+/// The same, for the filters that compare a whole square around each pixel.
+///
+/// Their cost grows with the *square* of the radius, so they are held much
+/// lower than [`MAX_RADIUS`] — sixteen times the widest slider offering one.
+pub const MAX_AREA_RADIUS: u32 = 100;
+
+/// A bound on offsets and cell sizes, which are positions rather than areas.
+///
+/// These cost nothing to make large; they are bounded only so that the
+/// arithmetic derived from them cannot overflow. It sits above the largest
+/// image the file format will open, so it can never trim a meaningful value.
+pub const MAX_EXTENT: i32 = 1 << 20;
+
 /// Where a filter appears in the Filter menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
@@ -378,7 +401,10 @@ impl Filter {
     /// counts them all against one total rather than restarting the bar in
     /// the middle of itself.
     pub fn apply_plane(&self, src: &Plane, ctx: &FilterContext, p: &Progress) -> Plane {
-        match *self {
+        // Every number is bounded here rather than at each of the doors into
+        // the editor, so that a filter reached by a route nobody has thought of
+        // yet is still a filter that finishes.
+        match self.clamped_for(src.width, src.height) {
             Filter::GaussianBlur { radius } => blur::gaussian(src, radius, p),
             Filter::BoxBlur { radius } => blur::box_blur(src, radius, p),
             Filter::MotionBlur { angle, distance } => blur::motion(src, angle, distance, p),
@@ -521,6 +547,141 @@ impl Filter {
             Filter::Emboss { height, .. } => *height *= s,
             // Radial blur, the twirl family and the pointwise effects are all
             // expressed in fractions of the image, so they need no scaling.
+            _ => {}
+        }
+        out
+    }
+
+    /// The same filter with every number brought inside a range it can survive.
+    ///
+    /// The sliders in the filter dialogs are the only thing that bounds these
+    /// values, and three doors into the editor bypass the dialogs entirely: a
+    /// script, a project file, and another program talking over MCP. What
+    /// arrives through them is clamped here instead, so that the bound belongs
+    /// to the filter rather than to one of its callers.
+    ///
+    /// A value that is not a number cannot be clamped into range, so it falls
+    /// back to zero — an amount of none, an offset of nowhere, a convolution
+    /// weight that contributes nothing — which for almost every filter means
+    /// it leaves the picture alone. Where zero would divide, the nearest
+    /// usable value is taken instead.
+    pub fn clamped(&self) -> Filter {
+        /// Finite and within `[-max, max]`; anything else becomes zero.
+        fn n(v: f32, max: f32) -> f32 {
+            if v.is_finite() { v.clamp(-max, max) } else { 0.0 }
+        }
+        /// A radius: finite, never negative, never beyond the ceiling.
+        fn r(v: f32) -> f32 {
+            if v.is_finite() { v.clamp(0.0, MAX_RADIUS) } else { 0.0 }
+        }
+        let area = |v: u32| v.min(MAX_AREA_RADIUS);
+        let extent = |v: i32| v.clamp(-MAX_EXTENT, MAX_EXTENT);
+        let cell = |v: u32| v.clamp(1, MAX_EXTENT as u32);
+
+        let mut out = self.clone();
+        match &mut out {
+            // --- the ones that size a buffer or bound a loop ---
+            Filter::GaussianBlur { radius }
+            | Filter::BoxBlur { radius }
+            | Filter::HighPass { radius } => *radius = r(*radius),
+            Filter::MotionBlur { angle, distance } => {
+                *angle = n(*angle, 3600.0);
+                *distance = r(*distance);
+            }
+            Filter::SurfaceBlur { radius, threshold } => {
+                *radius = r(*radius);
+                *threshold = n(*threshold, 1.0);
+            }
+            Filter::UnsharpMask { amount, radius, threshold } => {
+                *amount = n(*amount, 100.0);
+                *radius = r(*radius);
+                *threshold = n(*threshold, 1.0);
+            }
+            Filter::Median { radius } | Filter::Maximum { radius } | Filter::Minimum { radius } => {
+                *radius = area(*radius)
+            }
+            Filter::DustAndScratches { radius, threshold } => {
+                *radius = area(*radius);
+                *threshold = n(*threshold, 1.0);
+            }
+            Filter::Diffuse { amount, .. } => *amount = area(*amount),
+            Filter::Mosaic { size } => *size = cell(*size),
+            Filter::Crystallize { size, .. } => *size = cell(*size),
+            // Fragment reaches out from each pixel rather than moving the
+            // picture, and says so through `support`, so it is bounded as a
+            // reach and not as an offset.
+            Filter::Fragment { distance } => {
+                *distance = (*distance).clamp(-(MAX_RADIUS as i32), MAX_RADIUS as i32)
+            }
+            Filter::Offset { dx, dy, .. } => {
+                *dx = extent(*dx);
+                *dy = extent(*dy);
+            }
+
+            // --- the ones that only scale a value, and need only be finite ---
+            Filter::RadialBlur { amount, centre, .. } => {
+                *amount = n(*amount, 100.0);
+                centre.0 = n(centre.0, 1.0);
+                centre.1 = n(centre.1, 1.0);
+            }
+            Filter::Sharpen { amount } | Filter::Pinch { amount } | Filter::Spherize { amount } => {
+                *amount = n(*amount, 100.0)
+            }
+            Filter::AddNoise { amount, .. } => *amount = n(*amount, 100.0),
+            Filter::Twirl { angle } => *angle = n(*angle, 3600.0),
+            Filter::Wave { amplitude, wavelength, .. } => {
+                *amplitude = n(*amplitude, MAX_RADIUS);
+                // A wavelength of zero would divide by itself.
+                *wavelength = n(*wavelength, MAX_RADIUS).abs().max(0.01);
+            }
+            Filter::Clouds { scale, .. } => *scale = n(*scale, MAX_RADIUS).abs().max(0.01),
+            Filter::Fibers { strength, length, .. } => {
+                *strength = n(*strength, 100.0);
+                *length = n(*length, MAX_RADIUS).abs().max(0.01);
+            }
+            Filter::Emboss { angle, height, amount } => {
+                *angle = n(*angle, 3600.0);
+                *height = n(*height, MAX_RADIUS);
+                *amount = n(*amount, 100.0);
+            }
+            Filter::Custom { kernel, divisor, offset } => {
+                for k in kernel.iter_mut() {
+                    *k = n(*k, 1e6);
+                }
+                *divisor = n(*divisor, 1e6);
+                *offset = n(*offset, 1e6);
+            }
+
+            // Nothing to bound: these carry no numbers at all.
+            Filter::AverageBlur
+            | Filter::FindEdges
+            | Filter::Solarize
+            | Filter::PolarCoordinates { .. } => {}
+        }
+        out
+    }
+
+    /// [`clamped`](Self::clamped), and then held to the picture it will run on.
+    ///
+    /// A blur wider than the image averages the whole of it; going wider still
+    /// costs time and changes nothing. Bounding the reach by the picture keeps
+    /// the work proportional to the picture, which is what every other filter
+    /// already costs.
+    fn clamped_for(&self, width: u32, height: u32) -> Filter {
+        let longest = width.max(height).max(1);
+        let mut out = self.clamped();
+        let cap = |v: &mut f32| *v = v.min(longest as f32);
+        match &mut out {
+            Filter::GaussianBlur { radius }
+            | Filter::BoxBlur { radius }
+            | Filter::HighPass { radius }
+            | Filter::SurfaceBlur { radius, .. }
+            | Filter::UnsharpMask { radius, .. } => cap(radius),
+            Filter::MotionBlur { distance, .. } => cap(distance),
+            Filter::Median { radius }
+            | Filter::Maximum { radius }
+            | Filter::Minimum { radius }
+            | Filter::DustAndScratches { radius, .. } => *radius = (*radius).min(longest),
             _ => {}
         }
         out

@@ -467,7 +467,15 @@ fn write_filter(w: &mut Writer, f: &Filter) {
     }
 }
 
+/// A project file is not necessarily one this editor wrote, and a filter's
+/// radius is a loop bound and an allocation size once it reaches the compositor.
+/// The numbers are therefore bounded on the way in, in the same spirit as the
+/// finiteness check the transform matrices already get.
 fn read_filter(r: &mut Reader<'_>) -> Result<Filter, IoError> {
+    Ok(read_filter_fields(r)?.clamped())
+}
+
+fn read_filter_fields(r: &mut Reader<'_>) -> Result<Filter, IoError> {
     Ok(match r.u8()? {
         0 => {
             let radius = r.f32()?;

@@ -1443,3 +1443,97 @@ fn smart_commands_refuse_a_plain_layer() {
         notes(&report)
     );
 }
+
+/// A script is one of the doors into the editor that misses the filter dialogs
+/// entirely, and the sliders in those dialogs were the only thing bounding a
+/// radius. Every one of these used to end the process — which, under
+/// `panic = abort`, means the session and the unsaved document with it — or run
+/// until somebody killed it.
+///
+/// The picture is checked, not just the exit status: a filter that died on its
+/// worker thread leaves a report that says "applied" and pixels that were never
+/// touched, so only the pixels can tell the two apart.
+#[test]
+fn absurd_filter_settings_are_survived_not_fatal() {
+    let dir = std::env::temp_dir().join("cshop-hostile-filters");
+    let _ = std::fs::create_dir_all(&dir);
+
+    // The scene has to be one that every filter below visibly changes,
+    // otherwise "the picture came back identical" cannot tell a filter that
+    // was skipped from one that ran and had nothing to do.
+    //
+    // Mid-tones rather than black and white, because sharpening pushes the two
+    // sides further apart and pure black and white have nowhere further to go.
+    // Noise on top, because a median filter is built to preserve a clean edge
+    // and would return a noiseless picture untouched at any radius at all. The
+    // noise is seeded, so the scene is the same picture every run.
+    let scene = "new 40 30 background=#404040\nselect 0 0 20 30\nfill #b0b0b0\n\
+                 select none\nfilter add-noise amount=0.25\n";
+
+    let untouched = dir.join("untouched.png");
+    let Some(report) = run(&format!("{scene}export {}", untouched.display())) else { return };
+    assert!(report.ok, "{}", report.summary());
+    let plain = cshop_io::load(&untouched).expect("the scene should be on disk");
+
+    // A number too large to work with is brought down to one that works, so
+    // these run, finish, and visibly change the picture.
+    let absurd = [
+        "filter gaussian-blur radius=1e30",
+        "filter box-blur radius=1e12",
+        "filter unsharp-mask radius=1e20",
+        "filter high-pass radius=1e20",
+        "filter median radius=100000",
+        "filter motion-blur angle=0 distance=1e9",
+        "filter surface-blur radius=1e6",
+    ];
+    for (i, step) in absurd.iter().enumerate() {
+        let out = dir.join(format!("absurd{i}.png"));
+        let Some(report) = run(&format!("{scene}{step}\nexport {}", out.display())) else { return };
+        assert!(report.ok, "{step:?} failed: {}", report.summary());
+        let got = cshop_io::load(&out).expect("an export should have been written");
+        assert_eq!((got.width(), got.height()), (40, 30));
+        assert!(
+            got.pixels() != plain.pixels(),
+            "{step:?} left the picture untouched, so it never actually ran"
+        );
+    }
+
+    // A number that is not a number cannot be brought into range, so the filter
+    // does nothing at all — deliberately, and without complaint.
+    let not_a_number = [
+        "filter gaussian-blur radius=inf",
+        "filter box-blur radius=inf",
+        "filter motion-blur distance=inf",
+        "filter gaussian-blur radius=NaN",
+    ];
+    for (i, step) in not_a_number.iter().enumerate() {
+        let out = dir.join(format!("nan{i}.png"));
+        let Some(report) = run(&format!("{scene}{step}\nexport {}", out.display())) else { return };
+        assert!(report.ok, "{step:?} failed: {}", report.summary());
+        let got = cshop_io::load(&out).expect("an export should have been written");
+        assert!(
+            got.pixels() == plain.pixels(),
+            "{step:?} should leave the picture alone rather than guess"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `new` has always refused a canvas beyond thirty thousand a side. `resize`
+/// was never told, so a mistyped size there asked for tens of gigabytes and
+/// took the process with it. The two share one number now.
+#[test]
+fn resize_refuses_what_new_refuses() {
+    let Some(report) = run("new 40 30\nresize 100000 100000\n") else { return };
+    assert!(!report.ok, "a canvas that large should be refused");
+    assert!(
+        report.steps[1].note.contains("largest canvas"),
+        "the refusal should say why: {}",
+        report.steps[1].note
+    );
+
+    // The document is untouched and the run carries on.
+    let Some(report) = run("new 40 30\nresize 100000 100000\nresize 80 60\n") else { return };
+    assert!(report.steps[2].ok, "an ordinary resize after it still works");
+    assert_eq!(report.document.as_ref().map(|d| (d.1, d.2)), Some((80, 60)));
+}

@@ -175,6 +175,15 @@ Beyond those: header and body sizes are capped, reads time out, session ids are
 drawn from `/dev/urandom` rather than a counter, and a connection that stops
 making sense is dropped rather than reasoned with.
 
+The numbers in a script are bounded as well as its paths. A filter's radius is
+a loop bound and an allocation size by the time it reaches the compositor, and
+the sliders that bound it in the dialogs are not in the way of a caller here —
+so `filter gaussian-blur radius=1e30` would end the process, which under
+`panic = abort` is every session on the server and every unsaved document in
+them, and `motion-blur distance=1e9` would hold the editor thread long enough
+that no other client could be answered. Both are brought into range before they
+run. [SCRIPTING.md](SCRIPTING.md) says what a caller sees.
+
 There is deliberately **no** TLS here. Terminate it in front — a reverse proxy
 does that job better than this would, and it is not the sort of thing to
 hand-write next to the JSON parser.
