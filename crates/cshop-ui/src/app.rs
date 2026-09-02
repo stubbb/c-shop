@@ -226,6 +226,13 @@ pub struct CShopApp {
     /// so the options bar can say which one is loaded.
     pub brush_tip: Option<(String, std::sync::Arc<cshop_core::paint::Tip>)>,
 
+    /// Which built-in shape produced [`Self::brush_tip`], when one did.
+    ///
+    /// The tip itself is a picture and says nothing about where it came from,
+    /// but the menu has to show which shape is currently ticked — and a tip
+    /// defined from a selection is not any of them.
+    pub brush_shape: Option<cshop_core::tips::TipShape>,
+
     /// The screen's own profile, when one has been chosen. Without it the
     /// canvas assumes sRGB, which is what most screens are and what every
     /// screen was assumed to be until now.
@@ -376,7 +383,10 @@ impl CShopApp {
                 })
                 .collect(),
             pen_pressure: 1.0,
-            brush_tip: None,
+            brush_tip: settings
+                .brush_shape
+                .map(|shape| (shape.name().to_string(), std::sync::Arc::new(shape.tip()))),
+            brush_shape: settings.brush_shape,
             display_profile: None,
             proof_profile: None,
             retouch: settings.retouch,
@@ -748,6 +758,7 @@ impl CShopApp {
             window: self.settings.window,
             tool: self.tool,
             brush: self.brush,
+            brush_shape: self.brush_shape,
             foreground: self.foreground,
             background: self.background,
             show_rulers: self.show_rulers,
@@ -1970,8 +1981,14 @@ impl CShopApp {
                 self.notify("Every shortcut is back to what it was");
             }
             Action::DefineBrush => self.define_brush(),
+            Action::SetBrushShape(shape) => {
+                self.brush_tip = Some((shape.name().to_string(), std::sync::Arc::new(shape.tip())));
+                self.brush_shape = Some(shape);
+                self.notify(format!("The brush now stamps {}", shape.name().to_lowercase()));
+            }
             Action::ClearBrushTip => {
                 self.brush_tip = None;
+                self.brush_shape = None;
                 self.notify("Back to the round brush");
             }
             Action::SetDisplayProfile(path) => {
@@ -3982,6 +3999,7 @@ impl CShopApp {
         match cshop_core::paint::Tip::new(coverage) {
             Some(tip) => {
                 self.brush_tip = Some((name.clone(), std::sync::Arc::new(tip)));
+                self.brush_shape = None;
                 self.notify(format!("The brush now stamps {name}"));
             }
             None => self.fail("There is nothing in that shape to make a brush from"),

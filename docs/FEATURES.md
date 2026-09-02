@@ -137,6 +137,30 @@ cannot measure it presses fully, so nothing changes for a mouse. A selection's
 shape becomes a brush tip, fitted to the brush size with its own proportions
 kept.
 
+### Scatter and pattern brushes
+
+A brush that stamps a disc at even steps draws a line. Give it a shape to
+stamp, throw the stamps off the line, size each one differently and turn each
+one to face the way the stroke is going, and the same engine draws spray,
+bubbles, a night sky or grass. Four shapes are drawn by the program itself —
+**dot, bubble, star and line** — alongside any tip defined from a selection.
+
+**Scatter** is how far a stamp may stray from the stroke, in brush sizes, and
+**count** is how many land at each step: together with **spacing** they are the
+density of the texture. **Size** sets how big the stamp is within its step and
+**size jitter** how much smaller it may randomly come out — never larger, so
+the size slider goes on describing the largest mark the brush can make.
+**Angle** turns the stamp, and **angle follows the stroke** measures that turn
+from the direction of travel, which is what makes hatching lie along a curve
+and grass stand up from it.
+
+The scatter is random and reproducible at once: it is seeded from where the
+stroke begins, so two strokes never land the same spatter twice while one
+stroke re-renders, undoes and redoes as exactly the picture it was.
+
+![Five strokes: a plain brush, then scattered dots, bubbles, stars, and lines
+following the stroke](example-brushes.jpg)
+
 ## Repairing
 
 A **healing brush** and its **spot form**, which take texture from elsewhere

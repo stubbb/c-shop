@@ -26,6 +26,11 @@ pub struct Settings {
     pub window: Option<(u32, u32)>,
     pub tool: Tool,
     pub brush: Brush,
+    /// Which drawn shape the brush stamps, if any. A tip defined from a
+    /// selection is not remembered: it belongs to a document that may not be
+    /// open next time, and a brush that silently stamps last week's leaf is
+    /// worse than one that starts round.
+    pub brush_shape: Option<cshop_core::tips::TipShape>,
     pub foreground: Rgba8,
     pub background: Rgba8,
     pub show_rulers: bool,
@@ -53,6 +58,7 @@ impl Default for Settings {
             window: None,
             tool: Tool::Brush,
             brush: Brush::default(),
+            brush_shape: None,
             foreground: Rgba8::BLACK,
             background: Rgba8::WHITE,
             show_rulers: true,
@@ -123,6 +129,22 @@ impl Settings {
             ("brush_opacity", Json::Number(self.brush.opacity as f64)),
             ("brush_flow", Json::Number(self.brush.flow as f64)),
             ("brush_spacing", Json::Number(self.brush.spacing as f64)),
+            ("brush_scatter", Json::Number(self.brush.scatter.spread as f64)),
+            ("brush_count", Json::Number(self.brush.scatter.count as f64)),
+            ("brush_scale", Json::Number(self.brush.scatter.scale as f64)),
+            ("brush_size_jitter", Json::Number(self.brush.scatter.size_jitter as f64)),
+            ("brush_angle", Json::Number(self.brush.scatter.angle as f64)),
+            ("brush_angle_follows", Json::Bool(self.brush.scatter.follow)),
+            ("brush_pressure_size", Json::Bool(self.brush.pressure.size)),
+            ("brush_pressure_flow", Json::Bool(self.brush.pressure.flow)),
+            ("brush_pressure_opacity", Json::Bool(self.brush.pressure.opacity)),
+            (
+                "brush_shape",
+                match self.brush_shape {
+                    Some(shape) => Json::String(shape.name().to_string()),
+                    None => Json::String("round".to_string()),
+                },
+            ),
             ("foreground", colour(self.foreground)),
             ("background", colour(self.background)),
             ("show_rulers", Json::Bool(self.show_rulers)),
@@ -226,6 +248,33 @@ impl Settings {
         }
         if let Some(v) = number("brush_spacing") {
             s.brush.spacing = (v as f32).clamp(0.01, 4.0);
+        }
+        // A settings file is editable, and a scatter count is a multiplier on
+        // the cost of every dab, so these arrive through the same bounds the
+        // sliders impose rather than straight into the brush.
+        if let Some(v) = number("brush_scatter") {
+            s.brush.scatter.spread = v as f32;
+        }
+        if let Some(v) = number("brush_count") {
+            s.brush.scatter.count = v.max(0.0) as u32;
+        }
+        if let Some(v) = number("brush_scale") {
+            s.brush.scatter.scale = v as f32;
+        }
+        if let Some(v) = number("brush_size_jitter") {
+            s.brush.scatter.size_jitter = v as f32;
+        }
+        if let Some(v) = number("brush_angle") {
+            s.brush.scatter.angle = v as f32;
+        }
+        s.brush.scatter.follow = flag("brush_angle_follows", s.brush.scatter.follow);
+        s.brush.scatter = s.brush.scatter.sane();
+        s.brush.pressure.size = flag("brush_pressure_size", s.brush.pressure.size);
+        s.brush.pressure.flow = flag("brush_pressure_flow", s.brush.pressure.flow);
+        s.brush.pressure.opacity = flag("brush_pressure_opacity", s.brush.pressure.opacity);
+        if let Some(name) = json.str_field("brush_shape") {
+            s.brush_shape =
+                cshop_core::tips::TipShape::ALL.into_iter().find(|sh| sh.name() == name);
         }
         if let Some(c) = json.str_field("foreground").and_then(parse_colour) {
             s.foreground = c;

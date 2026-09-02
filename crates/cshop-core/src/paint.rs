@@ -85,6 +85,73 @@ impl Pressure {
     }
 }
 
+/// What turns a line of dabs into a texture.
+///
+/// A brush stamps its dab at even steps along the stroke, and with these all at
+/// their defaults that is exactly what it still does. Turn them up and each
+/// step becomes a small handful of stamps, thrown off the line, each a
+/// different size, each turned a different way — which is the difference
+/// between drawing a line and drawing leaves, spray, fur or a night sky.
+///
+/// Nothing here has an effect at its default, so a brush that has never been
+/// told about any of it behaves exactly as it did before there was any of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scatter {
+    /// How far a dab may stray from the stroke, as a fraction of the size.
+    ///
+    /// Offsets are drawn uniformly over the disc of that radius rather than
+    /// uniformly in radius, which would crowd them into the middle.
+    pub spread: f32,
+    /// Stamps laid down at each step along the stroke.
+    pub count: u32,
+    /// The stamp's size as a fraction of the brush's.
+    ///
+    /// Separate from the size itself because spacing is measured in brush
+    /// sizes: this makes the mark smaller within its slot rather than moving
+    /// the slots closer together.
+    pub scale: f32,
+    /// How much smaller a stamp may randomly come out, `0..=1`.
+    pub size_jitter: f32,
+    /// Turn applied to the stamp, in degrees.
+    pub angle: f32,
+    /// Whether the turn is measured from the stroke's own direction.
+    pub follow: bool,
+}
+
+impl Default for Scatter {
+    fn default() -> Self {
+        Self { spread: 0.0, count: 1, scale: 1.0, size_jitter: 0.0, angle: 0.0, follow: false }
+    }
+}
+
+impl Scatter {
+    /// Stamps per step. Bounded: this multiplies the cost of every dab, and it
+    /// reaches the brush from a settings file as well as from a slider.
+    pub const MAX_COUNT: u32 = 32;
+    /// The furthest a dab may be thrown, in brush sizes.
+    pub const MAX_SPREAD: f32 = 8.0;
+    /// The largest a stamp may be relative to the brush.
+    pub const MAX_SCALE: f32 = 4.0;
+
+    /// The same settings with every number inside the range it can be used in.
+    pub fn sane(self) -> Scatter {
+        let n = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
+        Scatter {
+            spread: n(self.spread, 0.0, Self::MAX_SPREAD),
+            count: self.count.clamp(1, Self::MAX_COUNT),
+            scale: n(self.scale, 0.05, Self::MAX_SCALE),
+            size_jitter: n(self.size_jitter, 0.0, 1.0),
+            angle: if self.angle.is_finite() { self.angle % 360.0 } else { 0.0 },
+            follow: self.follow,
+        }
+    }
+
+    /// Whether any of this changes what the brush would otherwise do.
+    pub fn active(self) -> bool {
+        self != Scatter::default()
+    }
+}
+
 /// Brush shape and dynamics.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Brush {
@@ -100,6 +167,8 @@ pub struct Brush {
     pub spacing: f32,
     /// Which of the above a pen's pressure drives.
     pub pressure: Pressure,
+    /// What scatters the dabs, and how each one is sized and turned.
+    pub scatter: Scatter,
 }
 
 impl Default for Brush {
@@ -111,6 +180,7 @@ impl Default for Brush {
             flow: 1.0,
             spacing: 0.1,
             pressure: Pressure::default(),
+            scatter: Scatter::default(),
         }
     }
 }
@@ -381,14 +451,22 @@ impl Tip {
         (self.coverage.width(), self.coverage.height())
     }
 
-    /// Coverage at a point of the dab, given the dab's radius.
+    /// Coverage at a point of the dab, given the dab's radius and its turn.
     ///
     /// The tip's longer side is fitted to the dab's diameter and its shape is
     /// kept. Stretching it to fill the square instead would mean a wide, thin
     /// tip stamped as a square — which is the one thing a shaped brush must
     /// not do, since the shape is the entire reason for having one.
+    ///
+    /// `cos` and `sin` are the dab's turn, precomputed by the caller because
+    /// this runs once per pixel of every dab. The sample is turned the
+    /// opposite way, which turns the stamp the way that was asked for.
+    ///
+    /// Sampled bilinearly. A turned stamp read with nearest neighbour has a
+    /// staircase along every edge that was smooth before it was turned, and a
+    /// scatter brush turns almost every stamp it lays down.
     #[inline]
-    fn at(&self, dx: f32, dy: f32, radius: f32) -> f32 {
+    fn at(&self, dx: f32, dy: f32, radius: f32, cos: f32, sin: f32) -> f32 {
         let (w, h) = (self.coverage.width() as f32, self.coverage.height() as f32);
         let longest = w.max(h);
         if longest <= 0.0 || radius <= 0.0 {
@@ -396,12 +474,23 @@ impl Tip {
         }
         // Pixels of the tip per pixel of the dab.
         let per = longest / (radius * 2.0);
-        let u = dx * per + w / 2.0;
-        let v = dy * per + h / 2.0;
-        if u < 0.0 || v < 0.0 || u >= w || v >= h {
+        let rx = dx * cos + dy * sin;
+        let ry = -dx * sin + dy * cos;
+        let u = rx * per + w / 2.0;
+        let v = ry * per + h / 2.0;
+        if u < -1.0 || v < -1.0 || u > w + 1.0 || v > h + 1.0 {
             return 0.0;
         }
-        self.coverage.get(u as i32, v as i32) as f32 / 255.0
+        // Sample centres sit at half-pixel offsets.
+        let (fx, fy) = (u - 0.5, v - 0.5);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (fx - x0, fy - y0);
+        let (x0, y0) = (x0 as i32, y0 as i32);
+        // Off the edge reads as zero, which is what `MaskBuffer::get` gives.
+        let g = |x: i32, y: i32| self.coverage.get(x, y) as f32;
+        let top = g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx;
+        let bottom = g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx;
+        (top * (1.0 - ty) + bottom * ty) / 255.0
     }
 }
 
@@ -425,6 +514,25 @@ pub struct Stroke {
     /// Pressure at the last point, so a segment can interpolate along itself
     /// rather than stepping at every sample the pointer happens to send.
     last_pressure: f32,
+    /// Where the last sample was, so a stamp can be turned to face the way the
+    /// stroke is going. Kept here rather than read back out of the walk, which
+    /// has already moved on by the time the dabs are stamped.
+    prev_point: Option<Vec2>,
+    /// The direction of the last segment, carried so that the dabs of a
+    /// stationary pointer keep facing the way the stroke arrived.
+    ///
+    /// The very first dab of a stroke is laid before there is a second point
+    /// to take a direction from, so it faces along x. Waiting for one would
+    /// mean a click — a stroke of a single point — painting nothing at all,
+    /// which is a worse trade than one dab at the start of a drag facing the
+    /// way the stroke had not yet gone.
+    heading: Vec2,
+    /// Scattering has to be random, and it also has to be the same random
+    /// every time: the same stroke re-rendered must land in the same places,
+    /// or a preview would reshuffle itself on every frame and an undo would
+    /// come back as a different picture. Seeded from the stroke's first dab,
+    /// so two strokes differ but one stroke does not.
+    rng: crate::filters::plane::Rng,
     /// True once at least one dab has landed.
     started: bool,
 }
@@ -453,6 +561,9 @@ impl Stroke {
             walk: DabWalk::new(&brush),
             tip: None,
             last_pressure: 1.0,
+            prev_point: None,
+            heading: Vec2::new(1.0, 0.0),
+            rng: crate::filters::plane::Rng::new(0x5CA7_7E12),
             started: false,
         }
     }
@@ -592,18 +703,69 @@ impl Stroke {
     pub fn add_point_pressed(&mut self, p: Vec2, pressure: f32) {
         let from = self.last_pressure;
         let to = pressure.clamp(0.0, 1.0);
+
+        // Which way the stroke is going, for a stamp that follows it. A sample
+        // that repeats the last position says nothing about direction, so the
+        // previous heading stands rather than snapping to something arbitrary.
+        if let Some(prev) = self.prev_point {
+            let delta = p - prev;
+            let dist = delta.length();
+            if dist > 1e-6 {
+                self.heading = delta * (1.0 / dist);
+            }
+        } else {
+            // Seed the scatter from where the stroke begins, so that two
+            // strokes scatter differently and one stroke scatters the same way
+            // however many times it is re-rendered.
+            self.rng = crate::filters::plane::Rng::at(0x5CA7_7E12, p.x as i32, p.y as i32);
+        }
+        self.prev_point = Some(p);
+
         let mut centres = Vec::new();
         self.walk.advance(p, &mut centres);
         let n = centres.len().max(1) as f32;
         for (i, c) in centres.into_iter().enumerate() {
             let t = (i + 1) as f32 / n;
-            self.stamp_pressed(c, from + (to - from) * t);
+            self.scatter_at(c, from + (to - from) * t);
         }
         self.last_pressure = to;
     }
 
+    /// Lay down one step's worth of stamps around a point on the stroke.
+    ///
+    /// With the scatter settings at their defaults this is one stamp, on the
+    /// point, at the brush's own size and turn — which is what a brush did
+    /// before it could scatter, and still does until asked otherwise.
+    fn scatter_at(&mut self, centre: Vec2, pressure: f32) {
+        let sc = self.brush.scatter.sane();
+        let turn = sc.angle.to_radians()
+            + if sc.follow { self.heading.y.atan2(self.heading.x) } else { 0.0 };
+
+        for _ in 0..sc.count {
+            let at = if sc.spread > 0.0 {
+                // Uniform over the disc: the square root is what stops the
+                // stamps crowding into the middle of it.
+                let a = self.rng.next_f32() * std::f32::consts::TAU;
+                let r = self.rng.next_f32().sqrt() * sc.spread * self.brush.size.max(1.0);
+                centre + Vec2::new(a.cos() * r, a.sin() * r)
+            } else {
+                centre
+            };
+            // Jitter only ever takes size away. Letting it add would mean the
+            // size slider no longer described the largest mark the brush makes.
+            let jitter =
+                if sc.size_jitter > 0.0 { 1.0 - self.rng.next_f32() * sc.size_jitter } else { 1.0 };
+            self.stamp_pressed(at, pressure, sc.scale * jitter, turn);
+        }
+    }
+
     /// Stamp one dab, accumulating coverage rather than replacing it.
-    fn stamp_pressed(&mut self, centre: Vec2, pressure: f32) {
+    ///
+    /// `size` scales the dab on top of whatever pressure does to it, and `turn`
+    /// is the angle the tip is stamped at, in radians. A dab with no tip is a
+    /// disc and turning one does nothing, which is why the angle control is
+    /// only offered for shapes that have a direction.
+    fn stamp_pressed(&mut self, centre: Vec2, pressure: f32, size: f32, turn: f32) {
         // A brush that ignores pressure gets full pressure, whatever the pen
         // said — so a stroke made with the settings off is the stroke it would
         // have been with a mouse.
@@ -612,12 +774,22 @@ impl Stroke {
         // Never quite nothing: a dab of zero radius is not a lighter mark, it
         // is a gap in the line.
         let scale = if driven.size { 0.05 + 0.95 * k } else { 1.0 };
-        let r = self.brush.radius() * scale;
+        let r = self.brush.radius() * scale * size.max(0.01);
+        // A tip is fitted to the dab by its longest side, so its own corners
+        // sit further from the centre than the dab's radius. Square on, the
+        // square being scanned reaches those corners anyway; turned, it does
+        // not, and the corners of a shaped tip would be sliced off. Scanning
+        // the turned tip's circumscribed square costs twice the area of a dab
+        // and is only paid when there is a tip and it is actually turned.
+        let reach = match &self.tip {
+            Some(_) if turn != 0.0 => r * std::f32::consts::SQRT_2,
+            _ => r,
+        };
         let rect = IRect::new(
-            (centre.x - r).floor() as i32,
-            (centre.y - r).floor() as i32,
-            (centre.x + r).ceil() as i32 + 1,
-            (centre.y + r).ceil() as i32 + 1,
+            (centre.x - reach).floor() as i32,
+            (centre.y - reach).floor() as i32,
+            (centre.x + reach).ceil() as i32 + 1,
+            (centre.y + reach).ceil() as i32 + 1,
         )
         .intersect(&self.coverage.bounds());
         if rect.is_empty() {
@@ -628,6 +800,7 @@ impl Stroke {
 
         self.source.prepare(rect);
         let flow = self.brush.flow.clamp(0.0, 1.0) * if driven.flow { k } else { 1.0 };
+        let (sin, cos) = turn.sin_cos();
         for y in rect.y0..rect.y1 {
             for x in rect.x0..rect.x1 {
                 // Sample at the pixel centre.
@@ -636,7 +809,7 @@ impl Stroke {
                 // A tip stamps its own shape; without one the dab is the
                 // built-in disc and its falloff.
                 let dab = match &self.tip {
-                    Some(tip) => tip.at(dx, dy, r),
+                    Some(tip) => tip.at(dx, dy, r, cos, sin),
                     None => self.brush.falloff((dx * dx + dy * dy).sqrt()),
                 };
                 if dab <= 0.0 {

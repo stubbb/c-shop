@@ -403,6 +403,8 @@ pub enum Action {
     /// Take the selection's shape as the brush's tip.
     DefineBrush,
     /// Go back to the round one.
+    /// Stamp one of the shapes the program draws for itself.
+    SetBrushShape(cshop_core::tips::TipShape),
     ClearBrushTip,
 
     /// Tell the canvas what screen it is being shown on. `None` assumes sRGB.

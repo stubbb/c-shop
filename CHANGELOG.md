@@ -7,6 +7,17 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.081** — *Scatter and pattern brushes.* The stroke engine already stamped
+  a shape along a line; what it could not do was throw the stamps off the line,
+  size each one differently, or turn them to face the way the stroke was going
+  — which is the difference between a line and spray, bubbles, a night sky or
+  grass. Scatter, count, size, size jitter, angle and an angle that follows the
+  stroke, with four shapes the program draws for itself: dot, bubble, star and
+  line. Pen pressure now has its checkboxes in the brush menu rather than only
+  a field in the code. Every setting is off by default, so a brush nobody has
+  touched draws exactly the line it drew before. The scatter is seeded from
+  where the stroke begins, so two strokes never spatter alike and one stroke
+  re-renders, undoes and redoes as the picture it already was.
 - **0.080** — *Bound every filter setting, whichever door it came through.* A
   radius is a loop bound and an allocation size, and the only thing bounding one
   was the slider in its dialog — which a script, a project file and a program

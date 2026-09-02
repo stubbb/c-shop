@@ -14,6 +14,7 @@ use cshop_core::document::EditTarget;
 use cshop_core::history::LayerProperty;
 use cshop_core::layer::LayerId;
 use cshop_core::selection::SelectionMode;
+use cshop_core::tips::TipShape;
 
 /// Header text at the top of a context menu.
 fn heading(ui: &mut egui::Ui, text: &str) {
@@ -121,9 +122,84 @@ fn brush_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
     });
 
     ui.separator();
+    brush_shape_menu(app, ui);
+
+    ui.separator();
+    brush_scatter_menu(app, ui);
+
+    ui.separator();
+    ui.label(egui::RichText::new("Pen pressure drives").small());
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut app.brush.pressure.size, "Size");
+        ui.checkbox(&mut app.brush.pressure.flow, "Flow");
+        ui.checkbox(&mut app.brush.pressure.opacity, "Opacity");
+    });
+
+    ui.separator();
     if ui.button("Reset brush").clicked() {
         app.brush = cshop_core::paint::Brush::default();
+        app.dispatch(Action::ClearBrushTip);
         ui.close();
+    }
+}
+
+/// What the brush stamps: the round dab, one of the drawn shapes, or a tip
+/// taken from a selection.
+fn brush_shape_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
+    ui.label(egui::RichText::new("Stamp").small());
+    ui.horizontal_wrapped(|ui| {
+        let round = app.brush_tip.is_none();
+        if ui.selectable_label(round, "Round").clicked() && !round {
+            app.dispatch(Action::ClearBrushTip);
+        }
+        for shape in TipShape::ALL {
+            let on = app.brush_shape == Some(shape);
+            if ui.selectable_label(on, shape.name()).clicked() && !on {
+                app.dispatch(Action::SetBrushShape(shape));
+            }
+        }
+    });
+    // A tip defined from a selection has a name of its own and no button to
+    // return to, so it is named rather than offered.
+    if let (None, Some((name, _))) = (app.brush_shape, &app.brush_tip) {
+        ui.label(egui::RichText::new(format!("Stamping {name}")).small());
+    }
+}
+
+/// The controls that turn a line of dabs into a texture.
+fn brush_scatter_menu(app: &mut CShopApp, ui: &mut egui::Ui) {
+    use cshop_core::paint::Scatter;
+    ui.label(egui::RichText::new("Scatter").small());
+
+    let mut spacing = app.brush.spacing * 100.0;
+    if slider(ui, "Spacing", &mut spacing, 1.0..=400.0, "%") {
+        app.brush.spacing = spacing / 100.0;
+    }
+    let mut spread = app.brush.scatter.spread * 100.0;
+    if slider(ui, "Scatter", &mut spread, 0.0..=Scatter::MAX_SPREAD * 100.0, "%") {
+        app.brush.scatter.spread = spread / 100.0;
+    }
+    let mut count = app.brush.scatter.count as f32;
+    if slider(ui, "Count", &mut count, 1.0..=Scatter::MAX_COUNT as f32, "") {
+        app.brush.scatter.count = count.round() as u32;
+    }
+
+    let mut scale = app.brush.scatter.scale * 100.0;
+    if slider(ui, "Size", &mut scale, 5.0..=Scatter::MAX_SCALE * 100.0, "%") {
+        app.brush.scatter.scale = scale / 100.0;
+    }
+    let mut jitter = app.brush.scatter.size_jitter * 100.0;
+    if slider(ui, "Size jitter", &mut jitter, 0.0..=100.0, "%") {
+        app.brush.scatter.size_jitter = jitter / 100.0;
+    }
+
+    // A round dab looks the same at every angle, so the controls that turn one
+    // are shown only when there is something whose turning can be seen.
+    let turnable = app.brush_shape.is_some_and(|s| s.has_direction())
+        || (app.brush_shape.is_none() && app.brush_tip.is_some());
+    if turnable {
+        slider(ui, "Angle", &mut app.brush.scatter.angle, -180.0..=180.0, "°");
+        ui.checkbox(&mut app.brush.scatter.follow, "Angle follows the stroke");
     }
 }
 

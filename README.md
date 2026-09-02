@@ -87,6 +87,9 @@ pictures larger.
 - [**Painting**](docs/FEATURES.md#painting) — brush, pencil, eraser, clone
   stamp, dodge, burn, sponge, blur, sharpen and smudge on one stroke engine,
   with tablet pressure and brushes made from a selection.
+- [**Scatter and pattern brushes**](docs/FEATURES.md#scatter-and-pattern-brushes)
+  — dot, bubble, star and line stamps thrown off the stroke, each a different
+  size and turned to follow it: spray, bubbles, a night sky, grass.
 - [**Repairing**](docs/FEATURES.md#repairing) — a healing brush and its spot
   form, taking texture from elsewhere and tone from where they land; a history
   brush.
