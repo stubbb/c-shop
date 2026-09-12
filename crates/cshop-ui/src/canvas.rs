@@ -1225,12 +1225,19 @@ fn transform_interact(
     };
     let (shift, alt, ctrl) =
         ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
+    // Where the button went down, rather than where egui decided this was a
+    // drag: a handle is nine points across and the pointer may have left it
+    // by then, which is how a corner grab turned into a rotation.
+    let pressed = ui.input(|i| i.pointer.press_origin()).map(|p| {
+        let v = app.docs[index].screen_to_doc(viewport, p);
+        Vec2::new(v.x, v.y)
+    });
 
     let Some(active) = &mut app.transform else { return };
     if response.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(handle) = active.hit(doc, zoom) {
-            active.begin_drag(handle, doc);
-        }
+        let origin = pressed.unwrap_or(doc);
+        active.begin_drag(active.hit(origin, zoom), origin);
+        active.drag_to(doc, ctrl, shift, alt);
     } else if response.dragged_by(egui::PointerButton::Primary) {
         active.drag_to(doc, ctrl, shift, alt);
     }
@@ -1598,6 +1605,36 @@ fn cursor(app: &CShopApp, ui: &mut egui::Ui, response: &egui::Response, viewport
     let Some(index) = app.active else { return };
     let space_held = ui.input(|i| i.key_down(egui::Key::Space));
 
+    // A live transform says what a press would do wherever the pointer is: a
+    // resize arrow on a handle, turned the way that handle pulls; the move
+    // cross inside the box; a hand outside it, where a drag rotates. While a
+    // gesture is under way the cursor stays what it was, wherever the
+    // pointer has got to.
+    if let (Some(t), false) = (&app.transform, space_held) {
+        let view = &app.docs[index];
+        let handle = t.dragging.or_else(|| {
+            let p = response.hover_pos()?;
+            let v = view.screen_to_doc(viewport, p);
+            Some(t.hit(Vec2::new(v.x, v.y), view.zoom))
+        });
+        if let Some(handle) = handle {
+            let icon = match handle {
+                Handle::Body => egui::CursorIcon::Move,
+                Handle::Rotate if t.dragging.is_some() => egui::CursorIcon::Grabbing,
+                Handle::Rotate => egui::CursorIcon::Grab,
+                handle => {
+                    let centre = t.centre();
+                    let at = t.handle_position(handle);
+                    let c = view.doc_to_screen(viewport, egui::vec2(centre.x, centre.y));
+                    let h = view.doc_to_screen(viewport, egui::vec2(at.x, at.y));
+                    resize_cursor_along(h - c)
+                }
+            };
+            ui.ctx().set_cursor_icon(icon);
+        }
+        return;
+    }
+
     let icon = if space_held || app.tool == Tool::Hand {
         egui::CursorIcon::Grab
     } else {
@@ -1634,6 +1671,19 @@ fn cursor(app: &CShopApp, ui: &mut egui::Ui, response: &egui::Response, viewport
                 painter.circle_filled(p, 1.0, egui::Color32::from_white_alpha(190));
             }
         }
+    }
+}
+
+/// The double-headed arrow that lies along `direction` on screen, to the
+/// nearest forty-five degrees, so a handle on a turned box gets an arrow
+/// that points the way it pulls.
+fn resize_cursor_along(direction: egui::Vec2) -> egui::CursorIcon {
+    let eighth = (direction.y.atan2(direction.x) / std::f32::consts::FRAC_PI_4).round() as i32;
+    match eighth.rem_euclid(4) {
+        0 => egui::CursorIcon::ResizeHorizontal,
+        1 => egui::CursorIcon::ResizeNwSe,
+        2 => egui::CursorIcon::ResizeVertical,
+        _ => egui::CursorIcon::ResizeNeSw,
     }
 }
 

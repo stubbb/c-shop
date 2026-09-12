@@ -147,6 +147,16 @@ letters type letters.
 Drag to draw. `Shift` constrains to a square or circle, `Alt` draws out from
 the centre.
 
+## Free Transform
+
+`Ctrl+T` starts it. Drag a corner to scale both dimensions together, an edge
+to stretch one, inside the box to move it, and anywhere outside to rotate it.
+`Shift` lets a corner's two axes scale apart, or snaps a rotation to fifteen
+degrees; `Alt` scales from the centre; `Ctrl` pulls one corner on its own.
+`Ctrl+Z` and `Ctrl+Shift+Z` step back and forward through the transform's own
+gestures — the document's history is out of reach until `Enter` applies the
+transform or `Escape` cancels it.
+
 ## Paths
 
 The Pen places a corner where you click and pulls a curve where you drag.

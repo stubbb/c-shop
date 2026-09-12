@@ -39,6 +39,8 @@ pub struct Harness {
     frame: u32,
     /// Everything the interface asked the window to do, in order.
     pub window_commands: Vec<WindowCommand>,
+    /// The cursor the last frame asked the window to show.
+    pub cursor: egui::CursorIcon,
 }
 
 impl Harness {
@@ -55,7 +57,16 @@ impl Harness {
             egui_wgpu::RendererOptions::default(),
         );
         let app = CShopApp::new(gpu.clone());
-        Some(Harness { ctx, renderer, gpu, app, size, frame: 0, window_commands: Vec::new() })
+        Some(Harness {
+            ctx,
+            renderer,
+            gpu,
+            app,
+            size,
+            frame: 0,
+            window_commands: Vec::new(),
+            cursor: egui::CursorIcon::default(),
+        })
     }
 
     pub fn run(&mut self, steps: &[Step]) {
@@ -122,6 +133,7 @@ impl Harness {
         let app = &mut self.app;
         let renderer = &mut self.renderer;
         let mut output = self.ctx.run_ui(raw_input, |ui| app.update(ui, renderer));
+        self.cursor = output.platform_output.cursor_icon;
         // Tessellating exercises the same paths a real frame would.
         let _ = self.ctx.tessellate(output.shapes, 1.0);
 

@@ -234,10 +234,16 @@ with zoom and pan so you can judge detail at 1:1, and repeats with `Ctrl+F`.
 
 ## Transforms
 
-Free Transform with eight handles and rotation, where Shift constrains, Alt
-works from the centre and Ctrl pulls a corner into a true perspective distort.
-Fixed rotations and flips, Crop with aspect presets, Image Size with four
-resampling filters, Canvas Size with a nine-way anchor.
+Free Transform with eight handles: a corner scales both dimensions together
+and keeps the proportions, an edge stretches one, inside moves, and anywhere
+outside rotates — and the pointer says which before you press. Shift lets a
+corner's two axes go their own ways or snaps a rotation to fifteen degrees,
+Alt works from the centre and Ctrl pulls a corner into a true perspective
+distort. A box that has been turned scales along its own edges, so it stays a
+rectangle. Undo inside the transform steps back through its own gestures; the
+document's history waits until the transform is applied or cancelled. Fixed
+rotations and flips, Crop with aspect presets, Image Size with four resampling
+filters, Canvas Size with a nine-way anchor.
 
 ## Geometry: warping, carving and straightening
 

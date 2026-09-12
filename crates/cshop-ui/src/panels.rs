@@ -580,40 +580,48 @@ fn history_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
             .clicked()
     };
 
-    egui::ScrollArea::vertical()
-        .id_salt("history-scroll")
-        .max_height(140.0)
-        .auto_shrink([false, true])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            // Row 0 is the document as it was opened or created.
-            ui.horizontal(|ui| {
-                if brush_mark(ui, 0, marked) {
-                    mark = Some(0);
-                }
-                if ui.selectable_label(cursor == 0, origin.clone()).clicked() {
-                    jump = Some(0);
-                }
-            });
-            for (i, label) in labels.iter().enumerate() {
-                let applied = i < cursor;
-                let text = if applied {
-                    egui::RichText::new(label)
-                } else {
-                    // Undone states stay listed but dimmed, so redo is discoverable.
-                    egui::RichText::new(label).color(p.text_dim)
-                };
+    // A Free Transform previews over the document, and walking the history
+    // underneath it would pull the layer out from under the preview. Greyed
+    // rather than hidden, so the states are still there to read.
+    let steady = app.transform.is_none();
+    ui.add_enabled_ui(steady, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("history-scroll")
+            .max_height(140.0)
+            .auto_shrink([false, true])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                // Row 0 is the document as it was opened or created.
                 ui.horizontal(|ui| {
-                    if brush_mark(ui, i + 1, marked) {
-                        mark = Some(i + 1);
+                    if brush_mark(ui, 0, marked) {
+                        mark = Some(0);
                     }
-                    if ui.selectable_label(cursor == i + 1, text).clicked() {
-                        jump = Some(i + 1);
+                    if ui.selectable_label(cursor == 0, origin.clone()).clicked() {
+                        jump = Some(0);
                     }
                 });
-            }
-        });
+                for (i, label) in labels.iter().enumerate() {
+                    let applied = i < cursor;
+                    let text = if applied {
+                        egui::RichText::new(label)
+                    } else {
+                        // Undone states stay listed but dimmed, so redo is discoverable.
+                        egui::RichText::new(label).color(p.text_dim)
+                    };
+                    ui.horizontal(|ui| {
+                        if brush_mark(ui, i + 1, marked) {
+                            mark = Some(i + 1);
+                        }
+                        if ui.selectable_label(cursor == i + 1, text).clicked() {
+                            jump = Some(i + 1);
+                        }
+                    });
+                }
+            });
+    })
+    .response
+    .on_disabled_hover_text("Apply or cancel the Free Transform first");
 
     if let Some(target) = jump {
         app.push(Action::HistoryJump(target));
@@ -624,9 +632,9 @@ fn history_panel(app: &mut CShopApp, ui: &mut egui::Ui) {
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let (can_undo, can_redo) = match app.doc() {
-            Some(v) => (v.history.can_undo(), v.history.can_redo()),
-            None => (false, false),
+        let (can_undo, can_redo) = {
+            let (undo, redo) = app.undo_redo_names();
+            (undo.is_some(), redo.is_some())
         };
         ui.add_enabled_ui(can_undo, |ui| {
             if icons::icon_button(ui, Icon::Undo, 18.0, "Undo (Ctrl+Z)").clicked() {

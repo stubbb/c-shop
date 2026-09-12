@@ -384,10 +384,7 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
         });
 
         ui.menu_button("Edit", |ui| {
-            let (undo, redo) = match app.doc() {
-                Some(d) => (d.history.undo_name(), d.history.redo_name()),
-                None => (None, None),
-            };
+            let (undo, redo) = app.undo_redo_names();
             let undo_label =
                 undo.clone().map(|n| format!("Undo {n}")).unwrap_or_else(|| "Undo".into());
             let redo_label =
@@ -1813,9 +1810,12 @@ fn transform_options(app: &mut CShopApp, ui: &mut egui::Ui) {
         app.push(Action::CancelTransform);
     }
     ui.label(
-        egui::RichText::new("Shift constrains · Alt from centre · Ctrl distorts a corner")
-            .color(p.text_dim)
-            .small(),
+        egui::RichText::new(
+            "Corner scales · edge stretches · inside moves · outside rotates · \
+             Shift frees the corner or snaps the turn · Alt from centre · Ctrl distorts a corner",
+        )
+        .color(p.text_dim)
+        .small(),
     );
 }
 

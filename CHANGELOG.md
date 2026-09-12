@@ -7,6 +7,21 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.084** — *Free Transform that behaves like one.* Four things about the
+  transform box were wrong or missing. The pointer never said what a press
+  would do; now it does — a resize arrow on a handle, turned the way that
+  handle pulls, the move cross inside, a hand outside. A corner scaled the two
+  axes independently, so a diagonal pull stretched the picture; now a corner
+  scales both together, following the pointer along the diagonal, and Shift is
+  what frees them. Rotation lived in a ring round the corners whose inner edge
+  reached most of a small layer, so clicking the picture turned it instead of
+  moving it; now inside moves and anywhere outside rotates. And a turned box
+  scaled along the document's axes rather than its own, so pulling a handle
+  after a rotation skewed it; it scales along its edges now and stays a
+  rectangle. With those, the transform keeps an undo of its own: Ctrl+Z steps
+  back through its gestures, and the document's history — menu, panel and
+  keys — waits until the transform is applied or cancelled, since undoing
+  underneath the preview would change the layer it was made from.
 - **0.083** — *Copy between open files, and Open and Place.* Ctrl+C, Ctrl+X
   and Ctrl+V did nothing from the keyboard, in one file or between two: the
   window library turns those three chords into text-clipboard events of its

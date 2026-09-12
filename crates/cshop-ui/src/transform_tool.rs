@@ -41,6 +41,12 @@ pub struct ActiveTransform {
     pub proxy: PixelBuffer,
     /// Set once the user has actually moved something.
     pub modified: bool,
+    /// The corners as they stood before each completed gesture, oldest first,
+    /// and the gestures stepped back from. A transform has an undo of its own:
+    /// while it is live the document's history is out of reach, since undoing
+    /// underneath the preview would change the very layer it was made from.
+    undo_stack: Vec<[Vec2; 4]>,
+    redo_stack: Vec<[Vec2; 4]>,
 }
 
 impl ActiveTransform {
@@ -52,12 +58,7 @@ impl ActiveTransform {
     ) -> Self {
         let rect =
             IRect::at(source_offset.0, source_offset.1, source.width(), source.height());
-        let corners = [
-            Vec2::new(rect.x0 as f32, rect.y0 as f32),
-            Vec2::new(rect.x1 as f32, rect.y0 as f32),
-            Vec2::new(rect.x1 as f32, rect.y1 as f32),
-            Vec2::new(rect.x0 as f32, rect.y1 as f32),
-        ];
+        let corners = corners_of(rect);
 
         // Build the preview proxy once, here, rather than per frame.
         let scale = (PROXY_MAX as f32 / source.width().max(source.height()).max(1) as f32).min(1.0);
@@ -85,6 +86,8 @@ impl ActiveTransform {
             filter: Resampling::Bicubic,
             proxy,
             modified: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -110,8 +113,14 @@ impl ActiveTransform {
         }
     }
 
-    /// Which handle a document-space point grabs, given the current zoom.
-    pub fn hit(&self, point: Vec2, zoom: f32) -> Option<Handle> {
+    /// What a press at a document-space point takes hold of, given the zoom.
+    ///
+    /// A handle when the point is on one; otherwise the body, to move it, when
+    /// the point is inside the box; and otherwise rotation, anywhere outside.
+    /// The whole outside, not a ring round the corners: a ring's inner edge
+    /// reached well into a small layer, so clicking the picture turned it
+    /// instead of moving it.
+    pub fn hit(&self, point: Vec2, zoom: f32) -> Handle {
         let grab = HANDLE_GRAB / zoom.max(0.01);
         let nearest = Handle::ALL
             .iter()
@@ -119,20 +128,13 @@ impl ActiveTransform {
             .filter(|(_, d)| *d <= grab)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((h, _)) = nearest {
-            return Some(h);
-        }
-        // Outside a corner but close to it means rotate.
-        let outer = grab * 3.0;
-        let near_corner = Handle::CORNERS
-            .iter()
-            .any(|h| self.handle_position(*h).distance(point) <= outer);
-        if near_corner {
-            return Some(Handle::Rotate);
+            return h;
         }
         if self.contains(point) {
-            return Some(Handle::Body);
+            Handle::Body
+        } else {
+            Handle::Rotate
         }
-        None
     }
 
     /// Whether a point lies inside the quad, by winding.
@@ -159,10 +161,10 @@ impl ActiveTransform {
 
     /// Update the quad for a drag to `at`.
     ///
-    /// `distort` (Ctrl) frees a corner from the rectangle; `constrain` (Shift)
-    /// keeps proportions or snaps rotation; `from_centre` (Alt) anchors the
-    /// pivot at the middle.
-    pub fn drag_to(&mut self, at: Vec2, distort: bool, constrain: bool, from_centre: bool) {
+    /// `distort` (Ctrl) frees a corner from the rectangle; `shift` lets a
+    /// corner's two axes scale apart, or snaps a rotation to fifteen degrees;
+    /// `from_centre` (Alt) anchors the pivot at the middle.
+    pub fn drag_to(&mut self, at: Vec2, distort: bool, shift: bool, from_centre: bool) {
         let Some(handle) = self.dragging else { return };
         let delta = at - self.drag_origin;
         let start = self.start_corners;
@@ -180,7 +182,7 @@ impl ActiveTransform {
                 let from = (self.drag_origin - pivot).angle();
                 let to = (at - pivot).angle();
                 let mut angle = to - from;
-                if constrain {
+                if shift {
                     // Snap to 15-degree steps.
                     let step = std::f32::consts::PI / 12.0;
                     angle = (angle / step).round() * step;
@@ -207,20 +209,52 @@ impl ActiveTransform {
                 };
                 let before = handle_on(&start, h) - anchor;
                 let after = at - anchor;
-
-                // Scale along whichever axes this handle controls.
                 let unit = h.unit_position();
-                let scale_x = if unit.x == 0.5 { 1.0 } else { safe_ratio(after.x, before.x) };
-                let scale_y = if unit.y == 0.5 { 1.0 } else { safe_ratio(after.y, before.y) };
-                let (mut sx, mut sy) = (scale_x, scale_y);
-                if constrain && unit.x != 0.5 && unit.y != 0.5 {
-                    // Corner handles keep the aspect ratio under Shift.
-                    let s = sx.abs().max(sy.abs());
-                    sx = s * sx.signum();
-                    sy = s * sy.signum();
-                }
+                let corner = unit.x != 0.5 && unit.y != 0.5;
 
-                let t = Transform::about(anchor, Transform::scale(sx, sy));
+                // The scale happens along the box's own axes — its top edge
+                // and its left edge — rather than the document's, so a box
+                // that has been turned stays a rectangle when a handle is
+                // pulled. The basis is those two edges; its inverse takes a
+                // document vector into box coordinates, where the scale is a
+                // plain diagonal.
+                let basis = Transform {
+                    m: [
+                        [start[1].x - start[0].x, start[3].x - start[0].x, 0.0],
+                        [start[1].y - start[0].y, start[3].y - start[0].y, 0.0],
+                        [0.0, 0.0, 1.0],
+                    ],
+                };
+                let (to_box, from_box) = match basis.invert() {
+                    Some(inverse) => (inverse, basis),
+                    // A collapsed box has no axes of its own.
+                    None => (Transform::IDENTITY, Transform::IDENTITY),
+                };
+
+                let scale = if corner && !shift {
+                    // A corner scales both axes alike, following the pointer's
+                    // projection onto the line from the anchor through the
+                    // corner: the corner stays on that diagonal and the box
+                    // keeps its proportions. Shift lets the axes go their own
+                    // ways.
+                    let along = before.x * before.x + before.y * before.y;
+                    let s = if along < 1e-8 {
+                        1.0
+                    } else {
+                        (after.x * before.x + after.y * before.y) / along
+                    };
+                    Transform::scale(s, s)
+                } else {
+                    // An edge scales its one axis; a corner under Shift scales
+                    // each axis by its own ratio.
+                    let b = to_box.apply(before);
+                    let a = to_box.apply(after);
+                    let sx = if unit.x == 0.5 { 1.0 } else { safe_ratio(a.x, b.x) };
+                    let sy = if unit.y == 0.5 { 1.0 } else { safe_ratio(a.y, b.y) };
+                    Transform::scale(sx, sy)
+                };
+
+                let t = Transform::about(anchor, to_box.then(scale).then(from_box));
                 for (i, c) in self.corners.iter_mut().enumerate() {
                     *c = t.apply(start[i]);
                 }
@@ -228,8 +262,50 @@ impl ActiveTransform {
         }
     }
 
+    /// Finish the gesture, remembering what it changed so it can be stepped
+    /// back with [`ActiveTransform::undo`].
     pub fn end_drag(&mut self) {
+        if self.dragging.take().is_some() && self.corners != self.start_corners {
+            self.undo_stack.push(self.start_corners);
+            self.redo_stack.clear();
+        }
+        self.refresh_modified();
+    }
+
+    /// Step back to before the last gesture. `false` when there is none left,
+    /// which is the moment the caller should say so rather than reach for the
+    /// document's history.
+    pub fn undo(&mut self) -> bool {
+        let Some(previous) = self.undo_stack.pop() else { return false };
+        self.redo_stack.push(self.corners);
+        self.corners = previous;
         self.dragging = None;
+        self.refresh_modified();
+        true
+    }
+
+    /// Step forward again through a gesture that was stepped back.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else { return false };
+        self.undo_stack.push(self.corners);
+        self.corners = next;
+        self.dragging = None;
+        self.refresh_modified();
+        true
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Whether the box differs from the untransformed rectangle, kept in
+    /// `modified` so a gesture that ends where it began records nothing.
+    fn refresh_modified(&mut self) {
+        self.modified = self.corners != corners_of(self.source_rect);
     }
 
     /// The matrix taking the original layer to its current quad.
@@ -252,15 +328,16 @@ impl ActiveTransform {
         )
     }
 
-    /// Reset to the untransformed rectangle.
+    /// Reset to the untransformed rectangle. A gesture like any other, so it
+    /// can be stepped back from.
     pub fn reset(&mut self) {
-        let rect = self.source_rect;
-        self.corners = [
-            Vec2::new(rect.x0 as f32, rect.y0 as f32),
-            Vec2::new(rect.x1 as f32, rect.y0 as f32),
-            Vec2::new(rect.x1 as f32, rect.y1 as f32),
-            Vec2::new(rect.x0 as f32, rect.y1 as f32),
-        ];
+        let rest = corners_of(self.source_rect);
+        if self.corners != rest {
+            self.undo_stack.push(self.corners);
+            self.redo_stack.clear();
+        }
+        self.corners = rest;
+        self.dragging = None;
         self.modified = false;
     }
 
@@ -282,6 +359,16 @@ impl ActiveTransform {
 
 fn quad_centre(corners: &[Vec2; 4]) -> Vec2 {
     corners.iter().fold(Vec2::ZERO, |a, b| a + *b) * 0.25
+}
+
+/// A rectangle's corners, top-left then clockwise.
+fn corners_of(rect: IRect) -> [Vec2; 4] {
+    [
+        Vec2::new(rect.x0 as f32, rect.y0 as f32),
+        Vec2::new(rect.x1 as f32, rect.y0 as f32),
+        Vec2::new(rect.x1 as f32, rect.y1 as f32),
+        Vec2::new(rect.x0 as f32, rect.y1 as f32),
+    ]
 }
 
 fn handle_on(corners: &[Vec2; 4], handle: Handle) -> Vec2 {
@@ -503,12 +590,122 @@ mod tests {
     }
 
     #[test]
-    fn shift_keeps_a_corner_drag_proportional() {
+    fn a_corner_drag_scales_both_dimensions_alike() {
+        let mut t = transform_of(100, 100);
+        t.begin_drag(Handle::BottomRight, Vec2::new(100.0, 100.0));
+        t.drag_to(Vec2::new(200.0, 120.0), false, false, false);
+        let (sw, sh) = t.scale_percent();
+        assert!((sw - sh).abs() < 0.5, "aspect drifted: {sw} vs {sh}");
+        // The corner follows the pointer's projection onto the diagonal:
+        // (200, 120) · (100, 100) over |(100, 100)|² is 1.6.
+        assert!((sw - 160.0).abs() < 0.5, "got {sw}%");
+        assert_eq!(t.corners[0], Vec2::new(0.0, 0.0), "the anchor stays put");
+    }
+
+    #[test]
+    fn shift_lets_a_corner_drag_scale_the_axes_apart() {
         let mut t = transform_of(100, 100);
         t.begin_drag(Handle::BottomRight, Vec2::new(100.0, 100.0));
         t.drag_to(Vec2::new(200.0, 120.0), false, true, false);
         let (sw, sh) = t.scale_percent();
-        assert!((sw - sh).abs() < 0.5, "aspect drifted: {sw} vs {sh}");
+        assert!((sw - 200.0).abs() < 0.5 && (sh - 120.0).abs() < 0.5, "got {sw} x {sh}");
+    }
+
+    /// Two edges of a box are perpendicular when their dot product is zero.
+    fn right_angled(t: &ActiveTransform) -> bool {
+        let u = t.corners[1] - t.corners[0];
+        let v = t.corners[3] - t.corners[0];
+        (u.x * v.x + u.y * v.y).abs() < 1e-2 * u.length() * v.length()
+    }
+
+    #[test]
+    fn a_turned_box_scales_along_its_own_edges() {
+        let mut t = transform_of(100, 100);
+        // A quarter turn, then some: the box's axes no longer line up with
+        // the document's.
+        t.begin_drag(Handle::Rotate, Vec2::new(150.0, 50.0));
+        t.drag_to(Vec2::new(120.0, 120.0), false, false, false);
+        t.end_drag();
+        let height_before = t.corners[0].distance(t.corners[3]);
+        let right = t.handle_position(Handle::Right);
+        let left = t.handle_position(Handle::Left);
+        // Pull the right edge straight out along the box's own width.
+        let outward = right - left;
+        t.begin_drag(Handle::Right, right);
+        t.drag_to(right + outward * 0.5, false, false, false);
+        t.end_drag();
+        assert!(right_angled(&t), "an edge drag skewed the turned box: {:?}", t.corners);
+        let height_after = t.corners[0].distance(t.corners[3]);
+        assert!((height_after - height_before).abs() < 0.1, "the other axis moved");
+        let (sw, _) = t.scale_percent();
+        assert!((sw - 150.0).abs() < 1.0, "the width should read 150%, got {sw}");
+
+        // And a corner, which used to skew the turned box worst of all.
+        let br = t.handle_position(Handle::BottomRight);
+        let tl = t.handle_position(Handle::TopLeft);
+        t.begin_drag(Handle::BottomRight, br);
+        t.drag_to(tl + (br - tl) * 2.0, false, false, false);
+        t.end_drag();
+        assert!(right_angled(&t), "a corner drag skewed the turned box: {:?}", t.corners);
+        let (sw, sh) = t.scale_percent();
+        assert!((sw - 300.0).abs() < 1.0 && (sh - 200.0).abs() < 1.0, "got {sw} x {sh}");
+    }
+
+    #[test]
+    fn a_transform_steps_back_through_its_own_gestures() {
+        let mut t = transform_of(100, 100);
+        assert!(!t.can_undo() && !t.can_redo());
+
+        t.begin_drag(Handle::Body, Vec2::new(50.0, 50.0));
+        t.drag_to(Vec2::new(60.0, 50.0), false, false, false);
+        t.end_drag();
+        t.begin_drag(Handle::BottomRight, Vec2::new(110.0, 100.0));
+        t.drag_to(Vec2::new(210.0, 200.0), false, false, false);
+        t.end_drag();
+        assert!(t.can_undo());
+
+        assert!(t.undo(), "the scale steps back");
+        assert_eq!(t.corners[0], Vec2::new(10.0, 0.0));
+        assert_eq!(t.corners[2], Vec2::new(110.0, 100.0));
+        assert!(t.modified && t.can_redo());
+
+        assert!(t.undo(), "then the move");
+        assert!(t.matrix().unwrap().is_identity());
+        assert!(!t.modified, "back at the start, there is nothing to apply");
+        assert!(!t.undo(), "and nothing further to step back to");
+
+        assert!(t.redo());
+        assert_eq!(t.corners[0], Vec2::new(10.0, 0.0));
+        assert!(t.modified);
+
+        // A new gesture forgets what was stepped back from.
+        t.begin_drag(Handle::Body, Vec2::ZERO);
+        t.drag_to(Vec2::new(0.0, 5.0), false, false, false);
+        t.end_drag();
+        assert!(!t.can_redo());
+    }
+
+    #[test]
+    fn a_gesture_that_ends_where_it_began_records_nothing() {
+        let mut t = transform_of(100, 100);
+        t.begin_drag(Handle::Body, Vec2::new(50.0, 50.0));
+        t.drag_to(Vec2::new(70.0, 50.0), false, false, false);
+        t.drag_to(Vec2::new(50.0, 50.0), false, false, false);
+        t.end_drag();
+        assert!(!t.can_undo());
+        assert!(!t.modified);
+    }
+
+    #[test]
+    fn reset_is_a_gesture_that_can_be_stepped_back() {
+        let mut t = transform_of(100, 100);
+        t.begin_drag(Handle::Body, Vec2::ZERO);
+        t.drag_to(Vec2::new(30.0, 0.0), false, false, false);
+        t.end_drag();
+        t.reset();
+        assert!(t.matrix().unwrap().is_identity());
+        assert!(t.undo(), "reset can be stepped back");
+        assert_eq!(t.corners[0], Vec2::new(30.0, 0.0));
     }
 
     #[test]
@@ -559,21 +756,25 @@ mod tests {
     }
 
     #[test]
-    fn hit_testing_prefers_handles_then_rotation_then_the_body() {
+    fn hit_testing_is_handles_then_inside_to_move_then_outside_to_rotate() {
         let t = transform_of(100, 100);
-        assert_eq!(t.hit(Vec2::new(0.0, 0.0), 1.0), Some(Handle::TopLeft));
-        assert_eq!(t.hit(Vec2::new(50.0, 50.0), 1.0), Some(Handle::Body));
-        // Just outside a corner is the rotation ring.
-        assert_eq!(t.hit(Vec2::new(-15.0, -15.0), 1.0), Some(Handle::Rotate));
-        assert_eq!(t.hit(Vec2::new(500.0, 500.0), 1.0), None);
+        assert_eq!(t.hit(Vec2::new(0.0, 0.0), 1.0), Handle::TopLeft);
+        assert_eq!(t.hit(Vec2::new(50.0, 50.0), 1.0), Handle::Body);
+        // Inside but near a corner is still the body: on a small layer the
+        // old rotation ring reached most of the picture.
+        assert_eq!(t.hit(Vec2::new(14.0, 14.0), 1.0), Handle::Body);
+        // Anywhere outside rotates, near a corner or far from one.
+        assert_eq!(t.hit(Vec2::new(-15.0, -15.0), 1.0), Handle::Rotate);
+        assert_eq!(t.hit(Vec2::new(150.0, 50.0), 1.0), Handle::Rotate);
+        assert_eq!(t.hit(Vec2::new(500.0, 500.0), 1.0), Handle::Rotate);
     }
 
     #[test]
     fn the_grab_radius_scales_with_zoom() {
         let t = transform_of(100, 100);
         // At 10x zoom, a handle covers a tenth as many document pixels.
-        assert_eq!(t.hit(Vec2::new(5.0, 0.0), 1.0), Some(Handle::TopLeft));
-        assert_ne!(t.hit(Vec2::new(5.0, 0.0), 10.0), Some(Handle::TopLeft));
+        assert_eq!(t.hit(Vec2::new(5.0, 0.0), 1.0), Handle::TopLeft);
+        assert_ne!(t.hit(Vec2::new(5.0, 0.0), 10.0), Handle::TopLeft);
     }
 
     #[test]

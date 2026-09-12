@@ -5,6 +5,8 @@ use crate::chrome;
 /// Said when undo is asked for with a window open. See
 /// [`CShopApp::a_window_is_open`].
 const WINDOW_IS_OPEN: &str = "Close or cancel the open window first";
+/// Why the document's history is refused while a Free Transform is live.
+const TRANSFORM_IS_OPEN: &str = "Apply or cancel the Free Transform first";
 
 use crate::commands::{Action, ModifySelection, TransformPreset, WindowCommand};
 use crate::transform_tool::{ActiveCrop, ActiveTransform};
@@ -559,6 +561,21 @@ impl CShopApp {
     /// not have minded, which costs a click.
     pub fn a_window_is_open(&self) -> bool {
         self.dialog.is_open()
+    }
+
+    /// What Undo and Redo would each do right now, by name: a step of the
+    /// document's history, or of a Free Transform's own gestures while one is
+    /// live. `None` where there is nothing to do, which is what greys out the
+    /// menu rows and the History panel's buttons.
+    pub fn undo_redo_names(&self) -> (Option<String>, Option<String>) {
+        if let Some(t) = &self.transform {
+            let step = || "Transform Step".to_string();
+            return (t.can_undo().then(step), t.can_redo().then(step));
+        }
+        match self.doc() {
+            Some(d) => (d.history.undo_name(), d.history.redo_name()),
+            None => (None, None),
+        }
     }
 
     fn fail(&mut self, msg: impl Into<String>) {
@@ -1200,6 +1217,16 @@ impl CShopApp {
             }
 
             Action::Undo => {
+                // A Free Transform has gestures of its own to step back
+                // through, and while it is live the document's history is out
+                // of reach: undoing underneath the preview would change the
+                // very layer the preview was made from.
+                if let Some(t) = &mut self.transform {
+                    if !t.undo() {
+                        self.notify("Nothing to undo in this transform — Esc cancels it");
+                    }
+                    return;
+                }
                 if self.a_window_is_open() {
                     self.notify(WINDOW_IS_OPEN);
                     return;
@@ -1220,6 +1247,12 @@ impl CShopApp {
                 }
             }
             Action::Redo => {
+                if let Some(t) = &mut self.transform {
+                    if !t.redo() {
+                        self.notify("Nothing to redo in this transform");
+                    }
+                    return;
+                }
                 if self.a_window_is_open() {
                     self.notify(WINDOW_IS_OPEN);
                     return;
@@ -1234,6 +1267,10 @@ impl CShopApp {
                 }
             }
             Action::HistoryJump(target) => {
+                if self.transform.is_some() {
+                    self.notify(TRANSFORM_IS_OPEN);
+                    return;
+                }
                 if self.a_window_is_open() {
                     self.notify(WINDOW_IS_OPEN);
                     return;
@@ -7156,7 +7193,7 @@ impl CShopApp {
         if vector {
             self.notify("Free Transform — applying it rasterises this layer");
         } else {
-            self.notify("Free Transform — Enter to apply, Esc to cancel");
+            self.notify("Free Transform — Enter to apply, Esc to cancel, Ctrl+Z steps back");
         }
     }
 

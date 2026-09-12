@@ -70,6 +70,64 @@ fn a_transform_scales_the_layer_and_undoes() {
     assert_eq!(layer(&app).pixels().unwrap().width(), 100);
 }
 
+/// While a transform is live, Undo and Redo belong to it: they step through
+/// its own gestures, and the document's history is out of reach until the
+/// transform is applied or cancelled.
+#[test]
+fn the_document_history_is_locked_while_a_transform_is_live() {
+    let Some(mut app) = app_with(200, 200, Background::Transparent) else { return };
+    {
+        let view = app.doc_mut().unwrap();
+        let id = view.doc.active.unwrap();
+        view.doc.tree.get_mut(id).unwrap().kind =
+            LayerKind::raster(PixelBuffer::filled(100, 100, Rgba8::opaque(255, 0, 0)));
+        view.invalidate();
+    }
+    // One entry of real history to protect.
+    app.dispatch(Action::LayerViaCopy);
+    assert_eq!(app.doc().unwrap().history.cursor(), 1);
+    assert_eq!(app.doc().unwrap().doc.tree.len(), 2);
+
+    app.dispatch(Action::BeginTransform);
+    assert_eq!(
+        app.undo_redo_names(),
+        (None, None),
+        "nothing to step back yet, and the document's own undo is not on offer"
+    );
+    {
+        let t = app.transform.as_mut().unwrap();
+        t.begin_drag(Handle::Body, Vec2::new(50.0, 50.0));
+        t.drag_to(Vec2::new(70.0, 50.0), false, false, false);
+        t.end_drag();
+    }
+    assert_eq!(app.undo_redo_names().0.as_deref(), Some("Transform Step"));
+
+    app.dispatch(Action::Undo);
+    assert!(app.transform.is_some(), "the transform is still live");
+    assert!(app.transform.as_ref().unwrap().matrix().unwrap().is_identity(), "its move stepped back");
+    assert_eq!(app.doc().unwrap().history.cursor(), 1, "the document did not move");
+    assert_eq!(app.doc().unwrap().doc.tree.len(), 2);
+
+    app.dispatch(Action::Undo);
+    assert_eq!(app.doc().unwrap().history.cursor(), 1, "not even when the transform has nothing left");
+    assert!(
+        app.toast.as_ref().is_some_and(|(m, _)| m.contains("Nothing to undo in this transform")),
+        "got {:?}",
+        app.toast
+    );
+    app.dispatch(Action::HistoryJump(0));
+    assert_eq!(app.doc().unwrap().history.cursor(), 1, "nor by jumping in the History panel");
+
+    app.dispatch(Action::Redo);
+    assert!(!app.transform.as_ref().unwrap().matrix().unwrap().is_identity(), "redo steps forward");
+
+    app.dispatch(Action::CommitTransform);
+    assert_eq!(app.doc().unwrap().history.labels().last().map(String::as_str), Some("Free Transform"));
+    assert_eq!(app.doc().unwrap().history.cursor(), 2);
+    app.dispatch(Action::Undo);
+    assert_eq!(app.doc().unwrap().history.cursor(), 1, "once applied, undo is the document's again");
+}
+
 #[test]
 fn cancelling_a_transform_leaves_no_trace() {
     // A transparent background gives an unlocked layer; the white one is a
