@@ -761,6 +761,8 @@ impl ModifyDialog {
 pub enum BrowserMode {
     Open,
     Save,
+    /// Choose a file to bring into the open document as a smart object.
+    Place,
     /// Choose a picture to put behind a smart object — and behind every other
     /// layer sharing it.
     ReplaceContents,
@@ -795,6 +797,21 @@ struct Entry {
 }
 
 impl FileBrowser {
+    /// What picking an existing file means in this mode.
+    ///
+    /// One answer for the button and the double-click, which used to
+    /// disagree: double-clicking a file in Replace Contents opened it as a
+    /// document instead of replacing anything.
+    fn chosen(&self, path: PathBuf) -> Option<Action> {
+        Some(match self.mode {
+            BrowserMode::Open => Action::OpenPath(path),
+            BrowserMode::Place => Action::PlacePath(path),
+            BrowserMode::ReplaceContents => Action::ReplaceSmartContents(path),
+            // Naming a file to write over is not yet a request to write it.
+            BrowserMode::Save => return None,
+        })
+    }
+
     pub fn new(mode: BrowserMode, start: Option<PathBuf>) -> Self {
         let dir = start
             .and_then(|p| if p.is_dir() { Some(p) } else { p.parent().map(Path::to_path_buf) })
@@ -974,8 +991,8 @@ impl FileBrowser {
         if let Some(dir) = navigate_to {
             self.navigate(dir);
         }
-        if let Some(path) = chosen {
-            actions.push(Action::OpenPath(path));
+        if let Some(action) = chosen.and_then(|path| self.chosen(path)) {
+            actions.push(action);
             return true;
         }
 
@@ -1032,20 +1049,15 @@ impl FileBrowser {
             let verb = match self.mode {
                 BrowserMode::Open => "Open",
                 BrowserMode::Save => "Save",
+                BrowserMode::Place => "Place",
                 BrowserMode::ReplaceContents => "Replace",
             };
             let ready = !self.filename.trim().is_empty();
             if ui.add_enabled(ready, egui::Button::new(verb)).clicked() {
-                match self.mode {
-                    BrowserMode::Open => {
-                        actions.push(Action::OpenPath(self.dir.join(self.filename.trim())))
-                    }
-                    BrowserMode::Save => {
-                        actions.push(Action::SavePath { path: self.target(), deep: self.deep })
-                    }
-                    BrowserMode::ReplaceContents => actions.push(Action::ReplaceSmartContents(
-                        self.dir.join(self.filename.trim()),
-                    )),
+                if self.mode == BrowserMode::Save {
+                    actions.push(Action::SavePath { path: self.target(), deep: self.deep });
+                } else if let Some(action) = self.chosen(self.dir.join(self.filename.trim())) {
+                    actions.push(action);
                 }
                 close = true;
             }

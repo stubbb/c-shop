@@ -91,6 +91,30 @@ pub struct ActiveStroke {
     tool: Tool,
 }
 
+/// The one eight-bit layer that *is* this document, when nothing about it
+/// would make the composite differ from it.
+fn single_plain_layer(doc: &Document) -> Option<&PixelBuffer> {
+    let ids = doc.tree.iter_all();
+    let [only] = ids[..] else { return None };
+    let layer = doc.tree.get(only)?;
+    if !layer.visible
+        || layer.mask.is_some()
+        || layer.effects.any()
+        || layer.filters.any()
+        || layer.opacity < 1.0
+        || layer.fill_opacity < 1.0
+        || layer.blend_mode != cshop_core::blend::BlendMode::Normal
+        || layer.offset != (0, 0)
+    {
+        return None;
+    }
+    let cshop_core::layer::LayerKind::Raster(cshop_core::layer::Surface::Eight(px)) = &layer.kind
+    else {
+        return None;
+    };
+    ((px.width(), px.height()) == (doc.width, doc.height)).then_some(px)
+}
+
 /// Where a new layer goes: directly above the active one, in the same group.
 fn new_layer_pos(view: &crate::doc_view::DocView) -> LayerPos {
     view.doc
@@ -619,8 +643,12 @@ impl CShopApp {
         let title_owned;
         let title: &str = match &dialog {
             Dialog::NewDocument(_) => "New Document",
-            Dialog::FileBrowser(b) if b.mode == BrowserMode::Open => "Open",
-            Dialog::FileBrowser(_) => "Save As",
+            Dialog::FileBrowser(b) => match b.mode {
+                BrowserMode::Open => "Open",
+                BrowserMode::Save => "Save As",
+                BrowserMode::Place => "Open and Place",
+                BrowserMode::ReplaceContents => "Replace Contents",
+            },
             Dialog::Modify(d) => d.title(),
             Dialog::ImageSize(d) => d.title(),
             Dialog::Rename(_) => "Rename Layer",
@@ -1110,6 +1138,12 @@ impl CShopApp {
             }
 
             Action::OpenPath(path) => self.open_path(path),
+
+            Action::ShowPlaceDialog => {
+                let start = self.doc().and_then(|d| d.doc.path.clone());
+                self.dialog = Dialog::FileBrowser(FileBrowser::new(BrowserMode::Place, start));
+            }
+            Action::PlacePath(path) => self.place_path(path),
 
             Action::Save => {
                 match self.doc().and_then(|d| d.doc.path.clone()) {
@@ -2329,6 +2363,107 @@ impl CShopApp {
             }
             Err(e) => self.fail(format!("Could not open {}: {e}", path.display())),
         }
+    }
+
+    /// Bring a file into the open document as a smart object.
+    ///
+    /// Open puts a file beside the document; this puts it *in* one. It lands
+    /// as a new layer above the active one, centred, and fitted to the canvas
+    /// when it is larger. The fitting loses nothing, because the layer is a
+    /// smart object: the whole picture stays behind the placement, so it can
+    /// be enlarged again later and still be the picture that was placed.
+    fn place_path(&mut self, path: PathBuf) {
+        if self.doc().is_none() {
+            // Nothing to place into. Opening is the nearest thing to what was
+            // asked for, and saying so is what stops it looking like the
+            // wrong command ran.
+            self.open_path(path);
+            if self.doc().is_some() {
+                self.notify("Nothing was open to place into, so the file was opened instead");
+            }
+            return;
+        }
+        self.commit_text();
+
+        // A project or a PSD arrives with its layers; what is placed is the
+        // picture they make together.
+        let pixels = match cshop_io::load_document(&path) {
+            Ok(doc) => self.flat_picture(doc),
+            Err(e) => return self.fail(format!("Could not open {}: {e}", path.display())),
+        };
+        let (w, h) = (pixels.width(), pixels.height());
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Placed".into());
+        let layer_name = path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.clone());
+
+        let Some(view) = self.doc_mut() else { return };
+        let (cw, ch) = (view.doc.width, view.doc.height);
+
+        // Into the document's store, and a placement of it. It goes into the
+        // store here so the smart object can be built naming it; the
+        // `AddSource` step below is what takes it out on undo and puts it
+        // back on redo.
+        let source = view.doc.sources.add(pixels.clone(), file.clone());
+        let mut smart = cshop_core::smart::SmartObject::new(source, &view.doc.sources);
+        // Larger than the canvas means fitted to it, which costs nothing
+        // here: the placement is a setting, and the picture behind it is
+        // untouched.
+        let fit = (cw as f32 / w as f32).min(ch as f32 / h as f32);
+        if fit < 1.0 {
+            smart.place(
+                cshop_core::transform::Transform::scale(fit, fit),
+                cshop_core::resample::Resampling::Lanczos3,
+                &view.doc.sources,
+            );
+        }
+        let (rw, rh) = (smart.raster().width() as i32, smart.raster().height() as i32);
+
+        let id = view.doc.tree.alloc_id();
+        let mut layer =
+            Layer::new(id, layer_name, cshop_core::layer::LayerKind::Smart(Box::new(smart)));
+        layer.offset = ((cw as i32 - rw) / 2, (ch as i32 - rh) / 2);
+        let pos = new_layer_pos(view);
+        let dirty = view.history.apply(
+            &mut view.doc,
+            Box::new(cshop_core::history::Compound::new(
+                "Place",
+                vec![
+                    Box::new(cshop_core::history::AddSource::new(
+                        source,
+                        cshop_core::smart::Source { pixels, name: file.clone() },
+                    )),
+                    Box::new(AddLayer::new(layer, pos, "Place")),
+                ],
+            )),
+        );
+        view.mark_dirty(dirty);
+        view.invalidate();
+        if fit < 1.0 {
+            self.notify(format!(
+                "Placed {file} ({w} x {h}) as a smart object, fitted to the canvas at {:.0}%",
+                fit * 100.0
+            ));
+        } else {
+            self.notify(format!("Placed {file} ({w} x {h}) as a smart object"));
+        }
+    }
+
+    /// The picture a file amounts to: its one layer when that is all it has —
+    /// the ordinary case, a photograph — and otherwise the composite, read
+    /// back the way Copy Merged and a flat export read it.
+    fn flat_picture(&mut self, doc: Document) -> PixelBuffer {
+        if let Some(px) = single_plain_layer(&doc) {
+            return px.clone();
+        }
+        let gpu = self.gpu.clone();
+        let mut view = DocView::new(&gpu, doc, "Place");
+        view.sync_composite_only(&gpu, &mut self.compositor);
+        view.read_composite(&gpu)
     }
 
     fn save_to(&mut self, path: PathBuf, deep: bool) {

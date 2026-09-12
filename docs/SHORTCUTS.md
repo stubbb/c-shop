@@ -47,6 +47,7 @@ never runs.
 |---|---|
 | `Ctrl+N` | New |
 | `Ctrl+O` | Open |
+| `Ctrl+Shift+O` | Open and Place — a file into the open document, as a smart object |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save As |
 | `Ctrl+W` | Close document |
 | `Ctrl+Q` | Quit |

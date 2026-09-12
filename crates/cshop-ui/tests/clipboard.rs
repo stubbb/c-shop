@@ -267,3 +267,59 @@ fn images_travel_through_the_system_clipboard() {
     assert_eq!((px.width(), px.height()), (8, 8), "the foreign image pastes at its own size");
     assert_eq!(px.get(0, 0), Rgba8::opaque(9, 200, 40));
 }
+
+/// The clipboard belongs to the editor, not to a document: what is copied in
+/// one open file pastes into another.
+#[test]
+fn copying_in_one_document_pastes_into_another() {
+    let Some((mut h, _)) = ready() else { return };
+    // The red square is in the first document; a second, larger and empty,
+    // is there to receive it.
+    h.app.open_document(Document::new("other", 300, 200, Background::Transparent));
+    h.settle(2);
+    assert_eq!(h.app.active, Some(1), "opening a document makes it the active tab");
+    let other_layers = layer_count(&h);
+
+    h.app.dispatch(Action::SelectDocument(0));
+    select(&mut h, 20.0, 20.0, 60.0, 60.0);
+    h.app.dispatch(Action::Copy);
+
+    h.app.dispatch(Action::SelectDocument(1));
+    h.app.dispatch(Action::Paste);
+    assert_eq!(h.app.active, Some(1), "pasting does not change which document is active");
+    assert_eq!(layer_count(&h), other_layers + 1, "the paste landed in the second document");
+    assert_eq!(h.app.docs[0].doc.tree.len(), 1, "and not in the first");
+
+    let v = h.app.doc().unwrap();
+    let layer = v.doc.tree.get(v.doc.active.unwrap()).unwrap();
+    assert_eq!(layer.pixels().unwrap().get(20, 20), Rgba8::opaque(220, 30, 30));
+    // Centred on the document it landed in, not the one it came from.
+    assert_eq!(layer.offset, ((300 - 40) / 2, (200 - 40) / 2));
+
+    // In place keeps the coordinates it had in the document it came from.
+    h.app.dispatch(Action::PasteInPlace);
+    let v = h.app.doc().unwrap();
+    let layer = v.doc.tree.get(v.doc.active.unwrap()).unwrap();
+    assert_eq!(layer.offset, (20, 20));
+}
+
+/// The same by the keys, moving between the documents as the tabs do.
+#[test]
+fn the_chords_carry_between_documents_too() {
+    use cshop_ui::shortcuts::keys as k;
+    let Some((mut h, _)) = ready() else { return };
+    h.app.open_document(Document::new("other", 100, 100, Background::Transparent));
+    h.settle(2);
+
+    h.app.dispatch(Action::SelectDocument(0));
+    select(&mut h, 20.0, 20.0, 60.0, 60.0);
+    h.press(k::COPY);
+    assert!(h.app.clipboard.has_content());
+
+    h.app.dispatch(Action::SelectDocument(1));
+    let before = layer_count(&h);
+    h.press(k::PASTE);
+    h.settle(2);
+    assert_eq!(layer_count(&h), before + 1, "Ctrl+V pastes into the other document");
+    assert_eq!(h.app.docs[0].doc.tree.len(), 1, "and adds nothing to the one it came from");
+}

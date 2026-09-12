@@ -7,6 +7,19 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.083** — *Copy between open files, and Open and Place.* Ctrl+C, Ctrl+X
+  and Ctrl+V did nothing from the keyboard, in one file or between two: the
+  window library turns those three chords into text-clipboard events of its
+  own and never reports the key press, so Copy, Cut and Paste — and Copy
+  Merged and Paste in Place with them — only ever ran from the Edit menu. The
+  window now hands the press on as the key event every other chord gets, and
+  the tests copy in one document and paste in another, by action and by key.
+  **File ▸ Open and Place** (Ctrl+Shift+O) brings a file into the open
+  document rather than opening it beside it: a new smart object layer above
+  the active one, centred, fitted to the canvas when it is larger, and — being
+  a smart object — losing nothing in the fitting. A layered file places as the
+  picture its layers make. Found on the way: double-clicking a file in Replace
+  Contents opened it as a document instead of replacing anything.
 - **0.082** — *Put the scatter brush where the brush settings are.* The stamp
   and its scatter controls arrived in the right-click menu only, which is a
   poor place for them when size, hardness, opacity, flow and spacing are all on

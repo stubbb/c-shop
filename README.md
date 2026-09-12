@@ -139,9 +139,10 @@ pictures larger.
 - [**Animation**](docs/FEATURES.md#animation) — a GIF or APNG as a layer per
   frame with a timeline, written back out whole.
 - [**Files**](docs/FEATURES.md#files) — a layered `.cshop` project, PSD both
-  ways, and eight flat formats.
+  ways, eight flat formats, and Open and Place to drop a file into a document
+  as a smart object.
 - [**Clipboard**](docs/FEATURES.md#clipboard) — copy, cut, copy merged and
-  paste in place, to and from other programs.
+  paste in place, between open files and to and from other programs.
 
 **The program itself**
 

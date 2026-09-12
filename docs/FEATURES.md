@@ -374,11 +374,21 @@ descriptions, effects and saved channels — still editable when reopened.
 clipping and visibility both ways, plus the flattened composite other programs
 read. Flat formats: PNG, JPEG, BMP, TIFF, TGA, GIF, WebP and ICO.
 
+**File ▸ Open and Place** brings a file *into* the open document rather than
+opening it beside it: it lands as a new smart object layer above the active
+one, centred, and fitted to the canvas when it is larger. The fitting loses
+nothing, because the layer is a smart object — the whole picture stays behind
+the placement, so it can be enlarged again later and still be the picture that
+was placed. A layered file is placed as the picture its layers make.
+
 ## Clipboard
 
 Copy, Cut, Copy Merged, Paste and Paste in Place, carrying a feathered
-selection's soft edge with it. Images go to and come from the system
-clipboard, so a copy here pastes into other programs and theirs paste in here.
+selection's soft edge with it. The clipboard belongs to the editor rather than
+to a document, so what is copied in one open file pastes into another —
+centred there, or in place at the coordinates it was copied from. Images go to
+and come from the system clipboard, so a copy here pastes into other programs
+and theirs paste in here.
 
 ---
 

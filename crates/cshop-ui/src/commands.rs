@@ -161,6 +161,11 @@ pub enum Action {
     NewDocument,
     ShowOpenDialog,
     OpenPath(PathBuf),
+    /// Choose a file to bring into the open document as a smart object.
+    ShowPlaceDialog,
+    /// Bring that file in: a new smart object layer above the active one,
+    /// centred, and fitted to the canvas when it is larger.
+    PlacePath(PathBuf),
     Save,
     ShowSaveAsDialog,
     /// Save to this path. `deep` writes sixteen bits a channel, which only

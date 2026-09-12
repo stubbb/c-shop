@@ -352,6 +352,17 @@ pub fn menu_bar(app: &mut CShopApp, ui: &mut egui::Ui) -> f32 {
                     }
                 });
             });
+            if item_enabled(ui, "Open and Place…", &k::PLACE.label(), has_doc)
+                .on_hover_text(
+                    "Brings a file into this document rather than opening it beside it: \
+                     a new smart object layer, centred, fitted to the canvas if it is larger.",
+                )
+                .on_disabled_hover_text("Open or create a document to place into first")
+                .clicked()
+            {
+                app.push(Action::ShowPlaceDialog);
+                ui.close();
+            }
             ui.separator();
             if item_enabled(ui, "Save", &k::SAVE.label(), has_doc).clicked() {
                 app.push(Action::Save);

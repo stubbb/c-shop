@@ -38,6 +38,49 @@ fn load_icon() -> Option<Icon> {
         .ok()
 }
 
+/// egui's reading of winit's modifier state, so a key event pushed by hand
+/// carries what egui-winit's own would have.
+fn modifiers_from(state: winit::keyboard::ModifiersState) -> egui::Modifiers {
+    let ctrl = state.control_key();
+    let super_ = state.super_key();
+    egui::Modifiers {
+        alt: state.alt_key(),
+        ctrl,
+        shift: state.shift_key(),
+        mac_cmd: cfg!(target_os = "macos") && super_,
+        command: if cfg!(target_os = "macos") { super_ } else { ctrl },
+    }
+}
+
+/// The key of a copy, cut or paste chord egui-winit will have swallowed, when
+/// this press is one: C, X or V with the command key held.
+///
+/// egui-winit reads the letter from the logical key and falls back to the key's
+/// position for layouts that type no Latin letter; the same here, so the chord
+/// fires on exactly the presses it swallows and on no others.
+fn clipboard_chord_key(
+    logical: &winit::keyboard::Key,
+    physical: winit::keyboard::PhysicalKey,
+    modifiers: egui::Modifiers,
+) -> Option<egui::Key> {
+    use winit::keyboard::{Key, KeyCode, PhysicalKey};
+    if !modifiers.command {
+        return None;
+    }
+    let by_letter = match logical {
+        Key::Character(c) => egui::Key::from_name(c.as_str()),
+        _ => None,
+    };
+    let by_position = match physical {
+        PhysicalKey::Code(KeyCode::KeyC) => Some(egui::Key::C),
+        PhysicalKey::Code(KeyCode::KeyX) => Some(egui::Key::X),
+        PhysicalKey::Code(KeyCode::KeyV) => Some(egui::Key::V),
+        _ => None,
+    };
+    let key = by_letter.or(by_position)?;
+    matches!(key, egui::Key::C | egui::Key::X | egui::Key::V).then_some(key)
+}
+
 /// `started` is stamped at the top of `main`, so the reported figure covers
 /// everything the process did, not just the parts this module owns.
 pub fn run(files: Vec<String>, started: Instant) -> Result<(), Box<dyn std::error::Error>> {
@@ -74,6 +117,9 @@ struct State {
     /// is taken after the first frame is presented rather than after setup.
     started: Instant,
     reported_startup: bool,
+    /// The modifier keys as they stand. egui-winit keeps its own copy and
+    /// does not lend it out; the clipboard chords below need one.
+    modifiers: egui::Modifiers,
 }
 
 impl ApplicationHandler for Handler {
@@ -102,6 +148,33 @@ impl ApplicationHandler for Handler {
         let response = state.egui_state.on_window_event(&state.window, &event);
         if response.repaint {
             state.window.request_redraw();
+        }
+
+        // egui-winit turns Ctrl+C, Ctrl+X and Ctrl+V into text-clipboard
+        // events of its own and never reports the key press, so the editor's
+        // Copy, Cut and Paste chords — and Copy Merged and Paste in Place
+        // with them — could only ever run from the Edit menu. Hand the press
+        // on as the key event every other chord gets. Text fields are not
+        // affected: they answer egui's own events, and the editor ignores
+        // chords while one has focus.
+        match &event {
+            WindowEvent::ModifiersChanged(m) => state.modifiers = modifiers_from(m.state()),
+            WindowEvent::Focused(false) => state.modifiers = egui::Modifiers::default(),
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                if let Some(swallowed) =
+                    clipboard_chord_key(&key.logical_key, key.physical_key, state.modifiers)
+                {
+                    state.egui_state.egui_input_mut().events.push(egui::Event::Key {
+                        key: swallowed,
+                        physical_key: None,
+                        pressed: key.state.is_pressed(),
+                        repeat: false,
+                        modifiers: state.modifiers,
+                    });
+                    state.window.request_redraw();
+                }
+            }
+            _ => {}
         }
 
         match event {
@@ -247,6 +320,7 @@ impl State {
             app,
             started,
             reported_startup: false,
+            modifiers: egui::Modifiers::default(),
         })
     }
 
@@ -411,5 +485,97 @@ impl State {
                 self.window.request_redraw();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::{Key, KeyCode, PhysicalKey};
+
+    fn command() -> egui::Modifiers {
+        egui::Modifiers { ctrl: true, command: true, ..Default::default() }
+    }
+
+    fn character(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    #[test]
+    fn the_three_chords_egui_winit_swallows_are_handed_back() {
+        let cases = [
+            ("c", KeyCode::KeyC, egui::Key::C),
+            ("x", KeyCode::KeyX, egui::Key::X),
+            ("v", KeyCode::KeyV, egui::Key::V),
+        ];
+        for (letter, code, want) in cases {
+            assert_eq!(
+                clipboard_chord_key(&character(letter), PhysicalKey::Code(code), command()),
+                Some(want)
+            );
+            // With Shift as well — Copy Merged, Paste in Place — the letter
+            // arrives upper-case, and egui-winit swallows those too.
+            let shifted = egui::Modifiers { shift: true, ..command() };
+            assert_eq!(
+                clipboard_chord_key(
+                    &character(&letter.to_uppercase()),
+                    PhysicalKey::Code(code),
+                    shifted
+                ),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn without_the_command_key_nothing_is_added() {
+        // A plain C picks a tool; egui-winit reports that itself.
+        assert_eq!(
+            clipboard_chord_key(
+                &character("c"),
+                PhysicalKey::Code(KeyCode::KeyC),
+                egui::Modifiers::default()
+            ),
+            None
+        );
+        let shift_only = egui::Modifiers { shift: true, ..Default::default() };
+        assert_eq!(
+            clipboard_chord_key(&character("V"), PhysicalKey::Code(KeyCode::KeyV), shift_only),
+            None
+        );
+    }
+
+    #[test]
+    fn every_other_chord_is_left_to_egui_winit() {
+        assert_eq!(
+            clipboard_chord_key(&character("z"), PhysicalKey::Code(KeyCode::KeyZ), command()),
+            None,
+            "Ctrl+Z is reported by egui-winit already; adding it would undo twice"
+        );
+        // A layout whose C position types another Latin letter: egui-winit
+        // goes by the letter, reports it, and swallows nothing.
+        assert_eq!(
+            clipboard_chord_key(&character("a"), PhysicalKey::Code(KeyCode::KeyC), command()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_layout_with_no_latin_letters_goes_by_the_key_position() {
+        // Cyrillic es, on the key that is C on a Latin layout: egui-winit
+        // falls back to the position, so this press is swallowed as a copy.
+        assert_eq!(
+            clipboard_chord_key(&character("\u{441}"), PhysicalKey::Code(KeyCode::KeyC), command()),
+            Some(egui::Key::C)
+        );
+    }
+
+    #[test]
+    fn modifiers_translate_the_way_egui_winit_translates_them() {
+        use winit::keyboard::ModifiersState;
+        let m = modifiers_from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        assert!(m.ctrl && m.shift && !m.alt);
+        assert_eq!(m.command, cfg!(not(target_os = "macos")), "Ctrl is the command key off a Mac");
+        assert_eq!(modifiers_from(ModifiersState::empty()), egui::Modifiers::default());
     }
 }

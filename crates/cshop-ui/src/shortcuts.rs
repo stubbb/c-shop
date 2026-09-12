@@ -119,6 +119,7 @@ pub mod keys {
     // File
     pub const NEW: Chord = Chord::ctrl(Key::N);
     pub const OPEN: Chord = Chord::ctrl(Key::O);
+    pub const PLACE: Chord = Chord::ctrl_shift(Key::O);
     pub const SAVE: Chord = Chord::ctrl(Key::S);
     pub const SAVE_AS: Chord = Chord::ctrl_shift(Key::S);
     pub const CLOSE: Chord = Chord::ctrl(Key::W);
@@ -241,6 +242,7 @@ pub fn bindings() -> Vec<Binding> {
     vec![
         bind("New", k::NEW, || Action::NewDocument),
         bind("Open", k::OPEN, || Action::ShowOpenDialog),
+        bind("Open and Place", k::PLACE, || Action::ShowPlaceDialog),
         bind("Save", k::SAVE, || Action::Save),
         bind("Save as", k::SAVE_AS, || Action::ShowSaveAsDialog),
         bind("Close", k::CLOSE, || Action::CloseDocument(usize::MAX)),
@@ -338,6 +340,7 @@ mod tests {
         vec![
             ("NEW", k::NEW),
             ("OPEN", k::OPEN),
+            ("PLACE", k::PLACE),
             ("SAVE", k::SAVE),
             ("SAVE_AS", k::SAVE_AS),
             ("CLOSE", k::CLOSE),
