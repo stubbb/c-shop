@@ -260,3 +260,30 @@ fn a_drop_shadow_starts_with_some_spread() {
     assert!(s.spread > 0.0, "the default shadow should have some spread, got {}", s.spread);
     assert!((s.spread - 0.05).abs() < 1e-6);
 }
+
+/// Effects are rendered round the layer's ink rather than its whole raster,
+/// and the result has to be drawn where the ink is. It used to land at the
+/// raster's corner, so a placed picture with transparent margins jumped the
+/// moment an effect went on it.
+#[test]
+fn effects_do_not_move_ink_that_sits_inside_its_raster() {
+    let Some((mut h, id)) = ready() else { return };
+    let gpu = h.app.gpu.clone();
+    let without = h.app.render_composite(&gpu, 0);
+    assert_eq!(without.get(100, 100), Rgba8::opaque(200, 200, 200), "the square, before");
+
+    let mut fx = LayerEffects::new();
+    fx.color_overlay =
+        Some(ColorOverlay { color: Rgba8::opaque(0, 0, 250), ..Default::default() });
+    h.app.dispatch(Action::SetLayerEffects(id, Box::new(fx)));
+    h.settle(2);
+
+    let with = h.app.render_composite(&gpu, 0);
+    assert_eq!(
+        with.get(100, 100),
+        Rgba8::opaque(0, 0, 250),
+        "the overlay paints the square where the square is"
+    );
+    assert_eq!(with.get(20, 20), Rgba8::WHITE, "nothing lands at the raster's corner");
+    assert_eq!(with.get(60, 60), Rgba8::WHITE);
+}

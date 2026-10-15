@@ -663,3 +663,81 @@ fn a_document_without_states_carries_none() {
     let doc = Document::new("plain", 16, 16, Background::Transparent);
     assert!(round_trip(&doc).states.is_empty());
 }
+
+/// Before format 3 a layer's effects were drawn from its raster's corner, so
+/// a layer with transparent margins was laid out with its ink there. Opening
+/// such a file has to keep the ink where it was, which means moving the
+/// layer by the inset the renderer now honours — and only the layers that
+/// had effects on, since the rest were always drawn where their offset said.
+#[test]
+fn a_project_from_before_effects_drew_round_the_ink_keeps_its_layout() {
+    use cshop_core::states::{LayerSetting, LayerState};
+
+    let mut doc = Document::new("laid out", 200, 200, Background::Transparent);
+    // Ink twenty across and ten down from the raster's corner.
+    let mut px = PixelBuffer::new(60, 40);
+    px.fill_rect(IRect::at(20, 10, 15, 12), Rgba8::opaque(250, 30, 40));
+
+    let shadowed = doc.tree.alloc_id();
+    let mut layer = Layer::raster(shadowed, "Shadowed", px.clone());
+    layer.offset = (7, 11);
+    layer.effects =
+        LayerEffects { drop_shadow: Some(Shadow::default()), ..LayerEffects::new() };
+    doc.tree.push(layer, None);
+
+    let plain = doc.tree.alloc_id();
+    let mut layer = Layer::raster(plain, "Plain", px.clone());
+    layer.offset = (7, 11);
+    doc.tree.push(layer, None);
+
+    // Effects that are present but switched off never drew anything.
+    let off = doc.tree.alloc_id();
+    let mut layer = Layer::raster(off, "Switched off", px);
+    layer.offset = (7, 11);
+    layer.effects = LayerEffects {
+        enabled: false,
+        drop_shadow: Some(Shadow::default()),
+        ..LayerEffects::new()
+    };
+    doc.tree.push(layer, None);
+
+    // A layer state remembers where the plain layer was with a glow on it.
+    let setting = |id, effects| LayerSetting {
+        id,
+        visible: true,
+        offset: (7, 11),
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        blend_mode: BlendMode::Normal,
+        clipping: false,
+        effects,
+        mask_enabled: true,
+    };
+    doc.states.push(LayerState {
+        name: "Glowing".into(),
+        layers: vec![
+            setting(plain, LayerEffects { outer_glow: Some(Glow::default()), ..LayerEffects::new() }),
+            setting(shadowed, LayerEffects::default()),
+        ],
+    });
+
+    let mut bytes = cshop_io::project::write(&doc);
+    let offset = |doc: &Document, id| doc.tree.get(id).expect("the layer is there").offset;
+
+    // Written today, everything is where it was put.
+    let now = cshop_io::project::read(&bytes).expect("the project should read back");
+    assert_eq!(offset(&now, shadowed), (7, 11));
+    assert_eq!(offset(&now, plain), (7, 11));
+
+    // The same bytes marked as format 2 came from an editor that drew the
+    // shadowed layer's ink at its raster's corner.
+    assert_eq!(&bytes[6..8], &[3, 0], "the header carries the format");
+    bytes[6..8].copy_from_slice(&[2, 0]);
+    let old = cshop_io::project::read(&bytes).expect("a format-2 project should still open");
+    assert_eq!(offset(&old, shadowed), (7 - 20, 11 - 10), "moved back by its ink's inset");
+    assert_eq!(offset(&old, plain), (7, 11), "no effects, so it was never drawn wrong");
+    assert_eq!(offset(&old, off), (7, 11), "effects switched off drew nothing");
+    let state = &old.states[0].layers;
+    assert_eq!(state[0].offset, (7 - 20, 11 - 10), "the state had a glow on the plain layer");
+    assert_eq!(state[1].offset, (7, 11), "and no effects on the shadowed one");
+}

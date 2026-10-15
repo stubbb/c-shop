@@ -680,7 +680,20 @@ impl Runner {
                         format!("{}: {}", self.trail.join(" > "), cmd.raw)
                     };
                     let line = cmd.line;
-                    match self.step(&cmd) {
+                    // The editor reports a refusal in its status bar, and a
+                    // command that dispatches an action and returns Ok has no
+                    // other way of knowing. Read the bar back here, for every
+                    // command, so the report cannot call a step that quietly
+                    // did nothing a success — which `smart replace` did.
+                    self.app.toast = None;
+                    let outcome = match self.step(&cmd) {
+                        Ok(note) => match self.app.toast.take() {
+                            Some((why, true)) => Err(why),
+                            _ => Ok(note),
+                        },
+                        Err(why) => Err(why),
+                    };
+                    match outcome {
                         Ok(note) => {
                             self.report.steps.push(Step { line, command: raw, ok: true, note })
                         }
@@ -3365,17 +3378,48 @@ impl Runner {
                 Ok("converted to a smart object".into())
             }
             "replace" => {
-                let path = cmd
+                let given = cmd
                     .args
                     .get(1)
                     .ok_or("smart replace needs a file to take the picture from")?;
-                let shared = self.app.smart_link().map(|(_, n)| n).unwrap_or(0);
-                if shared == 0 {
+                // Through `path` like every other file a script names, so `~`
+                // is expanded and a relative path is taken against the
+                // script rather than against wherever the process happens to
+                // be running.
+                let path = self.path(given)?;
+                let Some((source, shared)) = self.app.smart_link() else {
                     return Err("the active layer is not a smart object".into());
+                };
+                // A replacement keeps each placement, so a larger picture
+                // comes out larger. `fit` scales each placement back so the
+                // new picture sits in the box the old one occupied; the boxes
+                // have to be read before they change.
+                let fit = cmd.flag("fit");
+                let boxes: Vec<(cshop_core::layer::LayerId, (u32, u32))> = if fit {
+                    let view = self.app.doc().ok_or("no document")?;
+                    view.doc
+                        .layers_using(source)
+                        .into_iter()
+                        .filter_map(|id| {
+                            let raster = view.doc.tree.get(id)?.smart()?.raster();
+                            Some((id, (raster.width(), raster.height())))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                self.app.dispatch(Action::ReplaceSmartContents(path));
+                if let Some((why, true)) = self.app.toast.take() {
+                    return Err(why);
                 }
-                self.app
-                    .dispatch(Action::ReplaceSmartContents(std::path::PathBuf::from(path)));
-                Ok(format!("replaced the contents of {shared} layer(s)"))
+                if fit {
+                    self.fit_smart(&boxes)?;
+                    Ok(format!(
+                        "replaced the contents of {shared} layer(s), fitted to the box each had"
+                    ))
+                } else {
+                    Ok(format!("replaced the contents of {shared} layer(s)"))
+                }
             }
             "unique" => {
                 let shared = self.app.smart_link().map(|(_, n)| n).unwrap_or(0);
@@ -3395,6 +3439,44 @@ impl Runner {
                  unique, info"
             )),
         }
+    }
+
+    /// Scale each placement so the picture now behind it fits the box the old
+    /// one occupied, keeping its proportions and its top-left. One undo step
+    /// for all of them, after the replacement's own.
+    fn fit_smart(
+        &mut self,
+        boxes: &[(cshop_core::layer::LayerId, (u32, u32))],
+    ) -> Result<(), String> {
+        use cshop_core::history::{Compound, PlaceSmart};
+        let view = self.app.doc_mut().ok_or("no document")?;
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
+        for &(id, (old_w, old_h)) in boxes {
+            let Some(layer) = view.doc.tree.get(id) else { continue };
+            let Some(smart) = layer.smart() else { continue };
+            let (w, h) = (smart.raster().width().max(1), smart.raster().height().max(1));
+            let s = (old_w as f32 / w as f32).min(old_h as f32 / h as f32);
+            if (s - 1.0).abs() < 1e-3 {
+                continue;
+            }
+            let placement = smart.placement().then(cshop_core::transform::Transform::scale(s, s));
+            steps.push(Box::new(PlaceSmart::new(
+                id,
+                placement,
+                layer.offset,
+                layer.mask.clone(),
+                cshop_core::resample::Resampling::Bicubic,
+                "Fit Replacement",
+            )));
+        }
+        if steps.is_empty() {
+            return Ok(());
+        }
+        let compound = Compound::new("Fit Replacement", steps);
+        let dirty = view.history.apply(&mut view.doc, Box::new(compound));
+        view.mark_dirty(dirty);
+        view.invalidate();
+        Ok(())
     }
 
     fn cmd_set(&mut self, cmd: &Command) -> Result<String, String> {

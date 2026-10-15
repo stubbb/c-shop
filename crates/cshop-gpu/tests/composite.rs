@@ -835,3 +835,36 @@ fn an_adjustment_inside_a_group_stays_inside_it() {
 fn identity_table(ctx: &cshop_gpu::context::GpuContext) -> cshop_gpu::texture::ColourTable {
     cshop_gpu::texture::ColourTable::identity(ctx, 33)
 }
+
+/// Effects are rendered round a layer's ink rather than its whole raster, so
+/// the composed texture can be smaller than the raster and start inside it.
+/// It has to be drawn where the ink is, not at the raster's corner.
+#[test]
+fn effects_are_drawn_where_the_ink_is() {
+    let Some(mut h) = Harness::new() else { return };
+    let mut doc = Document::new("t", 60, 60, Background::Transparent);
+    // A 40x40 raster at (10, 10) whose only ink is a 10x10 square at (20, 20)
+    // inside it — so at (30, 30) on the document.
+    let mut px = PixelBuffer::new(40, 40);
+    px.fill_rect(IRect::at(20, 20, 10, 10), Rgba8::opaque(200, 200, 200));
+    let id = doc.tree.alloc_id();
+    let mut layer = Layer::raster(id, "ink", px);
+    layer.offset = (10, 10);
+    let mut fx = cshop_core::effects::LayerEffects::new();
+    fx.color_overlay = Some(cshop_core::effects::ColorOverlay {
+        color: Rgba8::opaque(0, 0, 255),
+        ..Default::default()
+    });
+    layer.effects = fx;
+    doc.tree.push(layer, None);
+
+    let out = h.run(&doc);
+    let at = |x: usize, y: usize| out[y * 60 + x];
+    let ink = at(35, 35);
+    assert!(
+        ink.a > 0.99 && ink.b > 0.9 && ink.r < 0.05,
+        "the overlaid square should be where the ink is, got {ink:?}"
+    );
+    assert!(at(15, 15).a < 0.01, "nothing at the raster's corner: {:?}", at(15, 15));
+    assert!(at(25, 25).a < 0.01, "nor between: {:?}", at(25, 25));
+}

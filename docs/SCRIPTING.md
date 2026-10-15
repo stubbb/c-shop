@@ -38,7 +38,9 @@ Two rules follow from the design:
 
 - **Nothing fails silently.** An unknown command, an unparseable value, an
   action that could not apply — each becomes a failed step with a reason, and
-  the run carries on so one typo does not discard the rest.
+  the run carries on so one typo does not discard the rest. A refusal the
+  editor would have shown in its status bar counts: every command is checked
+  for one after it runs.
 - **Measurements are free.** `measure` reports the size of type without drawing
   it, so a caller can place something before committing rather than rendering
   and guessing.
@@ -93,7 +95,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | `filter NAME` | `gaussian-blur box-blur motion-blur surface-blur sharpen unsharp-mask add-noise high-pass find-edges median mosaic crystallize emboss solarize diffuse twirl` |
 | `adjust NAME` | `brightness-contrast levels gradient-map photo-filter hue-saturation vibrance exposure invert posterize threshold black-and-white`, plus `as-layer` to keep it editable. |
 | `layer WHAT` | `new group duplicate via-copy delete merge-down flatten rasterize to-mask select <index>`. `via-copy` lifts only what is selected onto a new layer; `to-mask` turns this layer into a mask on the one below and consumes it. |
-| `smart [convert]` \| `smart replace PATH` \| `smart unique` \| `smart info` | Wrap the active layer's pixels so scaling and rotating never wear them out. `layer duplicate` on a smart object shares its picture rather than copying it, so `replace` puts a new picture behind every layer sharing it, each at its own placement — and `unique` gives one layer its own copy so the next `replace` leaves the others alone. |
+| `smart [convert]` \| `smart replace PATH [fit]` \| `smart unique` \| `smart info` | Wrap the active layer's pixels so scaling and rotating never wear them out. `layer duplicate` on a smart object shares its picture rather than copying it, so `replace` puts a new picture behind every layer sharing it, each at its own placement — and `unique` gives one layer its own copy so the next `replace` leaves the others alone. A placement is kept, so a larger picture comes out larger; `fit` scales each placement so the new picture sits in the box the old one occupied, proportions and top-left kept. |
 | `set key=value` | `opacity= fill-opacity= name= blend=` on the active layer. |
 | `move DX DY` | Nudge the active layer. |
 | `order WHERE` | `top bottom up down` |

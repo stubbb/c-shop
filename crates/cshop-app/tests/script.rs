@@ -1432,6 +1432,85 @@ fn a_shared_picture_is_replaced_everywhere_at_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A directory with a small red picture and a larger blue one in it.
+fn two_pictures(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cshop-script-{name}-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let write = |file: &str, side: u32, c: cshop_core::color::Rgba8| {
+        let px = cshop_core::pixels::PixelBuffer::filled(side, side, c);
+        cshop_io::save(&dir.join(file), &px, 100).unwrap();
+    };
+    write("red.png", 16, cshop_core::color::Rgba8::opaque(220, 30, 30));
+    write("blue.png", 64, cshop_core::color::Rgba8::opaque(30, 30, 220));
+    dir
+}
+
+/// `smart replace` takes its path the way every other command does — relative
+/// to the script. It used to take it raw, so a relative name was looked up
+/// wherever the process happened to be running, and `~` meant nothing.
+#[test]
+fn smart_replace_resolves_its_path_against_the_script() {
+    let dir = two_pictures("smart-path");
+    let Ok(report) = script::run(
+        "new 100 100\nplace red.png\nsmart convert\nsmart replace blue.png\nexport out.png",
+        &dir,
+    ) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    let out = cshop_io::load(&dir.join("out.png")).unwrap();
+    assert_eq!(out.get(5, 5), cshop_core::color::Rgba8::opaque(30, 30, 220), "the blue one is in");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A replacement that cannot be read is a failed step, not a success that
+/// changed nothing — and the run carries on past it.
+#[test]
+fn a_replacement_that_cannot_be_read_is_a_failed_step() {
+    let dir = two_pictures("smart-missing");
+    let Ok(report) = script::run(
+        "new 100 100\nplace red.png\nsmart convert\nsmart replace missing.png\nsmart info",
+        &dir,
+    ) else {
+        return;
+    };
+    assert!(!report.ok, "the run should report the failure");
+    let said = notes(&report);
+    let failed: Vec<&script::Step> = report.steps.iter().filter(|s| !s.ok).collect();
+    assert_eq!(failed.len(), 1, "exactly the replacement failed: {said:?}");
+    assert!(failed[0].command.starts_with("smart replace"), "{}", failed[0].command);
+    assert!(failed[0].note.contains("Could not open"), "{}", failed[0].note);
+    assert!(said.last().is_some_and(|n| n.contains("used once")), "the run went on: {said:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A replacement keeps the placement, so a larger picture comes out larger;
+/// `fit` scales the placement so it sits in the box the old picture had.
+#[test]
+fn smart_replace_fit_keeps_the_box_the_old_picture_had() {
+    let dir = two_pictures("smart-fit");
+    let Ok(report) = script::run(
+        "new 100 100\nplace red.png x=10 y=20\nsmart convert\nsmart replace blue.png",
+        &dir,
+    ) else {
+        return;
+    };
+    assert!(report.ok, "{:?}", notes(&report));
+    assert_eq!(report.layers[1].bounds, [10, 20, 64, 64], "without fit, its own size");
+
+    let Ok(report) = script::run(
+        "new 100 100\nplace red.png x=10 y=20\nsmart convert\nsmart replace blue.png fit",
+        &dir,
+    ) else {
+        return;
+    };
+    let said = notes(&report);
+    assert!(report.ok, "{said:?}");
+    assert!(said.iter().any(|n| n.contains("fitted")), "{said:?}");
+    assert_eq!(report.layers[1].bounds, [10, 20, 16, 16], "with fit, the old box, top-left kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A layer that is not a smart object says so rather than doing something.
 #[test]
 fn smart_commands_refuse_a_plain_layer() {

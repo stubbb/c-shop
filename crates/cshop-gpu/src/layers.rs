@@ -18,6 +18,14 @@ struct Entry {
     /// filters and effects run over it — rather than the layer's own pixels.
     /// Switching a stack off has to reach the GPU even when no pixel changed.
     composed: bool,
+    /// Where a composition sits, relative to the layer's offset. Effects are
+    /// rendered round the layer's ink rather than its whole raster, so the
+    /// texture can be smaller than the raster and start somewhere inside it;
+    /// the compositor has to place it there rather than at the raster's
+    /// corner, or the ink of a layer with transparent margins moves the
+    /// moment an effect is put on it. Relative to the offset so a plain move,
+    /// which uploads nothing, cannot leave it stale.
+    inset: Option<IRect>,
 }
 
 /// Texture cache keyed by layer id.
@@ -46,6 +54,15 @@ impl LayerTextures {
 
     pub fn mask(&self, id: LayerId) -> Option<&GpuTexture> {
         self.entries.get(&id)?.mask.as_ref()
+    }
+
+    /// The document rect to draw the layer's texture in, when that texture is
+    /// a composition of the layer with its effects and so covers its ink
+    /// rather than its raster. `None` when the texture is the layer's own
+    /// pixels, which cover exactly what [`Layer::bounds`] says.
+    pub fn composed_rect(&self, layer: &Layer) -> Option<IRect> {
+        let inset = self.entries.get(&layer.id)?.inset?;
+        Some(inset.translate(layer.offset.0, layer.offset.1))
     }
 
     pub fn len(&self) -> usize {
@@ -209,7 +226,10 @@ impl LayerTextures {
     }
 
     fn sync_layer(&mut self, ctx: &GpuContext, layer: &Layer, dirty: &Dirty) {
-        let entry = self.entries.entry(layer.id).or_insert(Entry { pixels: None, mask: None, composed: false });
+        let entry = self
+            .entries
+            .entry(layer.id)
+            .or_insert(Entry { pixels: None, mask: None, composed: false, inset: None });
 
         // --- pixels --------------------------------------------------------
         match &layer.kind {
@@ -247,7 +267,14 @@ impl LayerTextures {
                     break 'pixels;
                 }
                 entry.composed = wants;
-                let composed = layer.render_with_effects().map(|(px, _)| px);
+                let composed = layer.render_with_effects();
+                // Nothing to compose — no ink for the effects to reach round —
+                // means the layer's own pixels go up, covering its raster.
+                entry.inset = wants.then(|| match &composed {
+                    Some((_, rect)) => rect.translate(-layer.offset.0, -layer.offset.1),
+                    None => layer.bounds().translate(-layer.offset.0, -layer.offset.1),
+                });
+                let composed = composed.map(|(px, _)| px);
 
                 // A deep layer with nothing composited over it goes up at its
                 // own depth, into the format the compositor already blends in.

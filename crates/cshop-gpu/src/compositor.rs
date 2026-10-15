@@ -344,7 +344,7 @@ impl Compositor {
         dest: &GpuTexture,
         region: IRect,
     ) {
-        let plan = Plan::build(doc, region);
+        let plan = Plan::build(doc, cache, region);
         self.ensure_scratch(ctx, plan.max_depth + 1, region.width(), region.height());
         self.ensure_params(ctx, plan.passes.len() as u64);
 
@@ -694,14 +694,21 @@ struct Plan {
 }
 
 impl Plan {
-    fn build(doc: &Document, region: IRect) -> Plan {
+    fn build(doc: &Document, cache: &LayerTextures, region: IRect) -> Plan {
         let mut plan = Plan { passes: Vec::new(), max_depth: 0 };
-        plan.walk(doc, None, 0, region);
+        plan.walk(doc, cache, None, 0, region);
         plan
     }
 
     /// Emit passes for the children of `parent` into scratch level `depth`.
-    fn walk(&mut self, doc: &Document, parent: Option<LayerId>, depth: usize, region: IRect) {
+    fn walk(
+        &mut self,
+        doc: &Document,
+        cache: &LayerTextures,
+        parent: Option<LayerId>,
+        depth: usize,
+        region: IRect,
+    ) {
         self.max_depth = self.max_depth.max(depth);
         let children = doc.tree.children(parent).to_vec();
 
@@ -725,11 +732,11 @@ impl Plan {
                 LayerKind::Group { .. } if is_inlined(layer) => {
                     // Pass-through: children composite straight onto this
                     // backdrop, so no isolation and no extra depth.
-                    self.walk(doc, Some(id), depth, region);
+                    self.walk(doc, cache, Some(id), depth, region);
                 }
                 LayerKind::Group { .. } => {
                     let child_depth = depth + 1;
-                    self.walk(doc, Some(id), child_depth, region);
+                    self.walk(doc, cache, Some(id), child_depth, region);
                     self.emit(
                         doc,
                         layer,
@@ -742,13 +749,16 @@ impl Plan {
                     );
                 }
                 // Type and shapes carry their own raster, so they draw
-                // exactly like one. Effects make the drawn area larger than
-                // the layer's own pixels, and the uploaded texture matches.
+                // exactly like one. With effects the uploaded texture is a
+                // composition round the layer's ink, which need not cover the
+                // raster, so it is drawn where the cache says it sits rather
+                // than over the raster's bounds.
                 LayerKind::Raster(_)
                 | LayerKind::Text(_)
                 | LayerKind::Shape(_)
                 | LayerKind::Smart(_) => {
-                    let bounds = layer.render_bounds();
+                    let bounds =
+                        cache.composed_rect(layer).unwrap_or_else(|| layer.render_bounds());
                     // Skip layers that fall entirely outside the dirty region.
                     if !bounds.intersects(&region) && !next_clips {
                         continue;

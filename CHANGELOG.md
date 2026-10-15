@@ -7,6 +7,24 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.085** — *Three bugs from scripting a logo swap.* A layer's effects are
+  rendered round its ink rather than its whole raster, and the compositor was
+  drawing that smaller texture over the raster's bounds, so the ink of a layer
+  with transparent margins — a placed PNG, most often — jumped to the raster's
+  corner the moment an effect went on it, and a replacement picture's margins
+  were thrown away. The texture cache now keeps where the composition sits
+  and the compositor draws it there. A project saved before this was laid
+  out against the old drawing, so the format is bumped to 3 and opening an
+  older file moves each layer that has effects on — and each saved layer
+  state that does — back by its ink's inset, which keeps every picture
+  looking the way it was made rather than shifting it. In the script harness,
+  `smart replace` took its path raw — no `~`, and relative to the process
+  rather than the script — and reported a failed load as a success; it now
+  resolves paths like every other command, and every command is checked for
+  a refusal the editor would have put in its status bar, so no step can
+  quietly do nothing. And since a replacement keeps the placement, so a
+  larger picture comes out larger, `smart replace PATH fit` scales each
+  placement to the box the old picture had.
 - **0.084** — *Free Transform that behaves like one.* Four things about the
   transform box were wrong or missing. The pointer never said what a press
   would do; now it does — a resize arrow on a handle, turned the way that

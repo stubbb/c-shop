@@ -49,7 +49,14 @@ const MAGIC: &[u8; 6] = b"CSHOP\0";
 /// kind byte, which an older reader cannot skip the way it skips a chunk it
 /// does not know — hence the bump. Version 1 files still open: their inline
 /// picture becomes a source of its own.
-const VERSION: u16 = 2;
+///
+/// 3: a layer's offset places its raster, and its effects are drawn round its
+/// ink wherever that is inside the raster. Earlier files were laid out under
+/// a compositor that drew the effect composition from the raster's corner,
+/// so opening one moves each effect-bearing layer by its ink's inset to keep
+/// it where it looked — see [`settle_effects_drawn_from_the_corner`]. Nothing
+/// in the layout changed, so the bump only says which way the offsets mean.
+const VERSION: u16 = 3;
 
 const CHUNK_DOC: &[u8; 4] = b"DOCU";
 const CHUNK_LAYER: &[u8; 4] = b"LAYR";
@@ -1069,6 +1076,9 @@ pub fn read(bytes: &[u8]) -> Result<Document, IoError> {
     if doc.width > crate::MAX_DIMENSION || doc.height > crate::MAX_DIMENSION {
         return Err(IoError::TooLarge(doc.width, doc.height, crate::MAX_DIMENSION));
     }
+    if version < 3 {
+        settle_effects_drawn_from_the_corner(&mut doc);
+    }
 
     let wanted = LayerId(active_id);
     doc.active = if doc.tree.contains(wanted) {
@@ -1290,6 +1300,53 @@ fn read_layer(r: &mut Reader<'_>, doc: &mut Document) -> Result<(), IoError> {
     let parent = (parent != 0).then_some(LayerId(parent)).filter(|p| doc.tree.contains(*p));
     doc.tree.insert(layer, parent, index);
     Ok(())
+}
+
+/// Keep a project from before format 3 looking the way it was laid out.
+///
+/// The compositor used to draw a layer's effect composition — which is
+/// rendered round the layer's ink — over the bounds of its whole raster, so
+/// the ink of a layer with transparent margins sat at the raster's corner
+/// whenever an effect was on it, and that is where people put it. Now that the
+/// composition is drawn where it belongs, such a layer would move by its ink's
+/// inset. Moving its offset the other way leaves the picture as it was. A
+/// saved layer state carries an offset of its own and moves the same way when
+/// its effects are on. The mask stays: it was never drawn from the corner.
+fn settle_effects_drawn_from_the_corner(doc: &mut Document) {
+    let ctx = cshop_core::filters::FilterContext::default();
+    let styled = |doc: &Document, id: LayerId| {
+        doc.tree.get(id).is_some_and(|l| l.effects.any())
+            || doc.states.iter().any(|s| s.layers.iter().any(|l| l.id == id && l.effects.any()))
+    };
+    let insets: Vec<(LayerId, (i32, i32))> = doc
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter(|&id| styled(doc, id))
+        .filter_map(|id| {
+            let layer = doc.tree.get(id)?;
+            // The composition is of the filtered pixels when there is a stack.
+            let ink = match layer.filtered_pixels(&ctx) {
+                Some(px) => px.opaque_bounds(),
+                None => layer.pixels()?.opaque_bounds(),
+            };
+            (!ink.is_empty() && (ink.x0, ink.y0) != (0, 0)).then_some((id, (ink.x0, ink.y0)))
+        })
+        .collect();
+    for (id, (dx, dy)) in insets {
+        if let Some(layer) = doc.tree.get_mut(id) {
+            if layer.effects.any() {
+                layer.offset.0 -= dx;
+                layer.offset.1 -= dy;
+            }
+        }
+        for state in &mut doc.states {
+            for setting in state.layers.iter_mut().filter(|l| l.id == id && l.effects.any()) {
+                setting.offset.0 -= dx;
+                setting.offset.1 -= dy;
+            }
+        }
+    }
 }
 
 fn read_curve(r: &mut Reader<'_>) -> Result<Curve, IoError> {
