@@ -1,25 +1,9 @@
-//! PDF, out only.
+//! Writing: a document goes out as one PDF page at its own size.
 //!
-//! # Why one direction
-//!
-//! Writing a PDF that holds a picture is a page, an image object and a
-//! content stream that draws it: a few hundred bytes of structure round the
-//! image, all of it written here. Reading one is a different proposition —
-//! object streams, cross-reference streams, a dozen filters, embedded fonts,
-//! and a page description language whose whole job is to be general. That is a
-//! project rather than a feature, and pretending otherwise by reading the
-//! easy tenth of it would produce a reader that opens some files and silently
-//! mangles others.
-//!
-//! So: a document goes out as a PDF page at its own size, and PDFs do not come
-//! in. The menu says which.
-//!
-//! # What the page holds
-//!
-//! One image, the composite, at the document's pixel size mapped onto a page
-//! measured in points at the document's own resolution — so a 300 dpi document
-//! makes a page the size it would print at, rather than a page of the size it
-//! happens to be in pixels.
+//! The page holds one image, the composite, at the document's pixel size
+//! mapped onto a page measured in points at the document's own resolution —
+//! so a 300 dpi document makes a page the size it would print at, rather than
+//! a page of the size it happens to be in pixels.
 
 use crate::IoError;
 use cshop_core::pixels::PixelBuffer;

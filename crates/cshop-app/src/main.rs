@@ -42,6 +42,8 @@ SCREENSHOT OPTIONS:
     --demo-denoise                  open the noise-removal window
     --demo-relight                  open the relight window
     --right-click X,Y               right-click there, to capture a context menu
+    --hover-file PATH               hold a file dragged in from outside over the window
+    --drop PATH                     drop a file on the window, as a file manager would
 ";
 
 /// Read what `--serve` was given.
@@ -111,6 +113,7 @@ fn main() {
     let mut token_came_from_argv = false;
     let mut allow_origins: Vec<String> = Vec::new();
     let mut drag: Option<(f32, f32, f32, f32)> = None;
+    let mut file_drag: Option<(std::path::PathBuf, bool)> = None;
     let mut demo_curves = false;
     let mut demo_tools = false;
     let mut demo_tool: Option<String> = None;
@@ -203,6 +206,12 @@ fn main() {
                 demo_tool = args.get(i).cloned();
             }
             // Repeatable, so a menu can be opened and then walked into.
+            arg @ ("--drop" | "--hover-file") => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    file_drag = Some((std::path::PathBuf::from(v), arg == "--drop"));
+                }
+            }
             "--drag" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
@@ -480,8 +489,7 @@ fn main() {
                     app.tool = cshop_ui::tools::Tool::Brush;
                 }
             },
-            clicks,
-            drag,
+            screenshot::Pointer { clicks, drag, file_drag },
         ),
         None => window::run(files, started),
     };

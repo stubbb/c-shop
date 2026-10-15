@@ -105,6 +105,13 @@ pub fn decode_document_reporting(
         ));
     }
 
+    // A PDF page becomes the layers it is made of — type, shapes, pictures —
+    // so what opens is a page that can be edited rather than a picture of one.
+    if pdf::is_pdf(bytes) {
+        let options = pdf::ReadOptions::default();
+        return pdf::read(bytes, &options).map(|i| (document_from_pdf(i, &options), Colors::default()));
+    }
+
     // Vector in, vector out: an SVG becomes shape layers, so what comes back
     // from a round trip is editable geometry rather than a picture of it.
     if svg::is_svg(bytes) {
@@ -221,6 +228,71 @@ fn document_from_svg(drawing: svg::Drawing) -> cshop_core::document::Document {
                     drawing.width.max(1),
                     drawing.height.max(1),
                 )),
+            ),
+            None,
+        );
+    }
+    doc.active = doc.tree.root().last().copied();
+    doc.selected_layers = doc.active.into_iter().collect();
+    doc.modified = false;
+    doc
+}
+
+/// Open a PDF with the given options, returning the document and what was
+/// substituted or left out on the way, one sentence each.
+pub fn load_pdf_document(
+    path: &Path,
+    options: &pdf::ReadOptions,
+) -> Result<(cshop_core::document::Document, Vec<String>), IoError> {
+    let bytes = std::fs::read(path)?;
+    let imported = pdf::read(&bytes, options)?;
+    let notes = imported.notes.clone();
+    let mut doc = document_from_pdf(imported, options);
+    doc.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(doc.name);
+    doc.path = Some(path.to_path_buf());
+    Ok((doc, notes))
+}
+
+/// A PDF as a document, at the resolution it was read at.
+///
+/// One page is its layers. Several are a group each, page 1 on top and the
+/// only one showing: every page has paper under it, so showing them all would
+/// show the top one anyway, and the rest are a click away in the panel.
+pub fn document_from_pdf(imported: pdf::Imported, options: &pdf::ReadOptions) -> cshop_core::document::Document {
+    let w = imported.pages.iter().map(|p| p.width).max().unwrap_or(1);
+    let h = imported.pages.iter().map(|p| p.height).max().unwrap_or(1);
+    let mut doc = cshop_core::document::Document::new(
+        imported.title.clone().unwrap_or_else(|| "Untitled".into()),
+        w.max(1),
+        h.max(1),
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+    doc.dpi = options.dpi;
+    let several = imported.pages.len() > 1;
+    for page in imported.pages.into_iter().rev() {
+        let parent = if several {
+            let id = doc.tree.alloc_id();
+            let mut group = cshop_core::layer::Layer::group(id, format!("Page {}", page.number));
+            group.visible = page.number == 1;
+            group.expanded = page.number == 1;
+            doc.tree.push(group, None);
+            Some(id)
+        } else {
+            None
+        };
+        for layer in page.layers {
+            let id = doc.tree.alloc_id();
+            doc.tree.push(layer.into_layer(id), parent);
+        }
+    }
+    if doc.tree.is_empty() {
+        let id = doc.tree.alloc_id();
+        doc.tree.push(
+            cshop_core::layer::Layer::new(
+                id,
+                "Empty",
+                cshop_core::layer::LayerKind::raster(cshop_core::pixels::PixelBuffer::new(w.max(1), h.max(1))),
             ),
             None,
         );

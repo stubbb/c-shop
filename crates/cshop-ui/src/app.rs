@@ -34,7 +34,7 @@ use cshop_core::tree::LayerPos;
 use cshop_core::wand::{self, WandOptions};
 use cshop_gpu::compositor::Compositor;
 use cshop_gpu::context::GpuContext;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a stroke is writing into, with the buffer as it was when the stroke
 /// began.
@@ -118,6 +118,24 @@ fn single_plain_layer(doc: &Document) -> Option<&PixelBuffer> {
 }
 
 /// Where a new layer goes: directly above the active one, in the same group.
+/// While a file is dragged over the window, say what letting go will do —
+/// otherwise there is no telling whether the window takes drops at all.
+fn drop_hint(ctx: &egui::Context) {
+    if ctx.input(|i| i.raw.hovered_files.is_empty()) {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-hint")));
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(150));
+    painter.text(
+        screen.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop to open",
+        egui::FontId::proportional(28.0),
+        Palette::DARK.text,
+    );
+}
+
 fn new_layer_pos(view: &crate::doc_view::DocView) -> LayerPos {
     view.doc
         .active
@@ -602,6 +620,13 @@ impl CShopApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.handle_shortcuts(&ctx);
+        // A file dropped on the window opens as File ▸ Open would open it —
+        // a PDF asks how first, like anything else with a question to ask.
+        let dropped: Vec<PathBuf> =
+            ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        for path in dropped {
+            self.push(Action::OpenPath(path));
+        }
 
         egui::Panel::top("titlebar")
             .frame(egui::Frame::NONE.fill(Palette::DARK.titlebar))
@@ -645,6 +670,7 @@ impl CShopApp {
         self.show_dialog(&ctx);
         self.run_actions();
         self.sync_documents(renderer);
+        drop_hint(&ctx);
     }
 
     fn show_dialog(&mut self, ctx: &egui::Context) {
@@ -669,6 +695,7 @@ impl CShopApp {
             Dialog::Modify(d) => d.title(),
             Dialog::ImageSize(d) => d.title(),
             Dialog::Rename(_) => "Rename Layer",
+            Dialog::PdfImport(d) => d.title(),
             Dialog::Segment(d) => d.title(),
             Dialog::DepthFx(d) => d.title(),
             Dialog::Shortcuts(d) => d.title(),
@@ -726,6 +753,7 @@ impl CShopApp {
                 Dialog::Modify(d) => close = d.ui(ui, &mut actions),
                 Dialog::ImageSize(d) => close = d.ui(ui, &mut actions),
                 Dialog::Rename(d) => close = d.ui(ui, &mut actions),
+                Dialog::PdfImport(d) => close = d.ui(ui, &mut actions),
                 Dialog::Fill(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorPicker(d) => close = d.ui(ui, &mut actions),
                 Dialog::ColorProfile(d) => close = d.ui(ui, &mut actions),
@@ -1161,6 +1189,13 @@ impl CShopApp {
                 self.dialog = Dialog::FileBrowser(FileBrowser::new(BrowserMode::Place, start));
             }
             Action::PlacePath(path) => self.place_path(path),
+            Action::ImportPdf(path, place, options) => {
+                if place {
+                    self.place_pdf(path, options)
+                } else {
+                    self.open_pdf(path, options)
+                }
+            }
 
             Action::Save => {
                 match self.doc().and_then(|d| d.doc.path.clone()) {
@@ -2384,6 +2419,10 @@ impl CShopApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
+        // A PDF asks how its text should come in before it is read.
+        if self.ask_about_pdf(&path, false) {
+            return;
+        }
         // A project or a PSD arrives with its layers; anything else becomes a
         // single background layer, which `load_document` also handles.
         match cshop_io::load_document(&path) {
@@ -2421,6 +2460,10 @@ impl CShopApp {
             return;
         }
         self.commit_text();
+        // A PDF comes in as the layers it is made of, once asked how.
+        if self.ask_about_pdf(&path, true) {
+            return;
+        }
 
         // A project or a PSD arrives with its layers; what is placed is the
         // picture they make together.
@@ -2488,6 +2531,114 @@ impl CShopApp {
         } else {
             self.notify(format!("Placed {file} ({w} x {h}) as a smart object"));
         }
+    }
+
+    /// When `path` is a PDF, put up the question of how to read it and say
+    /// so; anything else is left to the caller.
+    fn ask_about_pdf(&mut self, path: &Path, place: bool) -> bool {
+        let head = std::fs::File::open(path).and_then(|f| {
+            use std::io::Read;
+            let mut head = Vec::new();
+            f.take(1024).read_to_end(&mut head).map(|_| head)
+        });
+        if !head.is_ok_and(|h| cshop_io::pdf::is_pdf(&h)) {
+            return false;
+        }
+        let pages = match std::fs::read(path).map_err(cshop_io::IoError::from).and_then(|b| cshop_io::pdf::page_sizes(&b)) {
+            Ok(p) if !p.is_empty() => p,
+            Ok(_) => {
+                self.fail(format!("{} has no pages", path.display()));
+                return true;
+            }
+            Err(e) => {
+                self.fail(format!("Could not open {}: {e}", path.display()));
+                return true;
+            }
+        };
+        let mut options = cshop_io::pdf::ReadOptions::default();
+        if place {
+            // Placed at the document's own resolution, so a page comes in at
+            // the size it would print at beside what is there — and no larger
+            // than the canvas, which is a lower resolution rather than a
+            // resampling, since type and shapes are drawn afresh at any size.
+            options.paper = false;
+            if let Some(view) = self.doc() {
+                let (cw, ch) = (view.doc.width as f32, view.doc.height as f32);
+                let (pw, ph) = pages[0];
+                let fit = (cw / pw).min(ch / ph) * 72.0;
+                options.dpi = view.doc.dpi.max(18.0).min(fit.max(18.0));
+            }
+        }
+        self.dialog = Dialog::PdfImport(crate::dialogs::PdfImportDialog::new(path.to_path_buf(), place, pages, options));
+        true
+    }
+
+    fn pdf_summary(notes: &[String]) -> String {
+        for note in notes {
+            log::info!("PDF import: {note}");
+        }
+        if notes.is_empty() { String::new() } else { format!(". {}", notes.join(". ")) }
+    }
+
+    /// A PDF as a document of its own: its pages as layers.
+    fn open_pdf(&mut self, path: PathBuf, options: cshop_io::pdf::ReadOptions) {
+        match cshop_io::load_pdf_document(&path, &options) {
+            Ok((doc, notes)) => {
+                let (name, w, h) = (doc.name.clone(), doc.width, doc.height);
+                let layers = doc.tree.len();
+                self.settings.remember(&path);
+                self.add_document(doc, "Open");
+                self.notify(format!("Opened {name} ({w} x {h}, {layers} layers){}", Self::pdf_summary(&notes)));
+            }
+            Err(e) => self.fail(format!("Could not open {}: {e}", path.display())),
+        }
+    }
+
+    /// A PDF placed into the open document: each page a group of its layers
+    /// above the active one, centred, page 1 on top and the only one showing.
+    /// One undo step takes all of it out again.
+    fn place_pdf(&mut self, path: PathBuf, options: cshop_io::pdf::ReadOptions) {
+        let imported = match std::fs::read(&path).map_err(cshop_io::IoError::from).and_then(|b| cshop_io::pdf::read(&b, &options)) {
+            Ok(i) => i,
+            Err(e) => return self.fail(format!("Could not open {}: {e}", path.display())),
+        };
+        let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "PDF".into());
+        let summary = Self::pdf_summary(&imported.notes);
+        let Some(view) = self.doc_mut() else { return };
+        let (cw, ch) = (view.doc.width as i32, view.doc.height as i32);
+        let pos = new_layer_pos(view);
+        let several = imported.pages.len() > 1;
+        let mut steps: Vec<Box<dyn cshop_core::history::Command>> = Vec::new();
+        let mut first_group = None;
+        let mut count = 0;
+        for page in imported.pages {
+            let group_id = view.doc.tree.alloc_id();
+            let name = if several { format!("{stem} — Page {}", page.number) } else { stem.clone() };
+            let mut group = Layer::group(group_id, name);
+            group.visible = page.number == 1;
+            first_group.get_or_insert(group_id);
+            // Inserted at one index in page order, so each earlier page ends
+            // up above the later ones.
+            steps.push(Box::new(AddLayer::new(group, pos, "Place PDF")));
+            let shift = ((cw - page.width as i32) / 2, (ch - page.height as i32) / 2);
+            for (index, new) in page.layers.into_iter().enumerate() {
+                let mut layer = new.into_layer(view.doc.tree.alloc_id());
+                layer.offset = (layer.offset.0 + shift.0, layer.offset.1 + shift.1);
+                steps.push(Box::new(AddLayer::new(
+                    layer,
+                    LayerPos { parent: Some(group_id), index },
+                    "Place PDF",
+                )));
+                count += 1;
+            }
+        }
+        let dirty = view.history.apply(&mut view.doc, Box::new(cshop_core::history::Compound::new("Place PDF", steps)));
+        view.doc.select(first_group);
+        view.mark_dirty(dirty);
+        view.mark_dirty(cshop_core::document::Dirty::structural(view.doc.bounds()));
+        view.invalidate();
+        let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.notify(format!("Placed {file} as {count} layers{summary}"));
     }
 
     /// The picture a file amounts to: its one layer when that is all it has —
@@ -8084,9 +8235,11 @@ pub enum LensOutcome {
 /// keeps its own place rather than inheriting wherever the last one was put.
 fn window_key(dialog: &Dialog) -> Option<&'static str> {
     Some(match dialog {
-        Dialog::NewDocument(_) | Dialog::FileBrowser(_) | Dialog::Rename(_) | Dialog::About => {
-            return None
-        }
+        Dialog::NewDocument(_)
+        | Dialog::FileBrowser(_)
+        | Dialog::Rename(_)
+        | Dialog::PdfImport(_)
+        | Dialog::About => return None,
         Dialog::None => return None,
         Dialog::LayerStyle(_) => "window-layer-style",
         Dialog::Segment(_) => "window-segment",

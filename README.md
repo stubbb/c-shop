@@ -101,7 +101,8 @@ pictures larger.
 - [**Shapes**](docs/FEATURES.md#shapes) — six kinds drawn from distance
   fields, with Bézier paths, a Pen tool and boolean operations.
 - [**Vector files**](docs/FEATURES.md#vector-files) — SVG in and out as
-  editable geometry; PDF out as a page.
+  editable geometry; PDF in as the type, shapes and pictures each page is
+  made of, and out as a page.
 
 **Changing the picture**
 

@@ -166,6 +166,9 @@ pub enum Action {
     /// Bring that file in: a new smart object layer above the active one,
     /// centred, and fitted to the canvas when it is larger.
     PlacePath(PathBuf),
+    /// Read a PDF as layers, answering the import dialog: into a document of
+    /// its own, or (`true`) placed into the open one.
+    ImportPdf(PathBuf, bool, cshop_io::pdf::ReadOptions),
     Save,
     ShowSaveAsDialog,
     /// Save to this path. `deep` writes sixteen bits a channel, which only

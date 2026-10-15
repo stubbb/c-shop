@@ -10,6 +10,33 @@ use cshop_ui::commands::Action;
 use cshop_ui::CShopApp;
 use std::path::{Path, PathBuf};
 
+/// A file let go of over the window, as egui-winit hands one over.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// What the pointer does during a capture.
+#[derive(Default)]
+pub struct Pointer {
+    pub clicks: Vec<(f32, f32, egui::PointerButton)>,
+    /// Press at the first point, move to the second, and hold, so the capture
+    /// shows an interaction in progress rather than its result.
+    pub drag: Option<(f32, f32, f32, f32)>,
+    /// A file dragged in from outside the window: held over it, or let go of
+    /// on frame 3 when the flag is set — what a file manager's drag looks
+    /// like to egui.
+    pub file_drag: Option<(PathBuf, bool)>,
+}
+
 /// Render `frames` frames at `size` and write the last one to `out`.
 ///
 /// More than one frame is usually needed: the first creates documents from the
@@ -21,11 +48,9 @@ pub fn capture(
     files: &[String],
     frames: u32,
     setup: impl Fn(&mut CShopApp),
-    clicks: Vec<(f32, f32, egui::PointerButton)>,
-    // Press at the first point, move to the second, and hold, so the capture
-    // shows an interaction in progress rather than its result.
-    drag: Option<(f32, f32, f32, f32)>,
+    pointer: Pointer,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let Pointer { clicks, drag, file_drag } = pointer;
     let gpu = GpuContext::headless()?;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -116,6 +141,17 @@ pub fn capture(
             )),
             time: Some(frame as f64 / 60.0),
             events,
+            hovered_files: match &file_drag {
+                Some((path, false)) => vec![egui::HoveredFile { path: Some(path.clone()), ..Default::default() }],
+                _ => Vec::new(),
+            },
+            dropped_files: match &file_drag {
+                Some((path, true)) if frame == 3 => {
+                    let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped(path.clone()));
+                    vec![file]
+                }
+                _ => Vec::new(),
+            },
             ..Default::default()
         };
 

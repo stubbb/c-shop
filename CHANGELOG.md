@@ -7,6 +7,32 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.087** — *PDFs open as the layers they are made of.* A page comes in as
+  type, shapes and pictures rather than a picture of them: every run of text
+  a type layer set in an installed face standing in for the PDF's own —
+  Liberation for Times, Arial and Courier, which keeps every line's length —
+  every painted path a shape layer, every image a raster layer, stacked in
+  the order the page painted them. Opening one first asks two things: text
+  as a type layer per line, each exactly where it was, or as a text box per
+  paragraph that reflows when edited; and the resolution, 300 pixels an inch
+  unless told otherwise. Each page of several is a group, page 1 showing.
+  Open and Place puts a page in as a group, centred, at the document's own
+  resolution or lower if it would not fit. A justified line is cut where one
+  layer could not keep every word within a space of its place, and a
+  paragraph's box is solved from the page's own line breaks, so on a
+  four-page contract from Word every line breaks where the page broke it and
+  each page lands on poppler's rendering to within a third of a millimetre
+  for 98 to 100 per cent of its ink. The reader is written here: cross-
+  reference tables and streams, object streams, incremental updates, repair
+  of a damaged index, the filters, simple and composite fonts with their
+  encodings and ToUnicode maps, images and their masks, form fields'
+  appearances; what it cannot keep — gradients, patterns, soft masks,
+  dashes, JPEG 2000 and JBIG2, turned text, which comes in as pixels — it
+  names, as it names every font it substituted. Found on the way: nothing
+  dropped on the window was ever opened, of any kind. A drop now opens as
+  File ▸ Open would, with a hint while a file is held over the window, and
+  the desktop entry offers C-Shop for PDFs without taking them from the
+  default viewer.
 - **0.086** — *SVG shapes where the file put them.* A shape layer's raster
   has a margin round the shape's box, and opening an SVG took the box's
   corner as the layer's offset, so every imported shape was drawn a pixel or

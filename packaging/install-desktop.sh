@@ -19,7 +19,7 @@ sizes=(16 24 32 48 64 128 256 512)
 
 # The formats the editor actually opens. PSD is claimed through `image/x-psd`,
 # a registered alias of the canonical type, which the mime database resolves.
-mimetypes="image/png;image/jpeg;image/bmp;image/gif;image/tiff;image/webp;image/x-tga;image/vnd.microsoft.icon;image/x-psd;application/x-cshop-project;"
+mimetypes="image/png;image/jpeg;image/bmp;image/gif;image/tiff;image/webp;image/x-tga;image/vnd.microsoft.icon;image/x-psd;application/pdf;application/x-cshop-project;"
 
 usage() {
     cat <<'USAGE'
@@ -130,4 +130,4 @@ echo "installed:"
 echo "  menu entry  $desktop_file"
 echo "  runs        $binary"
 echo "  icons       $icons/{$(IFS=,; echo "${sizes[*]}")}x…/apps/cshop.png"
-echo "  file types  .cshop .psd and the usual images"
+echo "  file types  .cshop .psd .pdf and the usual images"

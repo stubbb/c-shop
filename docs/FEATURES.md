@@ -207,6 +207,45 @@ converted to cubics, and a small XML reader written for the purpose. What it
 cannot draw — text, gradients, filters — it names rather than dropping. PDF
 goes out as a page at the size the document would print at.
 
+A PDF comes in as the layers its pages are made of: every run of text a type
+layer, every painted path a shape layer, every picture a raster layer,
+stacked in the order the page painted them, so what covers what is kept.
+Opening one asks two things first, because neither has a right answer. Its
+text can come in as a type layer per line — each line exactly where the page
+had it, at its length, but editing one does not reflow the paragraph — or as
+a text box per paragraph, which reflows when edited. And its resolution: 300
+pixels an inch unless told otherwise, which is also what the document says
+when it is exported again, so the page comes back the size it was. Each page
+of several is a group, page 1 on top and the only one showing. Open and
+Place puts the same layers into the open document as a group per page,
+centred, at the document's own resolution or lower if the page would not
+fit — lower rather than resampled, since type and shapes are drawn afresh at
+whatever size.
+
+Text is set in an installed face standing in for the PDF's own, chosen by
+name and then by kind: Liberation stands in for Times, Arial and Courier and
+has the same widths, so lines keep their length. Where a substitute sets a
+line a little shorter or longer, tracking makes up the difference; a line
+the page justified, which stretched its spaces rather than its letters, is
+cut where one layer could not keep every word within a space of its place.
+A paragraph's box is sized so that the face, wrapping on its own, breaks it
+where the page did — solved from the page's own line breaks rather than
+guessed from its width, with a hair of tracking where kerning makes one line
+want a different width from another. On a four-page contract printed from
+Word, every line breaks where the page broke it, and with a layer per line
+the composite lands on poppler's own rendering of each page to within a
+third of a millimetre for 98 to 100 per cent of its ink.
+
+The reader is written here, as the SVG reader is: cross-reference tables
+and streams, object streams, incremental updates, and repair of a file whose
+index is damaged or missing; the stream filters; simple and composite fonts,
+their encodings and ToUnicode maps; images in grey, RGB, CMYK, indexed and
+spot colour, with their masks; form fields' appearances. What it cannot keep
+— gradients, patterns, soft masks, dashes, JPEG 2000 and JBIG2 pictures,
+text turned to an angle a type layer cannot hold, which comes in as pixels —
+it names when the file opens, as it names every font it had to substitute.
+Encrypted files are refused by name.
+
 ---
 
 # Changing the picture

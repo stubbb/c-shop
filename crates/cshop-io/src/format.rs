@@ -19,7 +19,8 @@ pub enum ImageFormat {
     /// Vector: shape layers keep their geometry, and everything else goes out
     /// as a picture embedded in it.
     Svg,
-    /// A page. Written, not read — see [`crate::pdf`].
+    /// A page. Written as one picture; read as the layers it is made of —
+    /// see [`crate::pdf`].
     Pdf,
 }
 
@@ -54,7 +55,7 @@ impl ImageFormat {
     /// Extensions the Open dialog offers, lowercase and without the dot.
     pub const OPENABLE_EXTENSIONS: &'static [&'static str] = &[
         "cshop", "csd", "psd", "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp",
-        "tga", "ico", "svg", "apng", "dng",
+        "tga", "ico", "svg", "apng", "dng", "pdf",
     ];
 
     pub fn from_extension(ext: &str) -> Option<ImageFormat> {

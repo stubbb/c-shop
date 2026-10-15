@@ -71,7 +71,7 @@ blue yellow orange purple grey transparent`. Paths may start with `~`.
 | Command | What it does |
 |---|---|
 | `new W H [background=]` | Start a document. Background is `white`, `transparent` or a colour. |
-| `open PATH` | Open an image, a `.psd` or a `.cshop` project, with its layers. |
+| `open PATH` | Open an image, a `.psd` or a `.cshop` project, with its layers. A PDF opens as layers too — each page a group of type, shape and picture layers, at 300 pixels an inch and a type layer per line. |
 | `resize W [H]` | Resample. `fit=` scales the longest side and keeps the proportions, `scale=` multiplies, one dimension alone derives the other. `filter=` is `nearest bilinear bicubic lanczos`; `canvas` pads or crops instead of scaling. |
 | `place [PATH]` | Bring an image in as a layer above the active one, `x=` `y=`. With no path it re-places the file the document was opened from. |
 | `text X Y "..."` | A type layer, its baseline starting at X Y. `size= color= family= bold italic align= leading= tracking= wrap=` |

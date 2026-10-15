@@ -47,6 +47,8 @@ pub enum Dialog {
     RefineEdge(Box<crate::select_ui::RefineEdgeDialog>),
     /// The list of every chord, and where they are changed.
     Shortcuts(Box<crate::shortcut_ui::ShortcutDialog>),
+    /// How a PDF comes in, asked before it is read.
+    PdfImport(PdfImportDialog),
     About,
 }
 
@@ -418,6 +420,96 @@ impl ColorPickerDialog {
 // ---------------------------------------------------------------------------
 // Rename layer
 // ---------------------------------------------------------------------------
+
+/// Asked before a PDF is read: how its text should come in, and at what size.
+///
+/// The text question is the one with no right answer. A type layer per line
+/// keeps every line exactly where the page had it but will not reflow; a box
+/// per paragraph reflows when edited but lines break where the face puts
+/// them. Which is wanted depends on what the page is for, so it is asked.
+pub struct PdfImportDialog {
+    pub path: std::path::PathBuf,
+    /// Into the open document, rather than as a document of its own.
+    pub place: bool,
+    /// Each page's size in points.
+    pub pages: Vec<(f32, f32)>,
+    pub options: cshop_io::pdf::ReadOptions,
+}
+
+impl PdfImportDialog {
+    pub fn new(path: std::path::PathBuf, place: bool, pages: Vec<(f32, f32)>, options: cshop_io::pdf::ReadOptions) -> Self {
+        Self { path, place, pages, options }
+    }
+
+    pub fn title(&self) -> &'static str {
+        if self.place { "Place PDF" } else { "Open PDF" }
+    }
+
+    /// Returns `true` when the dialog should close.
+    pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> bool {
+        use cshop_io::pdf::TextMode;
+        let mut close = false;
+        let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let n = self.pages.len();
+        ui.label(egui::RichText::new(&name).strong());
+        let (pw, ph) = self.pages.first().copied().unwrap_or((612.0, 792.0));
+        let scale = self.options.dpi / 72.0;
+        ui.label(
+            egui::RichText::new(format!(
+                "{n} page{}, {:.1} x {:.1} in — {} x {} pixels at this resolution",
+                if n == 1 { "" } else { "s" },
+                pw / 72.0,
+                ph / 72.0,
+                (pw * scale).round(),
+                (ph * scale).round()
+            ))
+            .color(Palette::DARK.text_dim),
+        );
+        if n > 1 {
+            ui.label(
+                egui::RichText::new(if self.place {
+                    "Each page comes in as a group of its own; page 1 shows."
+                } else {
+                    "Each page becomes a group of layers; page 1 shows."
+                })
+                .color(Palette::DARK.text_dim),
+            );
+        }
+        ui.add_space(10.0);
+
+        ui.label("Text:");
+        for (mode, hint) in [
+            (TextMode::Lines, "Every line exactly where it was. Editing one does not reflow its paragraph."),
+            (TextMode::Paragraphs, "A text box for each paragraph, which reflows when edited."),
+        ] {
+            ui.radio_value(&mut self.options.text, mode, mode.name());
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new(hint).color(Palette::DARK.text_dim).small());
+            });
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Resolution:");
+            ui.add(egui::DragValue::new(&mut self.options.dpi).range(18.0..=1200.0).speed(1.0).suffix(" pixels/inch"));
+        });
+        ui.checkbox(&mut self.options.paper, "White paper under each page");
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button(if self.place { "Place" } else { "Open" }).clicked() {
+                actions.push(Action::ImportPdf(self.path.clone(), self.place, self.options));
+                close = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+        close
+    }
+}
 
 /// Renames a layer. Small enough to be a dialog rather than an inline editor,
 /// which would mean putting a text field inside a custom-painted row.
