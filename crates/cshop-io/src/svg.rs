@@ -348,11 +348,14 @@ fn into_shape(path: PathShape, style: &Inherited, id: Option<&str>) -> Option<Sh
         return None;
     }
     // The shape's geometry lives inside its box, so the box's corner becomes
-    // the layer's offset and the path moves to meet it.
-    let local = transform_path(&path, Transform::translate(-bounds.x0, -bounds.y0));
+    // the layer's offset and the path moves to meet it. The corner is whole
+    // pixels, as an offset must be; whatever fraction the path started at
+    // stays in the path rather than being rounded off it.
+    let (ox, oy) = (bounds.x0.floor(), bounds.y0.floor());
+    let local = transform_path(&path, Transform::translate(-ox, -oy));
     let content = ShapeContent::new(
         ShapeKind::Path(local),
-        (bounds.width().max(1.0), bounds.height().max(1.0)),
+        ((bounds.x1 - ox).max(1.0), (bounds.y1 - oy).max(1.0)),
         ShapeStyle {
             fill: style.fill.filter(|c| c.a > 0),
             stroke: style.stroke.filter(|c| c.a > 0),
@@ -364,7 +367,7 @@ fn into_shape(path: PathShape, style: &Inherited, id: Option<&str>) -> Option<Sh
     );
     Some(Shape {
         content,
-        offset: (bounds.x0.floor() as i32, bounds.y0.floor() as i32),
+        offset: (ox as i32, oy as i32),
         name: id.map(|s| s.to_string()),
     })
 }
@@ -1139,10 +1142,11 @@ pub fn write(
             // geometry; the shared way out is the raster above.
             continue;
         };
-        let placed = transform_path(
-            path,
-            Transform::translate(layer.offset.0 as f32, layer.offset.1 as f32),
-        );
+        // The path is in its box's coordinates, and the box's corner is the
+        // anchor's way into the raster, not the raster's own corner.
+        let corner = (layer.offset.0 + shape.anchor().0, layer.offset.1 + shape.anchor().1);
+        let placed =
+            transform_path(path, Transform::translate(corner.0 as f32, corner.1 as f32));
         let style = shape.content().style;
         out.push_str("  <path d=\"");
         out.push_str(&path_data(&placed));

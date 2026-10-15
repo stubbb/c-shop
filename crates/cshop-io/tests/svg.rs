@@ -263,3 +263,90 @@ fn a_drawing_of_nothing_but_text_still_opens() {
     assert_eq!((doc.width, doc.height), (120, 60));
     assert_eq!(doc.tree.len(), 1);
 }
+
+/// What the one shape layer in `doc` shows at a document pixel, read from its
+/// raster where the layer's offset puts it.
+fn shape_pixel(doc: &cshop_core::document::Document, x: i32, y: i32) -> cshop_core::color::Rgba8 {
+    let layer = doc
+        .tree
+        .iter_all()
+        .into_iter()
+        .filter_map(|id| doc.tree.get(id))
+        .find(|l| l.shape().is_some())
+        .expect("a shape layer");
+    let raster = layer.shape().unwrap().raster();
+    raster.get(x - layer.offset.0, y - layer.offset.1)
+}
+
+/// A shape's raster has a margin around its box, so the layer's offset is
+/// the box's corner less that margin. Taking the corner as the offset drew
+/// every imported shape a couple of pixels down and to the right.
+#[test]
+fn an_opened_shape_is_drawn_where_the_file_put_it() {
+    let source = r##"<svg width="100" height="100"><rect x="20" y="10" width="40" height="30" fill="#f00"/></svg>"##;
+    let doc = cshop_io::decode_document(source.as_bytes(), None).expect("it should open");
+    let red = cshop_core::color::Rgba8::opaque(255, 0, 0);
+    assert_eq!(shape_pixel(&doc, 20, 10), red, "the top-left pixel of the rectangle");
+    assert_eq!(shape_pixel(&doc, 59, 39), red, "the bottom-right pixel of the rectangle");
+    assert_eq!(shape_pixel(&doc, 19, 9).a, 0, "just outside the top-left corner");
+    assert_eq!(shape_pixel(&doc, 60, 40).a, 0, "just outside the bottom-right corner");
+}
+
+/// The layer's offset is whole pixels; the file's coordinates are not. The
+/// half pixel has to stay in the geometry rather than be rounded away.
+#[test]
+fn an_opened_shape_keeps_its_half_pixel() {
+    let source = r##"<svg width="100" height="100"><rect x="20.5" y="10" width="40" height="30" fill="#f00"/></svg>"##;
+    let doc = cshop_io::decode_document(source.as_bytes(), None).expect("it should open");
+    let edge = shape_pixel(&doc, 20, 20).a;
+    assert!((100..=155).contains(&edge), "the left edge pixel is half covered, not {edge}");
+    assert_eq!(shape_pixel(&doc, 21, 20).a, 255, "and the one after it is whole");
+    let edge = shape_pixel(&doc, 60, 20).a;
+    assert!((100..=155).contains(&edge), "the right edge pixel is half covered, not {edge}");
+
+    // The geometry says the same as the pixels.
+    let d = read(source);
+    assert!(has_point(&d, (20.5, 10.0), 0.01), "the corner is at 20.5, not rounded");
+}
+
+/// Writing is the other half: a shape layer drawn in the editor goes out
+/// where it is on the canvas, not where its raster's corner happens to be.
+#[test]
+fn a_shape_layer_is_written_where_it_is_drawn() {
+    use cshop_core::path::{Anchor, PathShape, SubPath};
+    use cshop_core::shape::{ShapeContent, ShapeStyle};
+    let mut doc = cshop_core::document::Document::new(
+        "t",
+        100,
+        100,
+        cshop_core::document::Background::Transparent,
+    );
+    doc.tree = Default::default();
+    let corners = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)];
+    let path = PathShape::new(vec![SubPath {
+        anchors: corners
+            .into_iter()
+            .map(|(x, y)| Anchor::corner(cshop_core::geom::Vec2::new(x, y)))
+            .collect(),
+        closed: true,
+    }]);
+    let style = ShapeStyle { stroke: Some(cshop_core::color::Rgba8::BLACK), stroke_width: 4.0, ..Default::default() };
+    let content = ShapeContent::new(ShapeKind::Path(path), (40.0, 30.0), style);
+    let id = doc.tree.alloc_id();
+    let mut layer = cshop_core::layer::Layer::shape_layer(id, content).expect("a shape");
+    // Placed the way the shape tool places one: its box's corner at (20,10).
+    let anchor = layer.shape().unwrap().anchor();
+    layer.offset = (20 - anchor.0, 10 - anchor.1);
+    doc.tree.push(layer, None);
+
+    let composite = cshop_core::pixels::PixelBuffer::new(100, 100);
+    let bytes = cshop_io::svg::write(&doc, &composite).expect("it should write");
+    let again = svg::read(&bytes).expect("it should read back");
+    for want in [(20.0, 10.0), (60.0, 10.0), (60.0, 40.0), (20.0, 40.0)] {
+        assert!(
+            has_point(&again, want, 0.01),
+            "{want:?} should be where it was drawn: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+}

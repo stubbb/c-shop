@@ -196,13 +196,16 @@ fn document_from_svg(drawing: svg::Drawing) -> cshop_core::document::Document {
         let Some(rendered) = cshop_core::layer::ShapeLayer::new(shape.content) else {
             continue;
         };
+        // The raster has a margin around the shape's box, so the layer sits up
+        // and left of the box's corner by however far into the raster it is.
+        let anchor = rendered.anchor();
         let id = doc.tree.alloc_id();
         let mut layer = cshop_core::layer::Layer::new(
             id,
             shape.name.unwrap_or_else(|| format!("Shape {}", i + 1)),
             cshop_core::layer::LayerKind::Shape(Box::new(rendered)),
         );
-        layer.offset = shape.offset;
+        layer.offset = (shape.offset.0 - anchor.0, shape.offset.1 - anchor.1);
         doc.tree.push(layer, None);
     }
     if doc.tree.is_empty() {

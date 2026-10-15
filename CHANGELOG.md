@@ -7,6 +7,15 @@ smoothed or held back for a release.
 
 Newest first.
 
+- **0.086** — *SVG shapes where the file put them.* A shape layer's raster
+  has a margin round the shape's box, and opening an SVG took the box's
+  corner as the layer's offset, so every imported shape was drawn a pixel or
+  more down and to the right — further for a stroked one. The offset is now
+  the corner less that margin, and the corner is taken in whole pixels with
+  whatever fraction the file gave left in the geometry, rather than rounded
+  off it. Saving had the same mistake the other way: a shape layer went out
+  at its raster's corner rather than its box's, so it moved on every round
+  trip. Three tests read the pixels where the file put them.
 - **0.085** — *Three bugs from scripting a logo swap.* A layer's effects are
   rendered round its ink rather than its whole raster, and the compositor was
   drawing that smaller texture over the raster's bounds, so the ink of a layer
